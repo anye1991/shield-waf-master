@@ -1,5 +1,5 @@
 # 盾甲 WAF (Shield WAF)
-
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13568/badge)](https://www.bestpractices.dev/projects/13568)
 **全球顶级编码归一化 · 模块化 PHP Web 应用防火墙**
 
 盾甲 WAF 是一款专为 WordPress（或任意 PHP 站点）设计的 Web 应用防火墙，以**12 层递归编码归一化**和**500+ 全球同形字符映射**为核心，能够防御各类高级编码绕过攻击（多重 URL 编码、HTML 实体、Unicode 转义、UTF‑7、Base64、零宽字符、SQL 注释混淆等），同时提供注入检测、文件上传扫描、虚拟沙箱、后门猎杀、CC 防护、暗门保护、可视化仪表盘等 20+ 安全模块。
