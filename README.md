@@ -224,7 +224,7 @@ curl "https://your-domain.com/?q=%E1%9E%9Flect"
 ## 版权
 
 © 2026 暗夜铭少 (DarkNightMing)  
-网站：https://duduziy.com
+官网网站：https://waf.duduziy.com
 
 ---
 
