@@ -236,7 +236,7 @@ This project is licensed under the **Business Source License 1.1**.
 - 🔒 Commercial production use requires a commercial license
 - 📅 Changes to Apache 2.0 on 2029-07-01
 
-For commercial licensing: https://shieldwaf.com/license
+For commercial licensing: https://duduziy.com/license.html
 
 See the [LICENSE](./LICENSE) file for full details.
 
