@@ -75,29 +75,73 @@ class SqlSemanticParser {
                 return $result;
             }
 
+            $injectionTokens = self::tryExtractInjectionFragment($tokens, $sql);
+            if ($injectionTokens !== null) {
+                $tokens = $injectionTokens;
+                $result['indicators'][] = 'string_breakout_pattern';
+            }
+
             $ast = self::parse($tokens, $sql);
+            $isFragment = false;
+            $parsedUnknown = ($ast && ($ast['type'] ?? '') === 'unknown');
+
+            if (empty($ast) || $parsedUnknown) {
+                $fragmentResult = self::parseExpressionFragment($tokens, $sql);
+                if ($fragmentResult !== null) {
+                    $ast = $fragmentResult;
+                    $isFragment = true;
+                } else {
+                    $unionFragment = self::parseUnionFragment($tokens, $sql);
+                    if ($unionFragment !== null) {
+                        $ast = $unionFragment;
+                        $isFragment = true;
+                    }
+                }
+            }
+
             if (empty($ast)) {
+                $tokenAnalysis = self::analyzeSqlTokens($tokens);
+                if ($tokenAnalysis['score'] > 0) {
+                    $result['score'] = $tokenAnalysis['score'];
+                    $result['indicators'] = array_merge($result['indicators'], $tokenAnalysis['indicators']);
+                    $result['detected'] = $result['score'] >= 30;
+                    $result['sql_type'] = 'fragment_tokens';
+                    return $result;
+                }
                 return $result;
             }
 
-            $result['sql_type'] = $ast['type'] ?? 'unknown';
-            $result['ast_summary'] = self::summarizeAst($ast);
+            $result['sql_type'] = $isFragment ? ($ast['type'] ?? 'fragment') : ($ast['type'] ?? 'unknown');
+            $result['ast_summary'] = $isFragment ? ['mode' => 'fragment'] : self::summarizeAst($ast);
             $result['union_count'] = $ast['union_count'] ?? 0;
             $result['has_union'] = $result['union_count'] > 0;
             $result['subquery_depth'] = $ast['max_subquery_depth'] ?? 0;
 
+            $exprToCheck = null;
             if (!empty($ast['where'])) {
-                $tautologyInfo = self::detectTautology($ast['where']);
+                $exprToCheck = $ast['where'];
+            } elseif ($isFragment && !empty($ast['expression'])) {
+                $exprToCheck = $ast['expression'];
+            }
+
+            if ($exprToCheck !== null) {
+                $tautologyInfo = self::detectTautology($exprToCheck);
                 if ($tautologyInfo['is_tautology']) {
                     $result['has_tautology'] = true;
                     $result['tautology_type'] = $tautologyInfo['type'];
                     $result['indicators'][] = 'tautology:' . $tautologyInfo['type'];
                 }
-                $result['where_complexity'] = self::calcWhereComplexity($ast['where']);
+                $result['where_complexity'] = self::calcWhereComplexity($exprToCheck);
             }
 
             $result['dangerous_functions'] = $ast['dangerous_functions'] ?? [];
             $result['sensitive_tables'] = $ast['sensitive_tables'] ?? [];
+            if ($isFragment) {
+                $result['dangerous_functions'] = array_merge($result['dangerous_functions'], self::extractDangerousFromTokens($tokens));
+                $result['sensitive_tables'] = array_merge($result['sensitive_tables'], self::extractSensitiveFromTokens($tokens));
+                $result['dangerous_functions'] = array_values(array_unique($result['dangerous_functions']));
+                $result['sensitive_tables'] = array_values(array_unique($result['sensitive_tables']));
+            }
 
             $commentInfo = self::analyzeComments($sql, $ast);
             $result['has_comment_injection'] = $commentInfo['has_injection'];
@@ -727,13 +771,13 @@ class SqlSemanticParser {
             }
 
             if ($op === 'IS') {
-                self::matchKeyword($state, 'NOT');
+                $isNot = self::matchKeyword($state, 'NOT');
                 $right = self::parsePrimary($state, $depth);
                 return [
                     'type' => 'is',
                     'left' => $left,
                     'right' => $right,
-                    'not'  => self::current($state - 1)['value'] === 'NOT',
+                    'not'  => $isNot,
                 ];
             }
 
@@ -1184,6 +1228,341 @@ class SqlSemanticParser {
         return $ast;
     }
 
+    /**
+     * 解析表达式片段（注入payload通常是WHERE子句片段）
+     */
+    private static function parseExpressionFragment(array $tokens, string $sql): ?array {
+        $state = [
+            'tokens'   => $tokens,
+            'pos'      => 0,
+            'sql'      => $sql,
+            'dangerous_functions' => [],
+            'sensitive_tables'    => [],
+            'max_subquery_depth'  => 0,
+            'union_count'         => 0,
+        ];
+
+        self::skipCommentsAndSemicolons($state);
+        if (self::isEof($state)) {
+            return null;
+        }
+
+        $firstToken = self::current($state);
+        $startsWithLogic = false;
+        if ($firstToken['type'] === self::TOKEN_KEYWORD) {
+            $firstKw = strtoupper($firstToken['value']);
+            if ($firstKw === 'OR' || $firstKw === 'AND') {
+                $startsWithLogic = true;
+            }
+        }
+
+        if ($startsWithLogic) {
+            $dummyLeft = ['type' => 'identifier', 'value' => '__injected_left__'];
+            $rightExpr = null;
+            $op = strtolower($firstKw);
+            self::next($state);
+            self::skipCommentsAndSemicolons($state);
+
+            if ($op === 'or') {
+                $rightExpr = self::parseAndExpr($state, 0);
+            } else {
+                $rightExpr = self::parseNotExpr($state, 0);
+            }
+
+            if ($rightExpr === null) {
+                return null;
+            }
+
+            $expr = [
+                'type'  => $op,
+                'left'  => $dummyLeft,
+                'right' => $rightExpr,
+            ];
+        } else {
+            $expr = self::parseExpression($state, 0);
+            if ($expr === null) {
+                return null;
+            }
+        }
+
+        $hasMeaningful = self::containsMeaningfulTokens($tokens);
+        if (!$hasMeaningful) {
+            return null;
+        }
+
+        return [
+            'type'                => 'expression_fragment',
+            'expression'          => $expr,
+            'dangerous_functions' => array_values(array_unique($state['dangerous_functions'])),
+            'sensitive_tables'    => array_values(array_unique($state['sensitive_tables'])),
+            'max_subquery_depth'  => $state['max_subquery_depth'],
+            'union_count'         => $state['union_count'],
+            'starts_with_logic'   => $startsWithLogic,
+        ];
+    }
+
+    /**
+     * 解析UNION片段（UNION SELECT ... 无前置SELECT）
+     */
+    private static function parseUnionFragment(array $tokens, string $sql): ?array {
+        $state = [
+            'tokens'   => $tokens,
+            'pos'      => 0,
+            'sql'      => $sql,
+            'dangerous_functions' => [],
+            'sensitive_tables'    => [],
+            'max_subquery_depth'  => 0,
+            'union_count'         => 0,
+        ];
+
+        self::skipCommentsAndSemicolons($state);
+        if (self::isEof($state)) {
+            return null;
+        }
+
+        if (!self::matchKeyword($state, 'UNION')) {
+            return null;
+        }
+
+        self::matchKeyword($state, 'ALL');
+        self::matchKeyword($state, 'DISTINCT');
+
+        if (!self::matchKeyword($state, 'SELECT')) {
+            return null;
+        }
+
+        $state['union_count'] = 1;
+        $selectExprs = self::parseSelectExpressions($state);
+        $fromTables = [];
+        $whereExpr = null;
+
+        if (self::matchKeyword($state, 'FROM')) {
+            $fromTables = self::parseFromClause($state, 0);
+        }
+        if (self::matchKeyword($state, 'WHERE')) {
+            $whereExpr = self::parseExpression($state, 0);
+        }
+
+        return [
+            'type'                => 'union_fragment',
+            'select'              => $selectExprs,
+            'from'                => $fromTables,
+            'where'               => $whereExpr,
+            'dangerous_functions' => array_values(array_unique($state['dangerous_functions'])),
+            'sensitive_tables'    => array_values(array_unique($state['sensitive_tables'])),
+            'max_subquery_depth'  => $state['max_subquery_depth'],
+            'union_count'         => $state['union_count'],
+        ];
+    }
+
+    /**
+     * Token级别SQL特征分析（当AST解析完全失败时的降级）
+     */
+    private static function analyzeSqlTokens(array $tokens): array {
+        $score = 0;
+        $indicators = [];
+        $keywords = [];
+        $hasOr = false;
+        $hasAnd = false;
+        $hasComment = false;
+        $hasString = false;
+        $stringCount = 0;
+        $opCount = 0;
+
+        foreach ($tokens as $t) {
+            if ($t['type'] === self::TOKEN_KEYWORD) {
+                $kw = strtoupper($t['value']);
+                $keywords[] = $kw;
+                if ($kw === 'OR') $hasOr = true;
+                if ($kw === 'AND') $hasAnd = true;
+                if (in_array($kw, ['UNION', 'SELECT', 'DROP', 'INSERT', 'UPDATE', 'DELETE'], true)) {
+                    $score += 15;
+                    $indicators[] = 'keyword:' . strtolower($kw);
+                }
+                if (in_array($kw, ['SLEEP', 'BENCHMARK', 'WAITFOR', 'XP_CMDSHELL'], true)) {
+                    $score += 25;
+                    $indicators[] = 'dangerous_func:' . strtolower($kw);
+                }
+                if (in_array($kw, ['INFORMATION_SCHEMA'], true)) {
+                    $score += 20;
+                    $indicators[] = 'sensitive:' . strtolower($kw);
+                }
+            }
+            if ($t['type'] === self::TOKEN_COMMENT) {
+                $hasComment = true;
+                $score += 5;
+            }
+            if ($t['type'] === self::TOKEN_STRING) {
+                $hasString = true;
+                $stringCount++;
+            }
+            if ($t['type'] === self::TOKEN_OPERATOR) {
+                $opCount++;
+            }
+        }
+
+        $tautologyPattern = $hasOr && $hasString && $opCount >= 2;
+        if ($tautologyPattern) {
+            $score += 15;
+            $indicators[] = 'token_tautology_pattern';
+        }
+        if ($hasComment && count($keywords) >= 2) {
+            $score += 10;
+            $indicators[] = 'comment_injection_pattern';
+        }
+
+        return [
+            'score'      => min(60, $score),
+            'indicators' => $indicators,
+        ];
+    }
+
+    /**
+     * 尝试从注入模式中提取SQL表达式片段
+     * 处理 ' OR 1=1-- 这类"单引号闭合+注入表达式+注释"的模式
+     */
+    private static function tryExtractInjectionFragment(array $tokens, string $sql): ?array {
+        if (count($tokens) < 1) {
+            return null;
+        }
+
+        $first = $tokens[0];
+        $stringContent = '';
+        $startIdx = 0;
+
+        if ($first['type'] === self::TOKEN_STRING) {
+            $stringContent = $first['value'];
+            $startIdx = 1;
+        } elseif ($first['type'] === self::TOKEN_IDENT && count($tokens) > 1 && $tokens[1]['type'] === self::TOKEN_STRING) {
+            $stringContent = $tokens[1]['value'];
+            $startIdx = 2;
+        } else {
+            return null;
+        }
+
+        if (strlen($stringContent) > 200) {
+            return null;
+        }
+
+        $restTokens = [];
+        for ($i = $startIdx; $i < count($tokens); $i++) {
+            if ($tokens[$i]['type'] !== self::TOKEN_EOF) {
+                $restTokens[] = $tokens[$i];
+            }
+        }
+
+        $innerTokens = self::tokenize($stringContent);
+        $innerHasLogic = false;
+        $innerKeywordCount = 0;
+        foreach ($innerTokens as $t) {
+            if ($t['type'] === self::TOKEN_KEYWORD) {
+                $innerKeywordCount++;
+                $kw = strtoupper($t['value']);
+                if (in_array($kw, ['OR', 'AND', 'NOT', 'UNION', 'SELECT', 'DROP', 'INSERT', 'UPDATE', 'DELETE'], true)) {
+                    $innerHasLogic = true;
+                }
+            }
+        }
+
+        $innerHasOp = false;
+        foreach ($innerTokens as $t) {
+            if ($t['type'] === self::TOKEN_OPERATOR) {
+                $innerHasOp = true;
+                break;
+            }
+        }
+
+        if (!$innerHasLogic && !$innerHasOp && $innerKeywordCount < 2) {
+            return null;
+        }
+
+        $combined = array_merge($innerTokens, $restTokens);
+        $hasMeaningful = self::containsMeaningfulTokens($combined);
+        if (!$hasMeaningful) {
+            return null;
+        }
+
+        $eofFound = false;
+        $result = [];
+        foreach ($combined as $t) {
+            if ($t['type'] === self::TOKEN_EOF) {
+                $eofFound = true;
+                continue;
+            }
+            $result[] = $t;
+        }
+        if (!$eofFound) {
+            $result[] = ['type' => self::TOKEN_EOF, 'value' => '', 'pos' => strlen($sql)];
+        } else {
+            $result[] = ['type' => self::TOKEN_EOF, 'value' => '', 'pos' => strlen($sql)];
+        }
+
+        return $result;
+    }
+
+    /**
+     * 检查tokens中是否包含有意义的SQL结构
+     */
+    private static function containsMeaningfulTokens(array $tokens): bool {
+        $kwCount = 0;
+        $opCount = 0;
+        $stringCount = 0;
+        $numberCount = 0;
+        $hasComp = false;
+        $compOps = ['=', '!=', '<>', '<', '>', '<=', '>='];
+
+        foreach ($tokens as $t) {
+            if ($t['type'] === self::TOKEN_KEYWORD) $kwCount++;
+            if ($t['type'] === self::TOKEN_OPERATOR) {
+                $opCount++;
+                if (in_array($t['value'], $compOps, true)) $hasComp = true;
+            }
+            if ($t['type'] === self::TOKEN_STRING) $stringCount++;
+            if ($t['type'] === self::TOKEN_NUMBER) $numberCount++;
+        }
+
+        if ($kwCount >= 1 && $opCount >= 1) return true;
+        if ($kwCount >= 3) return true;
+        if ($hasComp && $numberCount >= 2) return true;
+        if ($hasComp && $stringCount >= 1 && $kwCount >= 1) return true;
+        if ($opCount >= 2 && $numberCount >= 2 && $hasComp) return true;
+        return false;
+    }
+
+    /**
+     * 从tokens中提取危险函数名
+     */
+    private static function extractDangerousFromTokens(array $tokens): array {
+        $found = [];
+        $dangerMap = array_flip(self::$dangerousFunctions);
+        foreach ($tokens as $t) {
+            if ($t['type'] === self::TOKEN_IDENT || $t['type'] === self::TOKEN_KEYWORD) {
+                $upper = strtoupper($t['value']);
+                if (isset($dangerMap[$upper])) {
+                    $found[] = $upper;
+                }
+            }
+        }
+        return array_values(array_unique($found));
+    }
+
+    /**
+     * 从tokens中提取敏感表名
+     */
+    private static function extractSensitiveFromTokens(array $tokens): array {
+        $found = [];
+        $sensMap = array_flip(self::$sensitiveTables);
+        foreach ($tokens as $t) {
+            if ($t['type'] === self::TOKEN_IDENT || $t['type'] === self::TOKEN_KEYWORD) {
+                $upper = strtoupper($t['value']);
+                if (isset($sensMap[$upper])) {
+                    $found[] = $upper;
+                }
+            }
+        }
+        return array_values(array_unique($found));
+    }
+
     // ==================== Parser Helpers ====================
 
     private static function current(array &$state): array {
@@ -1255,6 +1634,22 @@ class SqlSemanticParser {
             if ($left['is_tautology'] || $right['is_tautology']) {
                 return ['is_tautology' => true, 'type' => 'or_injection'];
             }
+
+            $leftVal = self::evalExpression($expr['left'] ?? null);
+            if ($leftVal === true) {
+                return ['is_tautology' => true, 'type' => 'or_short_circuit'];
+            }
+            if (is_numeric($leftVal) && $leftVal != 0) {
+                return ['is_tautology' => true, 'type' => 'or_short_circuit'];
+            }
+            $rightVal = self::evalExpression($expr['right'] ?? null);
+            if ($rightVal === true) {
+                return ['is_tautology' => true, 'type' => 'or_short_circuit'];
+            }
+            if (is_numeric($rightVal) && $rightVal != 0) {
+                return ['is_tautology' => true, 'type' => 'or_short_circuit'];
+            }
+
             return ['is_tautology' => false, 'type' => ''];
         }
 
@@ -1265,6 +1660,7 @@ class SqlSemanticParser {
             if ($left['is_tautology'] && $right['is_tautology']) {
                 return ['is_tautology' => true, 'type' => $left['type']];
             }
+
             return ['is_tautology' => false, 'type' => ''];
         }
 
@@ -1273,8 +1669,12 @@ class SqlSemanticParser {
             if ($inner['is_tautology'] && $inner['type'] === 'always_true') {
                 return ['is_tautology' => false, 'type' => ''];
             }
-            if (isset($expr['expr']['type']) && $expr['expr']['type'] === 'literal' && $expr['expr']['subtype'] === 'null') {
-                return ['is_tautology' => false, 'type' => ''];
+            $innerVal = self::evalExpression($expr['expr'] ?? null);
+            if ($innerVal === false) {
+                return ['is_tautology' => true, 'type' => 'always_true'];
+            }
+            if ($innerVal === 0 || $innerVal === '0') {
+                return ['is_tautology' => true, 'type' => 'always_true'];
             }
             return ['is_tautology' => false, 'type' => ''];
         }
@@ -1284,19 +1684,54 @@ class SqlSemanticParser {
             $left = $expr['left'] ?? null;
             $right = $expr['right'] ?? null;
 
-            if ($op === '=' && $left && $right) {
-                $leftLit = self::extractLiteralValue($left);
-                $rightLit = self::extractLiteralValue($right);
+            if ($op === 'LIKE' && $left && $right) {
+                $leftVal = self::evalExpression($left);
+                $rightVal = self::evalExpression($right);
+                if (is_string($leftVal) && is_string($rightVal)) {
+                    if (self::evalLike($leftVal, $rightVal)) {
+                        return ['is_tautology' => true, 'type' => 'like_tautology'];
+                    }
+                }
+                return ['is_tautology' => false, 'type' => ''];
+            }
 
-                if ($leftLit !== null && $rightLit !== null) {
-                    if ($leftLit['type'] === 'number' && $rightLit['type'] === 'number') {
-                        if ($leftLit['value'] == $rightLit['value']) {
+            if (in_array($op, ['=', '<=>']) && $left && $right) {
+                $leftVal = self::evalExpression($left);
+                $rightVal = self::evalExpression($right);
+
+                if ($leftVal !== null && $rightVal !== null) {
+                    if (is_numeric($leftVal) && is_numeric($rightVal)) {
+                        if ($leftVal == $rightVal) {
                             return ['is_tautology' => true, 'type' => 'numeric_equal'];
                         }
-                    }
-                    if ($leftLit['type'] === 'string' && $rightLit['type'] === 'string') {
-                        if ($leftLit['value'] === $rightLit['value']) {
+                    } elseif (is_string($leftVal) && is_string($rightVal)) {
+                        if ($leftVal === $rightVal) {
                             return ['is_tautology' => true, 'type' => 'string_equal'];
+                        }
+                    } elseif (is_bool($leftVal) && is_bool($rightVal)) {
+                        if ($leftVal === $rightVal) {
+                            return ['is_tautology' => true, 'type' => 'bool_equal'];
+                        }
+                    }
+                }
+
+                $leftType = self::inferType($left);
+                $rightType = self::inferType($right);
+
+                if (($leftType === 'number' && $rightType === 'string') ||
+                    ($leftType === 'string' && $rightType === 'number')) {
+                    $numExpr = $leftType === 'number' ? $left : $right;
+                    $strExpr = $leftType === 'string' ? $left : $right;
+                    $numVal = self::evalExpression($numExpr);
+                    $strVal = self::evalExpression($strExpr);
+
+                    if (is_numeric($numVal) && is_string($strVal)) {
+                        $strToNum = 0;
+                        if (preg_match('/^([+-]?\d+(\.\d+)?)/', $strVal, $matches)) {
+                            $strToNum = $matches[1] + 0;
+                        }
+                        if ($numVal == $strToNum) {
+                            return ['is_tautology' => true, 'type' => 'type_coercion_equal'];
                         }
                     }
                 }
@@ -1306,19 +1741,109 @@ class SqlSemanticParser {
                 if ($leftIdent !== null && $rightIdent !== null && $leftIdent === $rightIdent) {
                     return ['is_tautology' => true, 'type' => 'column_equal'];
                 }
+
+                return ['is_tautology' => false, 'type' => ''];
             }
 
             if (in_array($op, ['!=', '<>']) && $left && $right) {
-                $leftLit = self::extractLiteralValue($left);
-                $rightLit = self::extractLiteralValue($right);
-                if ($leftLit !== null && $rightLit !== null) {
-                    if ($leftLit['type'] === 'number' && $rightLit['type'] === 'number') {
-                        if ($leftLit['value'] != $rightLit['value']) {
+                $leftVal = self::evalExpression($left);
+                $rightVal = self::evalExpression($right);
+
+                if ($leftVal !== null && $rightVal !== null) {
+                    if (is_numeric($leftVal) && is_numeric($rightVal)) {
+                        if ($leftVal != $rightVal) {
                             return ['is_tautology' => true, 'type' => 'numeric_unequal'];
                         }
                     }
                 }
+                return ['is_tautology' => false, 'type' => ''];
             }
+
+            if (in_array($op, ['<', '>', '<=', '>=']) && $left && $right) {
+                $leftVal = self::evalArithmetic($left);
+                $rightVal = self::evalArithmetic($right);
+
+                if ($leftVal !== null && $rightVal !== null) {
+                    $result = false;
+                    switch ($op) {
+                        case '<':
+                            $result = $leftVal < $rightVal;
+                            break;
+                        case '>':
+                            $result = $leftVal > $rightVal;
+                            break;
+                        case '<=':
+                            $result = $leftVal <= $rightVal;
+                            break;
+                        case '>=':
+                            $result = $leftVal >= $rightVal;
+                            break;
+                    }
+                    if ($result) {
+                        return ['is_tautology' => true, 'type' => 'numeric_comparison'];
+                    }
+                }
+                return ['is_tautology' => false, 'type' => ''];
+            }
+        }
+
+        if ($type === 'is') {
+            $right = $expr['right'] ?? null;
+            $left = $expr['left'] ?? null;
+            $isNot = !empty($expr['not']);
+
+            $leftIsNull = false;
+            if ($left && isset($left['type']) && $left['type'] === 'literal' && ($left['subtype'] ?? '') === 'null') {
+                $leftIsNull = true;
+            }
+            $rightIsNull = false;
+            if ($right && isset($right['type']) && $right['type'] === 'literal' && ($right['subtype'] ?? '') === 'null') {
+                $rightIsNull = true;
+            }
+
+            if ($leftIsNull && $rightIsNull) {
+                if (!$isNot) {
+                    return ['is_tautology' => true, 'type' => 'null_is_null'];
+                }
+            }
+
+            return ['is_tautology' => false, 'type' => ''];
+        }
+
+        if ($type === 'between') {
+            $leftVal = self::evalArithmetic($expr['left'] ?? null);
+            $lowVal = self::evalArithmetic($expr['low'] ?? null);
+            $highVal = self::evalArithmetic($expr['high'] ?? null);
+
+            if ($leftVal !== null && $lowVal !== null && $highVal !== null) {
+                if ($leftVal >= $lowVal && $leftVal <= $highVal) {
+                    return ['is_tautology' => true, 'type' => 'between_tautology'];
+                }
+            }
+
+            return ['is_tautology' => false, 'type' => ''];
+        }
+
+        if ($type === 'in') {
+            $leftVal = self::evalExpression($expr['left'] ?? null);
+            $values = $expr['values'] ?? [];
+
+            if ($leftVal !== null && !empty($values)) {
+                foreach ($values as $valExpr) {
+                    $val = self::evalExpression($valExpr);
+                    if ($val !== null) {
+                        if (is_numeric($leftVal) && is_numeric($val)) {
+                            if ($leftVal == $val) {
+                                return ['is_tautology' => true, 'type' => 'in_tautology'];
+                            }
+                        } elseif ($leftVal === $val) {
+                            return ['is_tautology' => true, 'type' => 'in_tautology'];
+                        }
+                    }
+                }
+            }
+
+            return ['is_tautology' => false, 'type' => ''];
         }
 
         if ($type === 'literal') {
@@ -1334,24 +1859,211 @@ class SqlSemanticParser {
             }
         }
 
-        if ($type === 'is') {
-            $right = $expr['right'] ?? null;
-            if ($right && $right['type'] === 'literal' && $right['subtype'] === 'null') {
-                if (!empty($expr['not'])) {
-                    return ['is_tautology' => false, 'type' => ''];
-                }
+        if ($type === 'binary_op') {
+            $val = self::evalArithmetic($expr);
+            if ($val !== null && $val != 0) {
+                return ['is_tautology' => true, 'type' => 'always_true'];
             }
         }
 
-        if ($type === 'between') {
-            return ['is_tautology' => false, 'type' => ''];
+        return ['is_tautology' => false, 'type' => ''];
+    }
+
+    /**
+     * 通用表达式求值
+     * 仅对完全由字面量构成的表达式求值，涉及列/标识符/函数时返回 null
+     *
+     * @param array|null $expr
+     * @return mixed
+     */
+    private static function evalExpression(?array $expr) {
+        if ($expr === null) {
+            return null;
+        }
+
+        $type = $expr['type'] ?? '';
+
+        if ($type === 'literal') {
+            $subtype = $expr['subtype'] ?? '';
+            if ($subtype === 'number') {
+                $val = $expr['value'];
+                if (!is_numeric($val)) {
+                    return null;
+                }
+                if (strpos($val, '.') !== false || stripos($val, 'e') !== false) {
+                    return (float)$val;
+                }
+                return (int)$val;
+            }
+            if ($subtype === 'string') {
+                return $expr['value'];
+            }
+            if ($subtype === 'bool') {
+                return $expr['value'];
+            }
+            if ($subtype === 'null') {
+                return null;
+            }
+            return null;
+        }
+
+        if ($type === 'unary_op') {
+            $op = $expr['op'] ?? '';
+            $innerVal = self::evalExpression($expr['expr'] ?? null);
+            if ($innerVal === null && $op !== '!') {
+                return null;
+            }
+            if ($op === '-') {
+                return is_numeric($innerVal) ? -$innerVal : null;
+            }
+            if ($op === '+') {
+                return is_numeric($innerVal) ? $innerVal : null;
+            }
+            if ($op === '!') {
+                return $innerVal ? false : true;
+            }
+            return null;
         }
 
         if ($type === 'binary_op') {
-            return ['is_tautology' => false, 'type' => ''];
+            $op = $expr['op'] ?? '';
+            $leftVal = self::evalExpression($expr['left'] ?? null);
+            $rightVal = self::evalExpression($expr['right'] ?? null);
+            if ($leftVal === null || $rightVal === null) {
+                return null;
+            }
+            if (in_array($op, ['+', '-', '*', '/', '%'])) {
+                if (!is_numeric($leftVal) || !is_numeric($rightVal)) {
+                    return null;
+                }
+                switch ($op) {
+                    case '+':
+                        return $leftVal + $rightVal;
+                    case '-':
+                        return $leftVal - $rightVal;
+                    case '*':
+                        return $leftVal * $rightVal;
+                    case '/':
+                        if ($rightVal == 0) {
+                            return null;
+                        }
+                        return $leftVal / $rightVal;
+                    case '%':
+                        if ($rightVal == 0) {
+                            return null;
+                        }
+                        return $leftVal % $rightVal;
+                }
+            }
+            return null;
         }
 
-        return ['is_tautology' => false, 'type' => ''];
+        return null;
+    }
+
+    /**
+     * 算术表达式求值
+     * 确保返回数字类型或 null
+     *
+     * @param array|null $expr
+     * @return float|int|null
+     */
+    private static function evalArithmetic(?array $expr) {
+        $result = self::evalExpression($expr);
+        if (is_numeric($result)) {
+            return $result;
+        }
+        return null;
+    }
+
+    /**
+     * 类型推理
+     * 推断表达式的类型：'number' / 'string' / 'bool' / 'null' / 'unknown'
+     *
+     * @param array|null $expr
+     * @return string
+     */
+    private static function inferType(?array $expr): string {
+        if ($expr === null) {
+            return 'unknown';
+        }
+
+        $type = $expr['type'] ?? '';
+
+        if ($type === 'literal') {
+            $subtype = $expr['subtype'] ?? '';
+            if ($subtype === 'number') {
+                return 'number';
+            }
+            if ($subtype === 'string') {
+                return 'string';
+            }
+            if ($subtype === 'bool') {
+                return 'bool';
+            }
+            if ($subtype === 'null') {
+                return 'null';
+            }
+            return 'unknown';
+        }
+
+        if ($type === 'unary_op') {
+            $op = $expr['op'] ?? '';
+            $innerType = self::inferType($expr['expr'] ?? null);
+            if ($op === '-' || $op === '+') {
+                return $innerType === 'number' ? 'number' : 'unknown';
+            }
+            if ($op === '!') {
+                return 'bool';
+            }
+            return 'unknown';
+        }
+
+        if ($type === 'binary_op') {
+            $op = $expr['op'] ?? '';
+            if (in_array($op, ['+', '-', '*', '/', '%'])) {
+                $leftType = self::inferType($expr['left'] ?? null);
+                $rightType = self::inferType($expr['right'] ?? null);
+                if ($leftType === 'number' && $rightType === 'number') {
+                    return 'number';
+                }
+                return 'unknown';
+            }
+            return 'unknown';
+        }
+
+        if ($type === 'identifier' || $type === 'column' || $type === 'function_call') {
+            return 'unknown';
+        }
+
+        return 'unknown';
+    }
+
+    /**
+     * LIKE 模式求值
+     * 判断 value 是否匹配 pattern（支持 % 和 _ 通配符）
+     *
+     * @param string $value
+     * @param string $pattern
+     * @return bool
+     */
+    private static function evalLike(string $value, string $pattern): bool {
+        $regex = '';
+        $len = strlen($pattern);
+        for ($i = 0; $i < $len; $i++) {
+            $char = $pattern[$i];
+            if ($char === '%') {
+                $regex .= '.*';
+            } elseif ($char === '_') {
+                $regex .= '.';
+            } elseif ($char === '\\' && $i + 1 < $len) {
+                $regex .= preg_quote($pattern[$i + 1], '/');
+                $i++;
+            } else {
+                $regex .= preg_quote($char, '/');
+            }
+        }
+        return (bool)preg_match('/^' . $regex . '$/s', $value);
     }
 
     private static function extractLiteralValue(array $expr): ?array {

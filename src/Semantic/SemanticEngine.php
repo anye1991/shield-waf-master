@@ -35,19 +35,19 @@ require_once __DIR__ . '/PhpCodeSemanticParser.php';
 
 class SemanticEngine {
     private static $weights = [
-        'char'        => 0.05,
-        'word'        => 0.05,
-        'structure'   => 0.06,
+        'char'        => 0.04,
+        'word'        => 0.04,
+        'structure'   => 0.08,
         'param'       => 0.05,
         'business'    => 0.05,
-        'logic'       => 0.08,
-        'intent'      => 0.10,
-        'chain'       => 0.12,
-        'memory'      => 0.07,
-        'adversarial' => 0.08,
+        'logic'       => 0.09,
+        'intent'      => 0.14,
+        'chain'       => 0.10,
+        'memory'      => 0.06,
+        'adversarial' => 0.07,
         'sql_parser'  => 0.12,
         'html_parser' => 0.08,
-        'php_parser'  => 0.09,
+        'php_parser'  => 0.08,
     ];
 
     /**
@@ -106,9 +106,38 @@ class SemanticEngine {
      * 基础10维分析
      */
     private static function baseAnalyze(string $text, string $uri, array $params, array $normalizerContext, string $ip, array $multiVectorData): array {
-        $charResult      = CharSemantics::analyze($text);
-        $wordResult      = WordSemantics::analyze($text);
-        $structResult    = StructureSemantics::analyze($text);
+        $multiVectorResult = [];
+        if (!empty($multiVectorData)) {
+            $multiVectorResult = MultiVectorFusion::analyze(
+                $multiVectorData['uri'] ?? $uri,
+                $multiVectorData['get'] ?? [],
+                $multiVectorData['post'] ?? [],
+                $multiVectorData['headers'] ?? [],
+                $multiVectorData['ua'] ?? '',
+                $multiVectorData['referer'] ?? '',
+                $multiVectorData['cookie'] ?? '',
+                $multiVectorData['raw_body'] ?? ''
+            );
+        }
+
+        $adversarialResult = AdversarialDefense::analyze(
+            $text,
+            $multiVectorData['raw_text'] ?? $text,
+            $normalizerContext,
+            $multiVectorResult
+        );
+        $adversarialScore = $adversarialResult['score'];
+
+        $decodedText = $text;
+        $decodeDepth = 0;
+        if (!empty($adversarialResult['decoded']) && $adversarialResult['decode_depth'] > 0) {
+            $decodedText = $adversarialResult['decoded'];
+            $decodeDepth = $adversarialResult['decode_depth'];
+        }
+
+        $charResult      = CharSemantics::analyze($decodedText);
+        $wordResult      = WordSemantics::analyze($decodedText);
+        $structResult    = StructureSemantics::analyze($decodedText);
 
         $paramScore = 0;
         $paramMismatches = [];
@@ -124,10 +153,10 @@ class SemanticEngine {
         }
 
         $businessResult = BusinessSemantics::analyze($uri, $params);
-        $logicResult    = LogicInference::analyze($text);
-        $intentResult   = IntentInference::analyze($text, $uri, $params);
-        $intentAnalyzerResult = IntentAnalyzer::analyze($text, $uri, $params);
-        $obfuscationResult = ObfuscationAnalyzer::analyze($text, $normalizerContext);
+        $logicResult    = LogicInference::analyze($decodedText);
+        $intentResult   = IntentInference::analyze($decodedText, $uri, $params);
+        $intentAnalyzerResult = IntentAnalyzer::analyze($decodedText, $uri, $params);
+        $obfuscationResult = ObfuscationAnalyzer::analyze($decodedText, $normalizerContext);
 
         $chainScore = 0;
         $chainInfo = [];
@@ -164,36 +193,14 @@ class SemanticEngine {
             $memoryAnomalies = $evolution['anomalies'];
         }
 
-        $multiVectorResult = [];
-        if (!empty($multiVectorData)) {
-            $multiVectorResult = MultiVectorFusion::analyze(
-                $multiVectorData['uri'] ?? $uri,
-                $multiVectorData['get'] ?? [],
-                $multiVectorData['post'] ?? [],
-                $multiVectorData['headers'] ?? [],
-                $multiVectorData['ua'] ?? '',
-                $multiVectorData['referer'] ?? '',
-                $multiVectorData['cookie'] ?? '',
-                $multiVectorData['raw_body'] ?? ''
-            );
-        }
-
-        $adversarialResult = AdversarialDefense::analyze(
-            $text,
-            $multiVectorData['raw_text'] ?? $text,
-            $normalizerContext,
-            $multiVectorResult
-        );
-        $adversarialScore = $adversarialResult['score'];
-
         $intentScore = max($intentResult['score'], $intentAnalyzerResult['score']);
 
         $obfuscationScore = $obfuscationResult['score'];
 
         // ---- 深度语义解析器（真正的语法分析，不是正则匹配） ----
-        $sqlParserResult = SqlSemanticParser::analyze($text);
-        $htmlParserResult = HtmlSemanticParser::analyze($text);
-        $phpParserResult = PhpCodeSemanticParser::analyze($text);
+        $sqlParserResult = SqlSemanticParser::analyze($decodedText);
+        $htmlParserResult = HtmlSemanticParser::analyze($decodedText);
+        $phpParserResult = PhpCodeSemanticParser::analyze($decodedText);
 
         $sqlParserScore  = $sqlParserResult['score'] ?? 0;
         $htmlParserScore = $htmlParserResult['score'] ?? 0;
@@ -244,6 +251,21 @@ class SemanticEngine {
         if (!empty($chainInfo['chain_detected']) && ($chainInfo['chain_progress'] ?? 0) >= 40) $total += 12;
         if ($adversarialResult['is_adversarial'] && $intentResult['score'] >= 40) $total += 15;
         if ($memoryScore >= 40 && $intentResult['score'] >= 40) $total += 10;
+
+        // 攻击意图强证据加成（路径遍历/命令注入等无专用深度解析器的攻击类型）
+        $primaryIntent = $intentResult['primary_intent'] ?? 'unknown';
+        if ($primaryIntent === 'path_traversal' && $intentResult['score'] >= 60 && $structResult['score'] >= 30) $total += 15;
+        if ($primaryIntent === 'command_injection' && $intentResult['score'] >= 60 && $structResult['score'] >= 20) $total += 15;
+        if ($primaryIntent === 'sql_injection' && $sqlParserScore >= 30 && $logicResult['score'] >= 40) $total += 8;
+        if ($primaryIntent === 'xss' && $htmlParserScore >= 30 && $structResult['score'] >= 20) $total += 8;
+
+        // 算术/逻辑恒真双证加成（LogicInference + SQLParser 都检测到恒真）
+        $logicHasTaut = ($logicResult['logic_type'] ?? '') === 'tautology'
+            || !empty($logicResult['tautology_count'])
+            || !empty($logicResult['has_tautology']);
+        $sqlHasTaut = !empty($sqlParserResult['has_tautology']);
+        if ($logicHasTaut && $sqlHasTaut) $total += 15;
+        elseif ($logicHasTaut || $sqlHasTaut) $total += 5;
 
         // 深度解析器强证据加成（真正的语法分析命中，不是正则）
         if ($sqlParserScore >= 50 && $logicResult['score'] >= 40) $total += 12;

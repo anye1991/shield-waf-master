@@ -114,6 +114,11 @@ class PhpCodeSemanticParser {
             'code_complexity' => 0,
             'string_to_code_ratio' => 0.0,
             'indicators' => [],
+            'tainted_variables' => [],
+            'taint_chains' => [],
+            'webshell_patterns' => [],
+            'multi_hop_chains' => [],
+            'taint_score' => 0,
         ];
     }
 
@@ -429,6 +434,31 @@ class PhpCodeSemanticParser {
         if ($result['has_command_exec']) $result['indicators'][] = 'has_command_exec';
         if ($result['has_file_operation']) $result['indicators'][] = 'has_file_operation';
         if ($result['has_superglobal_in_danger']) $result['indicators'][] = 'superglobal_in_danger';
+
+        $assignments = self::trackAssignments($tokens);
+        $result['tainted_variables'] = $assignments;
+
+        $taintChains = self::taintAnalysis($tokens, $assignments);
+        $result['taint_chains'] = $taintChains;
+
+        $multiHopChains = self::trackMultiHop($tokens, $assignments);
+        $result['multi_hop_chains'] = $multiHopChains;
+
+        $webshellPatterns = self::detectWebshellPatterns($tokens, $assignments);
+        $result['webshell_patterns'] = $webshellPatterns;
+
+        $taintScore = self::scoreTaintChains($taintChains);
+        $result['taint_score'] = $taintScore;
+
+        if ($taintScore > 0) {
+            $result['indicators'][] = 'taint_detected';
+        }
+        if (!empty($webshellPatterns)) {
+            $result['indicators'][] = 'webshell_pattern';
+        }
+        if (!empty($multiHopChains)) {
+            $result['indicators'][] = 'multi_hop_taint';
+        }
     }
 
     /**
@@ -908,7 +938,546 @@ class PhpCodeSemanticParser {
             $score += 15;
         }
 
+        if (!empty($result['taint_score']) && $result['taint_score'] > 0) {
+            $taintScore = $result['taint_score'];
+            if ($taintScore > $score) {
+                $score = max($score, (int)($taintScore * 0.9));
+            } else {
+                $score += (int)($taintScore * 0.3);
+            }
+            $attackVectors++;
+        }
+
+        if (!empty($result['webshell_patterns'])) {
+            $wsCritical = 0;
+            $wsHigh = 0;
+            foreach ($result['webshell_patterns'] as $wp) {
+                if (isset($wp['severity']) && $wp['severity'] === 'critical') {
+                    $wsCritical++;
+                } elseif (isset($wp['severity']) && $wp['severity'] === 'high') {
+                    $wsHigh++;
+                }
+            }
+            if ($wsCritical > 0) {
+                $score += 30;
+                $attackVectors++;
+            }
+            if ($wsHigh > 0) {
+                $score += 20;
+                $attackVectors++;
+            }
+        }
+
+        if (!empty($result['multi_hop_chains'])) {
+            $maxDanger = 0;
+            foreach ($result['multi_hop_chains'] as $mhc) {
+                if (isset($mhc['danger_level'])) {
+                    $maxDanger = max($maxDanger, $mhc['danger_level']);
+                }
+            }
+            if ($maxDanger > 0) {
+                $score += (int)($maxDanger * 0.4);
+                $attackVectors++;
+            }
+        }
+
         $result['score'] = max(0, min(100, (int)$score));
         $result['detected'] = $result['score'] >= 30;
+    }
+
+    /**
+     * 追踪变量赋值来源
+     * @param array $tokens
+     * @return array
+     */
+    private static function trackAssignments(array $tokens): array {
+        $assignments = []; $tc = count($tokens);
+        $curVar = null; $arrKey = null; $inAssign = false; $as = 0;
+        for ($i = 0; $i < $tc; $i++) {
+            $token = $tokens[$i];
+            $tType = is_array($token) ? $token[0] : null;
+            $tVal = is_array($token) ? $token[1] : $token;
+            $tLine = is_array($token) ? ($token[2] ?? 0) : 0;
+            if ($tType === T_VARIABLE && !$inAssign) {
+                $nIdx = self::findNextNonEmptyTokenIndex($tokens, $i + 1);
+                if ($nIdx === null) continue;
+                $nVal = is_array($tokens[$nIdx]) ? $tokens[$nIdx][1] : $tokens[$nIdx];
+                if ($nVal === '[') {
+                    $curVar = $tVal;
+                    $cbIdx = self::findMatchingBracket($tokens, $nIdx, '[', ']');
+                    if ($cbIdx !== null) {
+                        $kIdx = self::findNextNonEmptyTokenIndex($tokens, $nIdx + 1);
+                        if ($kIdx !== null && $kIdx < $cbIdx) {
+                            $arrKey = is_array($tokens[$kIdx]) ? $tokens[$kIdx][1] : $tokens[$kIdx];
+                        }
+                        $abIdx = self::findNextNonEmptyTokenIndex($tokens, $cbIdx + 1);
+                        if ($abIdx !== null) {
+                            $abVal = is_array($tokens[$abIdx]) ? $tokens[$abIdx][1] : $tokens[$abIdx];
+                            if ($abVal === '=') { $inAssign = true; $assignStart = $abIdx + 1; }
+                        }
+                    }
+                } elseif ($nVal === '=') {
+                    $curVar = $tVal; $arrKey = null; $inAssign = true; $assignStart = $nIdx + 1;
+                }
+                continue;
+            }
+            if ($inAssign && $tVal === ';') {
+                if ($curVar !== null) {
+                    $ti = self::analyzeAssignRhs($tokens, $assignStart, $i - 1, $assignments);
+                    $vk = $arrKey !== null ? $curVar . '[' . $arrKey . ']' : $curVar;
+                    $assignments[$vk] = ['source' => $ti['source'], 'taint_level' => $ti['level'], 'line' => $tLine, 'has_decode' => $ti['has_decode']];
+                }
+                $curVar = null; $arrKey = null; $inAssign = false; $assignStart = 0;
+            }
+        }
+        return $assignments;
+    }
+
+    /**
+     * 分析赋值右侧表达式污点
+     * @param array $tokens
+     * @param int $s
+     * @param int $e
+     * @param array $ea
+     * @return array
+     */
+    private static function analyzeAssignRhs(array $tokens, int $s, int $e, array $ea): array {
+        $src = 'clean'; $lvl = 0; $hd = false;
+        for ($i = $s; $i <= $e; $i++) {
+            $t = $tokens[$i];
+            $tt = is_array($t) ? $t[0] : null;
+            $tv = is_array($t) ? $t[1] : $t;
+            if ($tt === T_WHITESPACE || $tt === T_COMMENT || $tt === T_DOC_COMMENT) continue;
+            if ($tt === T_VARIABLE) {
+                if (self::isSuperglobal($tv)) { $src = 'user'; $lvl = max($lvl, 100); }
+                elseif (isset($ea[$tv]) && ($ea[$tv]['source'] === 'user' || $ea[$tv]['source'] === 'tainted')) {
+                    $src = 'tainted'; $lvl = max($lvl, $ea[$tv]['taint_level'] - 5);
+                }
+                continue;
+            }
+            if ($tt === T_STRING) {
+                $fn = strtolower($tv);
+                if (in_array($fn, self::$decode_functions, true)) $hd = true;
+                if ($fn === 'file_get_contents') {
+                    $pi = self::findNextNonEmptyTokenIndex($tokens, $i + 1);
+                    if ($pi !== null && $pi <= $e) {
+                        $pv = is_array($tokens[$pi]) ? $tokens[$pi][1] : $tokens[$pi];
+                        if ($pv === '(') {
+                            $pif = self::extractFunctionParams($tokens, $pi + 1);
+                            if (strpos($pif['text'], 'php://input') !== false || strpos($pif['text'], 'php://stdin') !== false) {
+                                $src = 'user'; $lvl = max($lvl, 100);
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+            if ($tt === T_CONSTANT_ENCAPSED_STRING) {
+                $lv = strtolower($tv);
+                if (strpos($lv, 'php://input') !== false || strpos($lv, 'php://stdin') !== false) {
+                    $pi = self::findPrevNonEmptyIdx($tokens, $i - 1);
+                    if ($pi !== null && $pi >= $s) {
+                        $pv = is_array($tokens[$pi]) ? $tokens[$pi][1] : $tokens[$pi];
+                        if ($pv === '(') { $src = 'user'; $lvl = max($lvl, 100); }
+                    }
+                }
+            }
+        }
+        return ['source' => $src, 'level' => min(100, $lvl), 'has_decode' => $hd];
+    }
+
+    /**
+     * 查找匹配括号索引
+     * @param array $tokens
+     * @param int $s
+     * @param string $oc
+     * @param string $cc
+     * @return int|null
+     */
+    private static function findMatchingBracket(array $tokens, int $s, string $oc, string $cc): ?int {
+        $d = 0; $tc = count($tokens);
+        for ($i = $s; $i < $tc; $i++) {
+            $v = is_array($tokens[$i]) ? $tokens[$i][1] : $tokens[$i];
+            if ($v === $oc) $d++;
+            elseif ($v === $cc) { $d--; if ($d === 0) return $i; }
+        }
+        return null;
+    }
+
+    /**
+     * 向前找非空token索引
+     * @param array $tokens
+     * @param int $s
+     * @return int|null
+     */
+    private static function findPrevNonEmptyIdx(array $tokens, int $s): ?int {
+        for ($i = $s; $i >= 0; $i--) {
+            $t = is_array($tokens[$i]) ? $tokens[$i][0] : null;
+            if ($t !== T_WHITESPACE && $t !== T_COMMENT && $t !== T_DOC_COMMENT) return $i;
+        }
+        return null;
+    }
+
+    /**
+     * 污点传播分析
+     * @param array $tokens
+     * @param array $assigns
+     * @return array
+     */
+    private static function taintAnalysis(array $tokens, array $assigns): array {
+        $chains = []; $tc = count($tokens);
+        for ($i = 0; $i < $tc; $i++) {
+            $t = $tokens[$i];
+            $tt = is_array($t) ? $t[0] : null;
+            $tv = is_array($t) ? $t[1] : $t;
+            $tl = is_array($t) ? ($t[2] ?? 0) : 0;
+            if ($tt === T_EVAL) {
+                $pi = self::findNextNonEmptyTokenIndex($tokens, $i + 1);
+                if ($pi !== null) {
+                    $pv = is_array($tokens[$pi]) ? $tokens[$pi][1] : $tokens[$pi];
+                    if ($pv === '(') {
+                        $c = self::buildTaintChain($tokens, $pi + 1, $assigns, 'eval', $tl);
+                        if ($c !== null) $chains[] = $c;
+                    }
+                }
+                continue;
+            }
+            if ($tt === T_STRING) {
+                $fn = strtolower($tv);
+                $sv = self::getFunctionSeverity($fn);
+                if ($sv === 'high' || $sv === 'medium') {
+                    $ni = self::findNextNonEmptyTokenIndex($tokens, $i + 1);
+                    if ($ni !== null) {
+                        $nv = is_array($tokens[$ni]) ? $tokens[$ni][1] : $tokens[$ni];
+                        if ($nv === '(') {
+                            $c = self::buildTaintChain($tokens, $ni + 1, $assigns, $fn, $tl);
+                            if ($c !== null) $chains[] = $c;
+                        }
+                    }
+                }
+                continue;
+            }
+            if ($tt === T_VARIABLE) {
+                $vn = $tv;
+                $ni = self::findNextNonEmptyTokenIndex($tokens, $i + 1);
+                if ($ni !== null) {
+                    $nv = is_array($tokens[$ni]) ? $tokens[$ni][1] : $tokens[$ni];
+                    if ($nv === '(') {
+                        $c = self::buildTaintChain($tokens, $ni + 1, $assigns, $vn . '()', $tl);
+                        if ($c !== null) $chains[] = $c;
+                    }
+                }
+            }
+        }
+        return $chains;
+    }
+
+    /**
+     * 构建污点传播链
+     * @param array $tokens
+     * @param int $ps
+     * @param array $assigns
+     * @param string $sink
+     * @param int $line
+     * @return array|null
+     */
+    private static function buildTaintChain(array $tokens, int $ps, array $assigns, string $sink, int $line) {
+        $d = 1; $i = $ps; $tc = count($tokens);
+        $src = null; $hd = false; $hc = 0; $direct = false; $path = [];
+        while ($i < $tc && $d > 0) {
+            $t = $tokens[$i];
+            $v = is_array($t) ? $t[1] : $t;
+            $tt = is_array($t) ? $t[0] : null;
+            if ($v === '(') $d++;
+            elseif ($v === ')') { $d--; if ($d === 0) break; }
+            if ($tt === T_VARIABLE) {
+                if (self::isSuperglobal($v)) {
+                    $src = $v; $direct = true; $path[] = ['type' => 'superglobal', 'name' => $v];
+                } elseif (isset($assigns[$v]) && ($assigns[$v]['source'] === 'user' || $assigns[$v]['source'] === 'tainted')) {
+                    $hc++;
+                    $path[] = ['type' => 'variable', 'name' => $v, 'line' => $assigns[$v]['line']];
+                    if (!empty($assigns[$v]['has_decode'])) $hd = true;
+                    $src = $src ?? 'superglobal';
+                }
+            }
+            if ($tt === T_STRING && in_array(strtolower($v), self::$decode_functions, true)) $hd = true;
+            $i++;
+        }
+        if ($src !== null) {
+            return ['source' => $src, 'sink' => $sink, 'sink_line' => $line, 'path' => $path, 'hop_count' => $hc, 'has_decode' => $hd, 'direct' => $direct];
+        }
+        return null;
+    }
+
+    /**
+     * 多跳数据流追踪
+     * @param array $tokens
+     * @param array $taintMap
+     * @return array
+     */
+    private static function trackMultiHop(array $tokens, array $taintMap): array {
+        $chains = []; $tc = count($tokens);
+        $funcs = self::extractFuncDefs($tokens);
+        foreach ($taintMap as $vn => $ti) {
+            if ($ti['source'] !== 'user' && $ti['source'] !== 'tainted') continue;
+            for ($i = 0; $i < $tc; $i++) {
+                $t = $tokens[$i];
+                $tt = is_array($t) ? $t[0] : null;
+                $tv = is_array($t) ? $t[1] : $t;
+                $tl = is_array($t) ? ($t[2] ?? 0) : 0;
+                if ($tt === T_STRING || $tt === T_VARIABLE) {
+                    $ni = self::findNextNonEmptyTokenIndex($tokens, $i + 1);
+                    if ($ni === null) continue;
+                    $nv = is_array($tokens[$ni]) ? $tokens[$ni][1] : $tokens[$ni];
+                    if ($nv === '(') {
+                        $pif = self::extractFunctionParams($tokens, $ni + 1);
+                        if (strpos($pif['text'], $vn) !== false) {
+                            $fn = $tt === T_VARIABLE ? 'varfunc' : strtolower($tv);
+                            if (isset($funcs[$fn])) {
+                                $dl = self::funcBodyDangerLevel($funcs[$fn]);
+                                if ($dl > 0) {
+                                    $chains[] = ['source_var' => $vn, 'source_line' => $ti['line'], 'function_called' => $fn, 'call_line' => $tl, 'danger_level' => $dl];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return $chains;
+    }
+
+    /**
+     * 提取函数定义
+     * @param array $tokens
+     * @return array
+     */
+    private static function extractFuncDefs(array $tokens): array {
+        $funcs = []; $tc = count($tokens);
+        $inFunc = false; $fn = null; $fsl = 0; $bd = 0; $ft = [];
+        for ($i = 0; $i < $tc; $i++) {
+            $t = $tokens[$i];
+            $tt = is_array($t) ? $t[0] : null;
+            $tv = is_array($t) ? $t[1] : $t;
+            $tl = is_array($t) ? ($t[2] ?? 0) : 0;
+            if ($tt === T_FUNCTION) { $inFunc = true; $fsl = $tl; $ft = []; $ft[] = $t; continue; }
+            if ($inFunc && $fn === null && $tt === T_STRING) { $fn = strtolower($tv); $ft[] = $t; continue; }
+            if ($inFunc) {
+                $ft[] = $t;
+                if ($tv === '{' || $tt === T_CURLY_OPEN) $bd++;
+                elseif ($tv === '}') {
+                    $bd--;
+                    if ($bd === 0 && $fn !== null) {
+                        $funcs[$fn] = ['start_line' => $fsl, 'tokens' => $ft];
+                        $inFunc = false; $fn = null;
+                    }
+                }
+            }
+        }
+        return $funcs;
+    }
+
+    /**
+     * 函数体危险等级
+     * @param array $fi
+     * @return int
+     */
+    private static function funcBodyDangerLevel(array $fi): int {
+        $dl = 0; $ft = $fi['tokens']; $tc = count($ft);
+        $hasParams = false; $pd = 0;
+        for ($i = 0; $i < $tc; $i++) {
+            $t = $ft[$i];
+            $v = is_array($t) ? $t[1] : $t;
+            $tt = is_array($t) ? $t[0] : null;
+            if (!$hasParams) {
+                if ($v === '(') $pd++;
+                elseif ($v === ')') { $pd--; if ($pd === 0) $hasParams = true; }
+                continue;
+            }
+            if ($tt === T_EVAL) { $dl = max($dl, 95); continue; }
+            if ($tt === T_STRING) {
+                $fn = strtolower($v);
+                $sv = self::getFunctionSeverity($fn);
+                $ni = self::findNextNonEmptyTokenIndex($ft, $i + 1);
+                if ($ni !== null) {
+                    $nv = is_array($ft[$ni]) ? $ft[$ni][1] : $ft[$ni];
+                    if ($nv === '(') {
+                        if ($sv === 'high') $dl = max($dl, 90);
+                        elseif ($sv === 'medium') $dl = max($dl, 80);
+                    }
+                }
+            }
+        }
+        return $dl;
+    }
+
+    /**
+     * WebShell模式增强检测
+     * @param array $tokens
+     * @param array $taintMap
+     * @return array
+     */
+    private static function detectWebshellPatterns(array $tokens, array $taintMap): array {
+        $patterns = []; $tc = count($tokens);
+        for ($i = 0; $i < $tc; $i++) {
+            $t = $tokens[$i];
+            $tt = is_array($t) ? $t[0] : null;
+            $tv = is_array($t) ? $t[1] : $t;
+            $tl = is_array($t) ? ($t[2] ?? 0) : 0;
+            if ($tt === T_EVAL) {
+                $pi = self::findNextNonEmptyTokenIndex($tokens, $i + 1);
+                if ($pi !== null) {
+                    $pv = is_array($tokens[$pi]) ? $tokens[$pi][1] : $tokens[$pi];
+                    if ($pv === '(') {
+                        $p = self::classifyEvalPat($tokens, $pi + 1, $taintMap);
+                        if ($p !== null) { $p['line'] = $tl; $patterns[] = $p; }
+                    }
+                }
+                continue;
+            }
+            if ($tt === T_VARIABLE) {
+                $vn = $tv;
+                $ni = self::findNextNonEmptyTokenIndex($tokens, $i + 1);
+                if ($ni !== null) {
+                    $nv = is_array($tokens[$ni]) ? $tokens[$ni][1] : $tokens[$ni];
+                    if ($nv === '(') {
+                        $pif = self::extractFunctionParams($tokens, $ni + 1);
+                        $it = $pif['has_superglobal'];
+                        if (!$it) {
+                            foreach ($taintMap as $tvn => $tvi) {
+                                if (($tvi['source'] === 'user' || $tvi['source'] === 'tainted') && strpos($pif['text'], $tvn) !== false) {
+                                    $it = true; break;
+                                }
+                            }
+                        }
+                        if ($it) $patterns[] = ['type' => 'variable_func_webshell', 'variable' => $vn, 'line' => $tl, 'severity' => 'high'];
+                    }
+                }
+                continue;
+            }
+            if ($tt === T_STRING && isset(self::$callback_functions[strtolower($tv)])) {
+                $ni = self::findNextNonEmptyTokenIndex($tokens, $i + 1);
+                if ($ni !== null) {
+                    $nv = is_array($tokens[$ni]) ? $tokens[$ni][1] : $tokens[$ni];
+                    if ($nv === '(') {
+                        $pif = self::extractFunctionParams($tokens, $ni + 1);
+                        if ($pif['has_superglobal']) {
+                            $patterns[] = ['type' => 'callback_webshell', 'function' => strtolower($tv), 'line' => $tl, 'severity' => 'high'];
+                        }
+                    }
+                }
+            }
+        }
+        $patterns = self::detectEncodedWs($tokens, $taintMap, $patterns);
+        return $patterns;
+    }
+
+    /**
+     * 分类eval模式
+     * @param array $tokens
+     * @param int $ps
+     * @param array $tm
+     * @return array|null
+     */
+    private static function classifyEvalPat(array $tokens, int $ps, array $tm) {
+        $d = 1; $i = $ps; $tc = count($tokens);
+        $hs = false; $ht = false; $hd = false; $df = null;
+        while ($i < $tc && $d > 0) {
+            $t = $tokens[$i];
+            $v = is_array($t) ? $t[1] : $t;
+            $tt = is_array($t) ? $t[0] : null;
+            if ($v === '(') $d++;
+            elseif ($v === ')') { $d--; if ($d === 0) break; }
+            if ($tt === T_VARIABLE) {
+                if (self::isSuperglobal($v)) $hs = true;
+                elseif (isset($tm[$v]) && ($tm[$v]['source'] === 'user' || $tm[$v]['source'] === 'tainted')) {
+                    $ht = true;
+                    if (!empty($tm[$v]['has_decode'])) $hd = true;
+                }
+            }
+            if ($tt === T_STRING && in_array(strtolower($v), self::$decode_functions, true)) {
+                $hd = true; $df = strtolower($v);
+            }
+            $i++;
+        }
+        if ($hs && !$hd) return ['type' => 'direct_one_liner', 'severity' => 'critical'];
+        if ($hs && $hd) return ['type' => 'encoded_one_liner', 'severity' => 'critical', 'decode_function' => $df];
+        if ($ht && $hd) return ['type' => 'obfuscated_webshell', 'severity' => 'high', 'decode_function' => $df];
+        if ($ht) return ['type' => 'tainted_eval', 'severity' => 'high'];
+        return null;
+    }
+
+    /**
+     * 检测编码型WebShell
+     * @param array $tokens
+     * @param array $tm
+     * @param array $ep
+     * @return array
+     */
+    private static function detectEncodedWs(array $tokens, array $tm, array $ep): array {
+        $p = $ep; $tc = count($tokens);
+        $dv = [];
+        foreach ($tm as $vn => $info) {
+            if (!empty($info['has_decode']) && ($info['source'] === 'user' || $info['source'] === 'tainted')) $dv[$vn] = $info;
+        }
+        if (empty($dv)) return $p;
+        for ($i = 0; $i < $tc; $i++) {
+            $t = $tokens[$i];
+            $tt = is_array($t) ? $t[0] : null;
+            $tv = is_array($t) ? $t[1] : $t;
+            $tl = is_array($t) ? ($t[2] ?? 0) : 0;
+            if ($tt === T_STRING) {
+                $fn = strtolower($tv);
+                if (in_array($fn, self::$high_risk_functions, true) || in_array($fn, self::$medium_risk_functions, true)) {
+                    $ni = self::findNextNonEmptyTokenIndex($tokens, $i + 1);
+                    if ($ni !== null) {
+                        $nv = is_array($tokens[$ni]) ? $tokens[$ni][1] : $tokens[$ni];
+                        if ($nv === '(') {
+                            $pif = self::extractFunctionParams($tokens, $ni + 1);
+                            foreach ($dv as $dvn => $dvi) {
+                                if (strpos($pif['text'], $dvn) !== false) {
+                                    $ex = false;
+                                    foreach ($p as $pp) {
+                                        if (isset($pp['line']) && $pp['line'] === $tl && isset($pp['type']) && $pp['type'] === 'encoded_webshell') { $ex = true; break; }
+                                    }
+                                    if (!$ex) $p[] = ['type' => 'encoded_webshell', 'function' => $fn, 'variable' => $dvn, 'line' => $tl, 'severity' => 'high'];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return $p;
+    }
+
+    /**
+     * 危险调用链评分
+     * @param array $chains
+     * @return int
+     */
+    private static function scoreTaintChains(array $chains): int {
+        if (empty($chains)) return 0;
+        $max = 0; $cc = count($chains);
+        foreach ($chains as $ch) {
+            $s = 0; $sk = strtolower($ch['sink']);
+            $bs = 60;
+            if (in_array($sk, self::$high_risk_functions, true)) $bs = 80;
+            elseif ($sk === 'eval' || $sk === 'assert') $bs = 85;
+            elseif (in_array($sk, self::$medium_risk_functions, true)) $bs = 70;
+            if (!empty($ch['direct'])) $s = $bs + 15;
+            else {
+                $h = $ch['hop_count'] ?? 0;
+                if ($h <= 1) $s = $bs + 5;
+                elseif ($h <= 2) $s = $bs - 5;
+                elseif ($h <= 3) $s = $bs - 15;
+                else $s = $bs - 25;
+            }
+            if (!empty($ch['has_decode'])) $s += 15;
+            $s = max(0, min(100, $s));
+            $max = max($max, $s);
+        }
+        $bonus = min(20, ($cc - 1) * 5);
+        return (int)min(100, $max + $bonus);
     }
 }
