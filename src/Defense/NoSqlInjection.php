@@ -123,7 +123,7 @@ class NoSqlInjection {
             $inputs[strtolower($k)] = (string)$v;
         }
 
-        $body = file_get_contents('php://input');
+        $body = defined('WAF_RAW_BODY') ? WAF_RAW_BODY : file_get_contents('php://input');
         if (!empty($body)) {
             $inputs['body'] = $body;
 

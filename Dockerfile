@@ -25,7 +25,7 @@ LABEL org.opencontainers.image.version="3.0.0"
 LABEL org.opencontainers.image.source="https://github.com/anye1991/shield-waf-master"
 
 # 安装 Nginx 和常用工具
-RUN apk add --no-cache nginx supervisor curl && \
+RUN apk add --no-cache nginx supervisor curl freetype-dev libpng-dev libjpeg-turbo-dev icu-dev oniguruma-dev libxml2-dev && \
     rm -rf /var/cache/apk/*
 
 # 复制 Nginx 配置
@@ -50,8 +50,9 @@ RUN mkdir -p /var/www/html/logs /var/www/html/data && \
 RUN touch /var/www/html/.env && chown www-data:www-data /var/www/html/.env && chmod 600 /var/www/html/.env
 
 # PHP 优化：安装常见扩展
-RUN docker-php-ext-install opcache && \
-    docker-php-ext-enable opcache
+RUN docker-php-ext-configure gd --with-freetype --with-jpeg && \
+    docker-php-ext-install opcache gd fileinfo mbstring dom intl bcmath && \
+    docker-php-ext-enable opcache gd fileinfo mbstring dom intl bcmath
 
 # 复制 PHP 优化配置
 COPY docker/php.ini /usr/local/etc/php/conf.d/99-shield-waf.ini
@@ -61,8 +62,8 @@ COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # 健康检查
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost/waf-dashboard || exit 1
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost/waf-health || exit 1
 
 # 暴露 80 端口
 EXPOSE 80

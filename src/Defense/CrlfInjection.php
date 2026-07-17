@@ -80,7 +80,7 @@ class CrlfInjection {
             $targets[] = (string)$v;
         }
 
-        $body = file_get_contents('php://input');
+        $body = defined('WAF_RAW_BODY') ? WAF_RAW_BODY : file_get_contents('php://input');
         if (!empty($body)) {
             $targets[] = $body;
         }
@@ -106,7 +106,7 @@ class CrlfInjection {
     }
 
     private static function checkHeaderInjectionInRequest() {
-        $body = file_get_contents('php://input');
+        $body = defined('WAF_RAW_BODY') ? WAF_RAW_BODY : file_get_contents('php://input');
         if (empty($body)) return;
 
         foreach (self::$headerNames as $headerName) {

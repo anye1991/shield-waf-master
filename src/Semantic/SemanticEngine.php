@@ -19,6 +19,8 @@ require_once __DIR__ . '/ParamSemantics.php';
 require_once __DIR__ . '/BusinessSemantics.php';
 require_once __DIR__ . '/LogicInference.php';
 require_once __DIR__ . '/IntentInference.php';
+require_once __DIR__ . '/IntentAnalyzer.php';
+require_once __DIR__ . '/ObfuscationAnalyzer.php';
 require_once __DIR__ . '/AttackChainAnalyzer.php';
 require_once __DIR__ . '/SemanticMemoryPool.php';
 require_once __DIR__ . '/AdversarialDefense.php';
@@ -36,9 +38,9 @@ class SemanticEngine {
         'business'    => 0.06,
         'logic'       => 0.12,
         'intent'      => 0.14,
-        'chain'       => 0.15,
+        'chain'       => 0.17,
         'memory'      => 0.10,
-        'adversarial' => 0.10,
+        'adversarial' => 0.13,
     ];
 
     /**
@@ -117,6 +119,8 @@ class SemanticEngine {
         $businessResult = BusinessSemantics::analyze($uri, $params);
         $logicResult    = LogicInference::analyze($text);
         $intentResult   = IntentInference::analyze($text, $uri, $params);
+        $intentAnalyzerResult = IntentAnalyzer::analyze($text, $uri, $params);
+        $obfuscationResult = ObfuscationAnalyzer::analyze($text, $normalizerContext);
 
         $chainScore = 0;
         $chainInfo = [];
@@ -175,6 +179,10 @@ class SemanticEngine {
         );
         $adversarialScore = $adversarialResult['score'];
 
+        $intentScore = max($intentResult['score'], $intentAnalyzerResult['score']);
+
+        $obfuscationScore = $obfuscationResult['score'];
+
         // 加权计算
         $total = 0;
         $total += $charResult['score']        * self::$weights['char'];
@@ -183,7 +191,7 @@ class SemanticEngine {
         $total += $paramScore                 * self::$weights['param'];
         $total += $businessResult['score']    * self::$weights['business'];
         $total += $logicResult['score']       * self::$weights['logic'];
-        $total += $intentResult['score']      * self::$weights['intent'];
+        $total += $intentScore                * self::$weights['intent'];
         $total += $chainScore                 * self::$weights['chain'];
         $total += $memoryScore                * self::$weights['memory'];
         $total += $adversarialScore           * self::$weights['adversarial'];
@@ -191,6 +199,12 @@ class SemanticEngine {
         $multiVectorScore = $multiVectorResult['fusion_score'] ?? 0;
         if ($multiVectorScore >= 30) {
             $total += $multiVectorScore * 0.08;
+        }
+
+        if ($obfuscationScore >= 50) {
+            $total += $obfuscationScore * 0.12;
+        } elseif ($obfuscationScore >= 30) {
+            $total += $obfuscationScore * 0.06;
         }
 
         // 交叉证据加成
@@ -223,10 +237,11 @@ class SemanticEngine {
             'l4_param_score'        => $paramScore,
             'l5_business_score'     => $businessResult['score'],
             'l6_logic_score'        => $logicResult['score'],
-            'l7_intent_score'       => $intentResult['score'],
+            'l7_intent_score'       => $intentScore,
             'l8_chain_score'        => $chainScore,
             'l9_memory_score'       => $memoryScore,
             'l10_adversarial_score' => $adversarialScore,
+            'obfuscation_score'     => $obfuscationScore,
             'scene'                 => $businessResult['scene'] ?? 'unknown',
             'business_valid'        => $businessResult['valid'] ?? true,
             'word_roles'            => $wordResult['roles'] ?? [],
@@ -236,6 +251,14 @@ class SemanticEngine {
             'attack_phase_name'     => $intentResult['phase_name'] ?? '未知',
             'attack_progress'       => IntentInference::getAttackProgress($intentResult['phase'] ?? 'none'),
             'intent_confidence'     => $intentResult['phase_confidence'] ?? 0,
+            'primary_intent'        => $intentAnalyzerResult['primary_intent'] ?? 'unknown',
+            'primary_intent_name'   => $intentAnalyzerResult['primary_name'] ?? '未知',
+            'intent_analyzer_score' => $intentAnalyzerResult['score'] ?? 0,
+            'intent_names'          => $intentAnalyzerResult['intent_names'] ?? [],
+            'obfuscation_depth'     => $obfuscationResult['depth'] ?? 'none',
+            'obfuscation_depth_label' => $obfuscationResult['depth_label'] ?? '无混淆',
+            'obfuscation_techniques' => $obfuscationResult['technique_names'] ?? [],
+            'obfuscation_bypass_intent' => $obfuscationResult['bypass_intent'] ?? 0,
             'chain_detected'        => $chainInfo['chain_detected'] ?? null,
             'chain_name'            => $chainInfo['chain_name'] ?? '',
             'chain_desc'            => $chainInfo['chain_desc'] ?? '',
@@ -248,7 +271,7 @@ class SemanticEngine {
             'adversarial_is_attack' => $adversarialResult['is_adversarial'] ?? false,
             'multi_vector_score'    => $multiVectorScore,
             'high_dimensions'       => $highDimensions,
-            'indicators'            => self::buildBaseIndicators($charResult, $wordResult, $structResult, $paramMismatches, $businessResult, $logicResult, $intentResult, $chainInfo, $memoryAnomalies, $adversarialResult, $multiVectorResult),
+            'indicators'            => self::buildBaseIndicators($charResult, $wordResult, $structResult, $paramMismatches, $businessResult, $logicResult, $intentResult, $intentAnalyzerResult, $obfuscationResult, $chainInfo, $memoryAnomalies, $adversarialResult, $multiVectorResult),
         ];
     }
 
@@ -382,7 +405,7 @@ class SemanticEngine {
         return min(100, $score);
     }
 
-    private static function buildBaseIndicators(array $charResult, array $wordResult, array $structResult, array $paramMismatches, array $businessResult, array $logicResult, array $intentResult, array $chainInfo, array $memoryAnomalies, array $adversarialResult, array $multiVectorResult): array {
+    private static function buildBaseIndicators(array $charResult, array $wordResult, array $structResult, array $paramMismatches, array $businessResult, array $logicResult, array $intentResult, array $intentAnalyzerResult, array $obfuscationResult, array $chainInfo, array $memoryAnomalies, array $adversarialResult, array $multiVectorResult): array {
         $indicators = [];
         foreach ($charResult['indicators'] ?? [] as $ind) $indicators[] = '[L1] ' . $ind;
         foreach ($wordResult['keywords'] ?? [] as $kw) $indicators[] = '[L2] ' . $kw;
@@ -391,6 +414,17 @@ class SemanticEngine {
         if (!empty($businessResult['violations'])) foreach ($businessResult['violations'] as $v) $indicators[] = '[L5] ' . $v;
         foreach ($logicResult['details'] ?? [] as $d) $indicators[] = '[L6] ' . $d;
         if (!empty($intentResult['phase']) && $intentResult['phase'] !== 'none') $indicators[] = '[L7] ' . $intentResult['phase_name'];
+        if (!empty($intentAnalyzerResult['primary_intent']) && $intentAnalyzerResult['primary_intent'] !== 'unknown') {
+            $indicators[] = '[L7] intent:' . ($intentAnalyzerResult['primary_name'] ?? $intentAnalyzerResult['primary_intent']);
+        }
+        if (!empty($obfuscationResult['techniques'])) {
+            foreach ($obfuscationResult['technique_names'] ?? [] as $ot) {
+                $indicators[] = '[OBF] obfuscation:' . $ot;
+            }
+        }
+        if (!empty($obfuscationResult['depth']) && $obfuscationResult['depth'] !== 'none') {
+            $indicators[] = '[OBF] depth:' . ($obfuscationResult['depth_label'] ?? $obfuscationResult['depth']);
+        }
         if (!empty($chainInfo['chain_detected'])) $indicators[] = '[L8] ' . $chainInfo['chain_name'];
         foreach ($memoryAnomalies as $ma) $indicators[] = '[L9] evolution:' . $ma;
         foreach ($adversarialResult['threat_names'] ?? [] as $at) $indicators[] = '[L10] adversarial:' . $at;

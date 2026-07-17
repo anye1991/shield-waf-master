@@ -126,8 +126,39 @@ class WafScorer {
      * 调用语义引擎分析
      */
     private static function calcSemantic($text, $uri, $params, $normalizerContext = [], $ip = '') {
-        $result = SemanticEngine::analyze($text, $uri, $params, $normalizerContext, $ip);
+        $multiVectorData = [
+            'raw_text'         => $text,
+            'uri_path'         => parse_url($uri, PHP_URL_PATH) ?: $uri,
+            'query_count'      => count($_GET),
+            'post_count'       => count($_POST),
+            'header_anomalies' => 0,
+            'cookie_count'     => count($_COOKIE),
+            'uri'              => $uri,
+            'get'              => $_GET,
+            'post'             => $_POST,
+            'headers'          => self::extractHeaders(),
+            'ua'               => $_SERVER['HTTP_USER_AGENT'] ?? '',
+            'referer'          => $_SERVER['HTTP_REFERER'] ?? '',
+            'cookie'           => !empty($_COOKIE) ? http_build_query($_COOKIE) : '',
+            'raw_body'         => file_get_contents('php://input') ?: '',
+        ];
+
+        $result = SemanticEngine::analyze($text, $uri, $params, $normalizerContext, $ip, $multiVectorData);
         return $result;
+    }
+
+    /**
+     * 从 $_SERVER 中提取 HTTP 头
+     */
+    private static function extractHeaders(): array {
+        $headers = [];
+        foreach ($_SERVER as $key => $value) {
+            if (strpos($key, 'HTTP_') === 0) {
+                $headerName = str_replace(' ', '-', ucwords(strtolower(str_replace('_', ' ', substr($key, 5)))));
+                $headers[$headerName] = $value;
+            }
+        }
+        return $headers;
     }
 
     // ====================== 编译偏差分析 (25%) ======================

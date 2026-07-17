@@ -13,10 +13,13 @@ function waf_get_real_ip() {
 function waf_block($msg = '') {
     http_response_code(403);
     if (!is_dir(WAF_LOG_PATH)) mkdir(WAF_LOG_PATH, 0700, true);
+    $log_ip  = str_replace(["\r", "\n"], '', waf_get_real_ip());
+    $log_uri = str_replace(["\r", "\n"], '', $_SERVER['REQUEST_URI'] ?? '');
+    $log_msg = str_replace(["\r", "\n"], '', $msg);
     @file_put_contents(
         WAF_LOG_PATH . 'block_' . date('Y-m-d') . '.log',
-        date('Y-m-d H:i:s') . ' | IP: ' . waf_get_real_ip() .
-        ' | URI: ' . ($_SERVER['REQUEST_URI'] ?? '') . ' | Msg: ' . $msg . "\n",
+        date('Y-m-d H:i:s') . ' | IP: ' . $log_ip .
+        ' | URI: ' . $log_uri . ' | Msg: ' . $log_msg . "\n",
         FILE_APPEND
     );
     if (defined('WAF_WEBHOOK_URL') && WAF_WEBHOOK_URL) {
@@ -42,15 +45,29 @@ function waf_send_webhook($msg) {
     ]);
     $url = WAF_WEBHOOK_URL;
     $parts = parse_url($url);
-    $sock = @fsockopen($parts['host'], $parts['port'] ?? 443, $errno, $errstr, 2);
+    if ($parts === false || !isset($parts['host'])) return;
+
+    $scheme = $parts['scheme'] ?? 'http';
+    $host = $parts['host'];
+    $port = $parts['port'] ?? ($scheme === 'https' ? 443 : 80);
+    $path = $parts['path'] ?? '/';
+    if (isset($parts['query'])) {
+        $path .= '?' . $parts['query'];
+    }
+
+    $transport = ($scheme === 'https') ? 'tls://' : 'tcp://';
+    $remote = $transport . $host . ':' . $port;
+
+    $sock = @stream_socket_client($remote, $errno, $errstr, 2);
     if ($sock) {
-        $out = "POST " . ($parts['path'] ?? '/') . " HTTP/1.1\r\n";
-        $out .= "Host: " . $parts['host'] . "\r\n";
+        stream_set_timeout($sock, 2);
+        $out = "POST " . $path . " HTTP/1.1\r\n";
+        $out .= "Host: " . $host . "\r\n";
         $out .= "Content-Type: application/json\r\n";
         $out .= "Content-Length: " . strlen($payload) . "\r\n";
         $out .= "Connection: Close\r\n\r\n";
         $out .= $payload;
-        fwrite($sock, $out);
-        fclose($sock);
+        @fwrite($sock, $out);
+        @fclose($sock);
     }
 }

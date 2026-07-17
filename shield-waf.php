@@ -16,13 +16,15 @@ defined('ABSPATH') || exit;
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/src/Support/Functions.php';
 
+// ====================== 一次性读取原始请求体（限制大小防OOM） ======================
+if (!defined('WAF_RAW_BODY')) {
+    $maxBody = defined('WAF_MAX_BODY_SIZE') ? WAF_MAX_BODY_SIZE : 1048576;
+    define('WAF_RAW_BODY', file_get_contents('php://input', false, null, 0, $maxBody) ?: '');
+}
+
 // ====================== 安全响应头 ======================
 require_once __DIR__ . '/src/Defense/SecurityHeaders.php';
 SecurityHeaders::apply();
-
-// ====================== 会话安全（必须在 session_start 前） ======================
-require_once __DIR__ . '/src/Defense/SessionSecurity.php';
-SessionSecurity::enforce();
 
 // ====================== WebSocket 阻断 ======================
 require_once __DIR__ . '/src/Defense/WebSocketBlock.php';
@@ -32,6 +34,10 @@ WebSocketBlock::deny();
 if (session_status() !== PHP_SESSION_ACTIVE) {
     session_start();
 }
+
+// ====================== 会话安全（必须在 session_start 后） ======================
+require_once __DIR__ . '/src/Defense/SessionSecurity.php';
+SessionSecurity::enforce();
 
 // ====================== CORS 策略 ======================
 require_once __DIR__ . '/src/Defense/CorsPolicy.php';
@@ -172,6 +178,69 @@ CrlfInjection::check();
 require_once __DIR__ . '/src/Defense/CachePoisoning.php';
 CachePoisoning::check();
 
+require_once __DIR__ . '/src/Defense/LdapInjection.php';
+require_once __DIR__ . '/src/Defense/XPathInjection.php';
+require_once __DIR__ . '/src/Defense/XxeInjection.php';
+require_once __DIR__ . '/src/Defense/Deserialization.php';
+require_once __DIR__ . '/src/Defense/FileInclusion.php';
+require_once __DIR__ . '/src/Defense/SessionFixation.php';
+require_once __DIR__ . '/src/Defense/SessionHijack.php';
+require_once __DIR__ . '/src/Defense/OpenRedirect.php';
+require_once __DIR__ . '/src/Defense/IdorDetection.php';
+require_once __DIR__ . '/src/Defense/RaceCondition.php';
+
+$waf_inputs = array_merge($_GET, $_POST, $_COOKIE);
+
+$ldapResult = LdapInjection::detect($waf_inputs);
+if ($ldapResult['detected']) {
+    waf_block('LDAP Injection attack detected - ' . json_encode($ldapResult['details']));
+}
+
+$xpathResult = XPathInjection::detect($waf_inputs);
+if ($xpathResult['detected']) {
+    waf_block('XPath Injection attack detected - ' . json_encode($xpathResult['details']));
+}
+
+$xxeResult = XxeInjection::detect(WAF_RAW_BODY, $waf_inputs);
+if ($xxeResult['detected']) {
+    waf_block('XXE Injection attack detected - ' . json_encode($xxeResult['details']));
+}
+
+$deserResult = Deserialization::detect($waf_inputs, WAF_RAW_BODY);
+if ($deserResult['detected']) {
+    waf_block('Deserialization attack detected - ' . json_encode($deserResult['details']));
+}
+
+$fiResult = FileInclusion::detect($waf_inputs);
+if ($fiResult['detected']) {
+    waf_block('File Inclusion attack detected - ' . json_encode($fiResult['details']));
+}
+
+$sfResult = SessionFixation::detect();
+if ($sfResult['detected']) {
+    waf_block('Session Fixation attack detected - ' . json_encode($sfResult['details']));
+}
+
+$shResult = SessionHijack::detect();
+if ($shResult['detected']) {
+    waf_block('Session Hijacking attack detected - ' . json_encode($shResult['details']));
+}
+
+$orResult = OpenRedirect::detect($waf_inputs);
+if ($orResult['detected']) {
+    waf_block('Open Redirect attack detected - ' . json_encode($orResult['details']));
+}
+
+$idorResult = IdorDetection::detect($waf_inputs);
+if ($idorResult['detected']) {
+    waf_block('IDOR attack detected - ' . json_encode($idorResult['details']));
+}
+
+$rcResult = RaceCondition::detect();
+if ($rcResult['detected']) {
+    waf_block('Race Condition attack detected - ' . json_encode($rcResult['details']));
+}
+
 // ====================== 收集其他输入源并全局归一化 ======================
 $post = !empty($_POST) ? http_build_query($_POST) : '';
 $headers = '';
@@ -190,7 +259,7 @@ $attackResult = waf_analyze_attack($all, $normResult);
 
 // 智能评分系统（四维：熵值+语义+结构偏差+偏离分析）
 require_once __DIR__ . '/src/Core/Scorer.php';
-$scorerResult = WafScorer::score($all, $uri, $_GET, $normResult);
+$scorerResult = WafScorer::score($all, $uri, $_GET, $normResult, waf_get_real_ip());
 
 // 综合判断：规则检测或智能评分任一达到拦截阈值即拦截
 // 已验证搜索引擎：提升阈值到95，确保正常爬取不误拦（但真带攻击载荷仍会拦）

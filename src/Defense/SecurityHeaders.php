@@ -12,7 +12,7 @@ class SecurityHeaders {
         'object-src' => ["'none'"],
         'base-uri' => ["'self'"],
         'form-action' => ["'self'"],
-        'frame-ancestors' => ["'none'"],
+        'frame-ancestors' => ["'self'"],
         'upgrade-insecure-requests' => [],
         'block-all-mixed-content' => [],
     ];
@@ -92,7 +92,6 @@ class SecurityHeaders {
         }
 
         header("Content-Security-Policy: {$cspString}");
-        header("Content-Security-Policy-Report-Only: {$cspString}");
     }
 
     private static function applyPermissionsPolicy() {
@@ -119,10 +118,12 @@ class SecurityHeaders {
         header('Cross-Origin-Opener-Policy: same-origin');
         header('Cross-Origin-Resource-Policy: same-origin');
         header('Cross-Origin-Embedder-Policy: require-corp');
-        
-        header('Cache-Control: no-cache, no-store, must-revalidate');
-        header('Pragma: no-cache');
-        header('Expires: Thu, 01 Jan 1970 00:00:00 GMT');
+
+        if (!self::isStaticResource()) {
+            header('Cache-Control: no-cache, no-store, must-revalidate');
+            header('Pragma: no-cache');
+            header('Expires: Thu, 01 Jan 1970 00:00:00 GMT');
+        }
         
         if (self::isApiRequest()) {
             header('Access-Control-Allow-Origin: *');
@@ -149,10 +150,19 @@ class SecurityHeaders {
 
     private static function isApiRequest() {
         $requestUri = $_SERVER['REQUEST_URI'] ?? '';
-        return strpos($requestUri, '/api/') !== false || 
+        return strpos($requestUri, '/api/') !== false ||
                strpos($requestUri, '/rest/') !== false ||
                strpos($requestUri, '/v1/') !== false ||
                strpos($requestUri, '/v2/') !== false;
+    }
+
+    private static function isStaticResource() {
+        $uri = strtolower($_SERVER['REQUEST_URI'] ?? '');
+        $staticExts = ['.css', '.js', '.jpg', '.jpeg', '.png', '.gif', '.svg', '.ico', '.woff', '.woff2', '.ttf', '.eot', '.webp', '.mp4', '.mp3', '.map', '.txt'];
+        foreach ($staticExts as $ext) {
+            if (substr($uri, -strlen($ext)) === $ext) return true;
+        }
+        return false;
     }
 
     public static function getNonce() {

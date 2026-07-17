@@ -4,7 +4,7 @@ class GraphQLDefender {
     public static function check() {
         $uri = $_SERVER['REQUEST_URI'] ?? '';
         if (strpos($uri, '/graphql') === false) return;
-        $body = file_get_contents('php://input');
+        $body = defined('WAF_RAW_BODY') ? WAF_RAW_BODY : file_get_contents('php://input');
         if (empty($body)) return;
         $patterns = [
             '/\$where\s*:/i',

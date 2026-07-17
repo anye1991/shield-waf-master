@@ -37,27 +37,34 @@ define('WAF_MAGIC_KEY',    getenv('WAF_MAGIC_KEY')    ?: 'change-me-magic-key-32
 define('WAF_2FA_PASS',     getenv('WAF_2FA_PASS')     ?: 'change-me-2fa-password');
 
 // ======================== 暗门有效期与重试次数 ========================
-define('WAF_MAGIC_EXPIRE',    3600);
-define('WAF_MAGIC_MAX_RETRY', 3);
+define('WAF_MAGIC_EXPIRE',    getenv('WAF_MAGIC_EXPIRE')    !== false ? (int)getenv('WAF_MAGIC_EXPIRE')    : 3600);
+define('WAF_MAGIC_MAX_RETRY', getenv('WAF_MAGIC_MAX_RETRY') !== false ? (int)getenv('WAF_MAGIC_MAX_RETRY') : 3);
 
 // ======================== 日志与存储路径 ========================
-define('WAF_LOG_PATH',        __DIR__ . '/logs/');
-define('WAF_ADMIN_IP_FILE',   WAF_LOG_PATH . 'admin_ips.txt');
-define('WAF_ADMIN_IP_TTL',    86400);
+define('WAF_LOG_PATH',          __DIR__ . '/logs/');
+define('WAF_ADMIN_IP_FILE',     WAF_LOG_PATH . 'admin_ips.txt');
+define('WAF_ADMIN_IP_TTL',      86400);
+define('WAF_LOG_MAX_FILESIZE',  getenv('WAF_LOG_MAX_FILESIZE') !== false ? (int)getenv('WAF_LOG_MAX_FILESIZE') : 10485760);
 
 // ======================== 安全功能开关 ========================
 define('WAF_NORMALIZE_SQL_COMMENTS', true);
 define('WAF_403_TEMPLATE',    __DIR__ . '/src/Admin/Waf403Template.php');
+define('WAF_MAX_BODY_SIZE',       getenv('WAF_MAX_BODY_SIZE')       !== false ? (int)getenv('WAF_MAX_BODY_SIZE')       : 1048576);
+define('WAF_MAX_ENCODING_DEPTH',  getenv('WAF_MAX_ENCODING_DEPTH')  !== false ? (int)getenv('WAF_MAX_ENCODING_DEPTH')  : 8);
+define('WAF_MAX_PAYLOAD_SIZE',    getenv('WAF_MAX_PAYLOAD_SIZE')    !== false ? (int)getenv('WAF_MAX_PAYLOAD_SIZE')    : 100000);
+define('WAF_SESSION_REGENERATE',  getenv('WAF_SESSION_REGENERATE')  !== false ? (getenv('WAF_SESSION_REGENERATE') === 'true')  : true);
+define('SHIELD_WAF_CSP',                getenv('SHIELD_WAF_CSP')                !== false ? getenv('SHIELD_WAF_CSP')                : '');
+define('SHIELD_WAF_PERMISSIONS_POLICY', getenv('SHIELD_WAF_PERMISSIONS_POLICY') !== false ? getenv('SHIELD_WAF_PERMISSIONS_POLICY') : '');
 
 // ======================== 机器人检测 ========================
 // 是否通过 DNS 反向解析验证搜索引擎蜘蛛真实性（最可靠，但每次请求增加一次DNS查询）
 // false = 仅通过 UA + 头特征验证（默认，零延迟）
 // true  = 启用 DNS 反查（forward+reverse 双向验证，推荐高安全需求站点开启）
-define('WAF_BOT_VERIFY_DNS', false);
+define('WAF_BOT_VERIFY_DNS', getenv('WAF_BOT_VERIFY_DNS') !== false ? (getenv('WAF_BOT_VERIFY_DNS') === 'true') : false);
 
 // ======================== CC 攻击防护 ========================
-define('WAF_CC_LIMIT',  60);
-define('WAF_CC_WINDOW', 60);
+define('WAF_CC_LIMIT',  getenv('WAF_CC_LIMIT')  !== false ? (int)getenv('WAF_CC_LIMIT')  : 60);
+define('WAF_CC_WINDOW', getenv('WAF_CC_WINDOW') !== false ? (int)getenv('WAF_CC_WINDOW') : 60);
 define('WAF_CC_LOG',    WAF_LOG_PATH . 'cc_counter.txt');
 
 // ======================== 告警 Webhook ========================
@@ -69,10 +76,11 @@ define('WAF_STATS_CACHE_SEC', 10);
 
 // ======================== CDN 配置 ========================
 define('WAF_TRUST_CF_IP', false);
+define('WAF_ALLOWED_ORIGINS', getenv('WAF_ALLOWED_ORIGINS') !== false ? getenv('WAF_ALLOWED_ORIGINS') : '');
 
 // ======================== 沙箱配置 ========================
 // 自动扫描间隔（秒），默认 300 = 5 分钟
-define('WAF_SANDBOX_SCAN_INTERVAL', 300);
+define('WAF_SANDBOX_SCAN_INTERVAL', getenv('WAF_SANDBOX_SCAN_INTERVAL') !== false ? (int)getenv('WAF_SANDBOX_SCAN_INTERVAL') : 300);
 // 监控目录（数组），默认为 ABSPATH（站点根目录）
 if (!defined('WAF_SANDBOX_MONITOR_DIRS')) {
     define('WAF_SANDBOX_MONITOR_DIRS', serialize([ABSPATH]));
@@ -119,31 +127,36 @@ define('WAF_UPLOAD_BAN_ON_BLOCK', true);
 
 // ======================== 语义引擎配置 ========================
 // 语义分析是否启用（关闭后仅使用归一化+评分，防御能力降低）
-define('WAF_SEMANTIC_ENGINE', true);
+define('WAF_SEMANTIC_ENGINE', getenv('WAF_SEMANTIC_ENGINE') !== false ? (getenv('WAF_SEMANTIC_ENGINE') === 'true') : true);
+define('WAF_SEMANTIC_ENABLED', getenv('WAF_SEMANTIC_ENABLED') !== false ? (getenv('WAF_SEMANTIC_ENABLED') === 'true') : true);
 // 语义记忆池是否启用（记录每个IP的语义指纹，跨请求对比分析）
-define('WAF_SEMANTIC_MEMORY', true);
+define('WAF_SEMANTIC_MEMORY', getenv('WAF_SEMANTIC_MEMORY') !== false ? (getenv('WAF_SEMANTIC_MEMORY') === 'true') : true);
 // 语义记忆池保留时间（小时）
 define('WAF_SEMANTIC_MEMORY_TTL', 48);
 // 攻击链分析是否启用（关联同一IP多步攻击行为）
-define('WAF_ATTACK_CHAIN', true);
+define('WAF_ATTACK_CHAIN', getenv('WAF_ATTACK_CHAIN') !== false ? (getenv('WAF_ATTACK_CHAIN') === 'true') : true);
 // 攻击链保留时间（小时）
 define('WAF_ATTACK_CHAIN_TTL', 24);
 
 // ======================== 主动防御配置 ========================
 // 主动防御是否启用（蜜罐+预判拦截+攻击链封堵）
-define('WAF_ACTIVE_DEFENSE', true);
+define('WAF_ACTIVE_DEFENSE', getenv('WAF_ACTIVE_DEFENSE') !== false ? (getenv('WAF_ACTIVE_DEFENSE') === 'true') : true);
 // 蜜罐是否启用（部署虚假管理后台/phpMyAdmin/Git仓库等）
-define('WAF_HONEYTRAP', true);
+define('WAF_HONEYTRAP', getenv('WAF_HONEYTRAP') !== false ? (getenv('WAF_HONEYTRAP') === 'true') : true);
 // 攻击路径预判是否启用
-define('WAF_PATH_PREDICTION', true);
+define('WAF_PATH_PREDICTION', getenv('WAF_PATH_PREDICTION') !== false ? (getenv('WAF_PATH_PREDICTION') === 'true') : true);
 // 误报控制是否启用（7层确认机制，确保不误杀正常请求）
-define('WAF_FALSE_POSITIVE_GUARD', true);
+define('WAF_FALSE_POSITIVE_GUARD', getenv('WAF_FALSE_POSITIVE_GUARD') !== false ? (getenv('WAF_FALSE_POSITIVE_GUARD') === 'true') : true);
 
 // ======================== 评分系统配置 ========================
+// 评分系统是否启用
+define('WAF_SCORER_ENABLED', getenv('WAF_SCORER_ENABLED') !== false ? (getenv('WAF_SCORER_ENABLED') === 'true') : true);
+// 自动学习是否启用
+define('WAF_AUTOLEARN_ENABLED', getenv('WAF_AUTOLEARN_ENABLED') !== false ? (getenv('WAF_AUTOLEARN_ENABLED') === 'true') : true);
 // 拦截阈值（总分>=此值拦截）
-define('WAF_SCORE_BLOCK', 70);
+define('WAF_SCORE_BLOCK', getenv('WAF_SCORE_BLOCK') !== false ? (int)getenv('WAF_SCORE_BLOCK') : 60);
 // 监控阈值（总分>=此值记录日志但不拦截）
-define('WAF_SCORE_MONITOR', 40);
+define('WAF_SCORE_MONITOR', getenv('WAF_SCORE_MONITOR') !== false ? (int)getenv('WAF_SCORE_MONITOR') : 40);
 // 语义分析权重（四维评分中语义占比，范围0-100，其余三维度均分剩余）
 define('WAF_SEMANTIC_WEIGHT', 30);
 // 机器人检测配置

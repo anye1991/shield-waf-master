@@ -72,7 +72,7 @@ class RequestSmuggling {
         }
 
         if ($hasTe && strtolower($headers['transfer-encoding']) === 'chunked') {
-            $body = file_get_contents('php://input');
+            $body = defined('WAF_RAW_BODY') ? WAF_RAW_BODY : file_get_contents('php://input');
             if (!empty($body)) {
                 foreach (self::$chunkedEncodingPatterns as $pattern) {
                     if (!preg_match($pattern, $body)) {
@@ -85,7 +85,7 @@ class RequestSmuggling {
         $contentType = $headers['content-type'] ?? '';
         if (!empty($contentType) && !empty($headers['content-length'])) {
             $expectedSize = (int)$headers['content-length'];
-            $body = file_get_contents('php://input');
+            $body = defined('WAF_RAW_BODY') ? WAF_RAW_BODY : file_get_contents('php://input');
             $actualSize = strlen($body);
 
             if ($actualSize !== $expectedSize) {
