@@ -88,9 +88,9 @@ if (!defined('WAF_SANDBOX_MONITOR_DIRS')) {
 // 隔离区目录
 define('WAF_SANDBOX_QUARANTINE_DIR', WAF_LOG_PATH . 'quarantine/');
 // 新落地的恶意文件是否秒删除（true=直接删除，false=移入隔离区）
-define('WAF_SANDBOX_INSTANT_DELETE_NEW', true);
+define('WAF_SANDBOX_INSTANT_DELETE_NEW', getenv('WAF_SANDBOX_INSTANT_DELETE_NEW') !== false ? (getenv('WAF_SANDBOX_INSTANT_DELETE_NEW') === 'true') : true);
 // 修改的现有文件含恶意代码时是否自动隔离（true=自动隔离待审核，false=仅告警）
-define('WAF_SANDBOX_AUTO_QUARANTINE', true);
+define('WAF_SANDBOX_AUTO_QUARANTINE', getenv('WAF_SANDBOX_AUTO_QUARANTINE') !== false ? (getenv('WAF_SANDBOX_AUTO_QUARANTINE') === 'true') : true);
 // 沙箱扫描排除目录（序列化数组）
 if (!defined('WAF_SANDBOX_EXCLUDE_DIRS')) {
     define('WAF_SANDBOX_EXCLUDE_DIRS', serialize([
@@ -100,11 +100,11 @@ if (!defined('WAF_SANDBOX_EXCLUDE_DIRS')) {
     ]));
 }
 // 恶意代码判定阈值（评分 >= 此值即判定为恶意）
-define('WAF_SANDBOX_MALWARE_THRESHOLD', 50);
+define('WAF_SANDBOX_MALWARE_THRESHOLD', getenv('WAF_SANDBOX_MALWARE_THRESHOLD') !== false ? (int)getenv('WAF_SANDBOX_MALWARE_THRESHOLD') : 50);
 
 // ======================== 上传检测配置 ========================
 // 是否启用文件上传检测
-define('WAF_UPLOAD_DETECTION', true);
+define('WAF_UPLOAD_DETECTION', getenv('WAF_UPLOAD_DETECTION') !== false ? (getenv('WAF_UPLOAD_DETECTION') === 'true') : true);
 // 允许上传的文件扩展名白名单
 define('WAF_UPLOAD_ALLOWED_EXT', serialize(['jpg','jpeg','png','gif','webp','bmp','ico','svg']));
 // 允许的 MIME 类型
@@ -113,17 +113,17 @@ define('WAF_UPLOAD_ALLOWED_MIME', serialize([
     'image/bmp', 'image/x-icon', 'image/svg+xml',
 ]));
 // 是否使用 GD 库验证图像真实性（比 finfo 更严格，能识别图像马）
-define('WAF_UPLOAD_GD_VERIFY', true);
+define('WAF_UPLOAD_GD_VERIFY', getenv('WAF_UPLOAD_GD_VERIFY') !== false ? (getenv('WAF_UPLOAD_GD_VERIFY') === 'true') : true);
 // 是否允许 SVG 上传（SVG 可携带脚本和 XXE，风险较高）
-define('WAF_UPLOAD_ALLOW_SVG', false);
+define('WAF_UPLOAD_ALLOW_SVG', getenv('WAF_UPLOAD_ALLOW_SVG') !== false ? (getenv('WAF_UPLOAD_ALLOW_SVG') === 'true') : false);
 // 上传文件内容恶意评分阈值（>= 此值直接拦截）
-define('WAF_UPLOAD_BLOCK_THRESHOLD', 60);
+define('WAF_UPLOAD_BLOCK_THRESHOLD', getenv('WAF_UPLOAD_BLOCK_THRESHOLD') !== false ? (int)getenv('WAF_UPLOAD_BLOCK_THRESHOLD') : 60);
 // 上传文件内容可疑阈值（>= 此值记录日志，< 此值放行）
-define('WAF_UPLOAD_LOG_THRESHOLD', 30);
+define('WAF_UPLOAD_LOG_THRESHOLD', getenv('WAF_UPLOAD_LOG_THRESHOLD') !== false ? (int)getenv('WAF_UPLOAD_LOG_THRESHOLD') : 30);
 // 上传文件扫描最大大小（字节），超过此大小只扫描头部和尾部
-define('WAF_UPLOAD_SCAN_MAX_SIZE', 5 * 1024 * 1024); // 5MB
+define('WAF_UPLOAD_SCAN_MAX_SIZE', getenv('WAF_UPLOAD_SCAN_MAX_SIZE') !== false ? (int)getenv('WAF_UPLOAD_SCAN_MAX_SIZE') : 5 * 1024 * 1024);
 // 上传检测是否启用累进封禁
-define('WAF_UPLOAD_BAN_ON_BLOCK', true);
+define('WAF_UPLOAD_BAN_ON_BLOCK', getenv('WAF_UPLOAD_BAN_ON_BLOCK') !== false ? (getenv('WAF_UPLOAD_BAN_ON_BLOCK') === 'true') : true);
 
 // ======================== 语义引擎配置 ========================
 // 语义分析是否启用（关闭后仅使用归一化+评分，防御能力降低）
