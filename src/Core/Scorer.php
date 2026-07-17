@@ -209,7 +209,7 @@ class WafScorer {
             'ua'               => $_SERVER['HTTP_USER_AGENT'] ?? '',
             'referer'          => $_SERVER['HTTP_REFERER'] ?? '',
             'cookie'           => !empty($_COOKIE) ? http_build_query($_COOKIE) : '',
-            'raw_body'         => file_get_contents('php://input') ?: '',
+            'raw_body'         => defined('WAF_RAW_BODY') ? WAF_RAW_BODY : '',
         ];
 
         $result = SemanticEngine::analyze($text, $uri, $params, $normalizerContext, $ip, $multiVectorData);

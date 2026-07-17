@@ -1,6 +1,28 @@
 <?php
 defined('ABSPATH') || exit;
 
+function waf_ensure_dir($dir) {
+    if (!is_dir($dir)) {
+        return @mkdir($dir, 0700, true);
+    }
+    return true;
+}
+
+function waf_safe_read_json($file, $default = []) {
+    if (!is_file($file)) return $default;
+    $content = @file_get_contents($file);
+    if ($content === false) return $default;
+    $data = json_decode($content, true);
+    return is_array($data) ? $data : $default;
+}
+
+function waf_safe_write_json($file, $data) {
+    $dir = dirname($file);
+    waf_ensure_dir($dir);
+    $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    return @file_put_contents($file, $json, LOCK_EX) !== false;
+}
+
 function waf_get_real_ip() {
     // 如果配置了信任 Cloudflare
     if (defined('WAF_TRUST_CF_IP') && WAF_TRUST_CF_IP && !empty($_SERVER['HTTP_CF_CONNECTING_IP'])) {

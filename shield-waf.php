@@ -99,9 +99,8 @@ if ($botResult['action'] === 'block') {
 }
 
 // ====================== 虚拟沙箱初始化 ======================
-// 沙箱依赖：归一化引擎、检测器、语义引擎
-require_once __DIR__ . '/src/Core/Normalizer.php';
-WafNormalizer::init();
+// 沙箱依赖：归一化引擎（AdversarialDefense 14层解码）、检测器、语义引擎
+require_once __DIR__ . '/src/Semantic/AdversarialDefense.php';
 require_once __DIR__ . '/src/Core/Detector.php';
 require_once __DIR__ . '/src/Semantic/SemanticEngine.php';
 require_once __DIR__ . '/src/Admin/Sandbox.php';
@@ -129,9 +128,9 @@ if (!empty($body) && !empty($contentType)) {
     }
 
     if ($type_clean === 'application/json') {
-        $body = WafNormalizer::normalizeJson($body);
+        $body = AdversarialDefense::normalizeJson($body);
     } elseif ($type_clean === 'application/xml' || $type_clean === 'text/xml') {
-        $body = WafNormalizer::normalizeXml($body);
+        $body = AdversarialDefense::normalizeXml($body);
     }
 }
 
@@ -251,7 +250,7 @@ foreach (['HTTP_USER_AGENT','HTTP_REFERER','HTTP_X_FORWARDED_FOR','HTTP_ACCEPT_L
 }
 $cookie = !empty($_COOKIE) ? http_build_query($_COOKIE) : '';
 
-$normResult = WafNormalizer::normalizeWithContext("$uri $body $post $headers $cookie");
+$normResult = AdversarialDefense::normalizeWithContext("$uri $body $post $headers $cookie");
 $all = $normResult['output'];
 
 // ====================== 攻击检测（L14语义上下文评分系统 + 自动学习 + 智能评分） ======================

@@ -284,9 +284,9 @@ class WafSandbox {
             $indicators[] = ['engine' => 'signature', 'score' => $sigScore, 'desc' => "命中 {$sigScore} 个恶意特征码"];
         }
 
-        // ---------- 2. 14 层编码归一化 + 规则检测 ----------
-        if (class_exists('WafNormalizer')) {
-            $normResult = WafNormalizer::normalizeWithContext($content);
+        // ---------- 2. 14 层编码归一化（AdversarialDefense）+ 规则检测 ----------
+        if (class_exists('AdversarialDefense')) {
+            $normResult = AdversarialDefense::normalizeWithContext($content);
             $normalized = $normResult['output'] ?? $content;
 
             // 编码复杂度加成
@@ -443,9 +443,9 @@ class WafSandbox {
         foreach ($lines as $lineIdx => $line) {
             $lineNum = $lineIdx + 1;
 
-            // 对每行进行归一化+检测
-            if (class_exists('WafNormalizer')) {
-                $normResult = WafNormalizer::normalizeWithContext($line);
+            // 对每行进行归一化+检测（AdversarialDefense 14层解码）
+            if (class_exists('AdversarialDefense')) {
+                $normResult = AdversarialDefense::normalizeWithContext($line);
                 $normalized = $normResult['output'] ?? $line;
 
                 if (function_exists('waf_analyze_attack')) {

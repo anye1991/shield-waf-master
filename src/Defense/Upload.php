@@ -123,11 +123,11 @@ function waf_upload_deep_analyze($content, $ext = '') {
     // 图像文件：在二进制内容中搜索嵌入的代码特征
     $isImage = in_array($ext, ['jpg','jpeg','png','gif','webp','bmp','ico']);
 
-    // ---------- 1. 归一化 + 编码复杂度 ----------
+    // ---------- 1. 归一化 + 编码复杂度（AdversarialDefense 14层解码） ----------
     $normContext = null;
     $normalized = $content;
-    if (class_exists('WafNormalizer')) {
-        $normContext = WafNormalizer::normalizeWithContext($content);
+    if (class_exists('AdversarialDefense')) {
+        $normContext = AdversarialDefense::normalizeWithContext($content);
         $normalized = $normContext['output'] ?? $content;
 
         $encodingComplexity = $normContext['encoding_complexity'] ?? 0;

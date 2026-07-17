@@ -18,6 +18,10 @@
  */
 defined('ABSPATH') || exit;
 
+if (!function_exists('waf_safe_read_json')) {
+    require_once __DIR__ . '/../Support/Functions.php';
+}
+
 class AutoLearn {
     private static $patterns_file = null;
     private static $stats_file = null;
@@ -26,6 +30,10 @@ class AutoLearn {
     private static $normal_file = null;
     private static $cache = null;
     private static $cache_ttl = 60;
+
+    private static $static_cache = [];
+    private static $static_cache_ts = [];
+    private const STATIC_CACHE_TTL = 30;
 
     public static function init() {
         if (self::$patterns_file !== null) return;
@@ -396,35 +404,68 @@ class AutoLearn {
         ];
     }
 
-    // ====================== 文件读写 ======================
+    // ====================== 文件读写（带进程内静态缓存） ======================
 
     private static function loadStats() {
-        return self::loadJson(self::$stats_file, ['payloads' => [], 'total_attacks' => 0, 'type_trend' => []]);
+        return self::cachedLoad('stats', ['payloads' => [], 'total_attacks' => 0, 'type_trend' => []]);
     }
-    private static function saveStats($data) { self::saveJson(self::$stats_file, $data); }
+    private static function saveStats($data) { self::cachedSave('stats', $data); }
     private static function loadPatterns() {
-        return self::loadJson(self::$patterns_file, ['rules' => [], 'total_learned' => 0, 'last_learn_time' => 0]);
+        return self::cachedLoad('patterns', ['rules' => [], 'total_learned' => 0, 'last_learn_time' => 0]);
     }
-    private static function savePatterns($data) { self::saveJson(self::$patterns_file, $data); }
+    private static function savePatterns($data) { self::cachedSave('patterns', $data); }
     private static function loadWeights() {
-        return self::loadJson(self::$weights_file, ['feedback_adjustments' => [], 'last_feedback_time' => 0]);
+        return self::cachedLoad('weights', ['feedback_adjustments' => [], 'last_feedback_time' => 0]);
     }
-    private static function saveWeights($data) { self::saveJson(self::$weights_file, $data); }
-    private static function loadFeedback() { return self::loadJson(self::$feedback_file, []); }
-    private static function saveFeedback($data) { self::saveJson(self::$feedback_file, $data); }
+    private static function saveWeights($data) { self::cachedSave('weights', $data); }
+    private static function loadFeedback() { return self::cachedLoad('feedback', []); }
+    private static function saveFeedback($data) { self::cachedSave('feedback', $data); }
     private static function loadNormal() {
-        return self::loadJson(self::$normal_file, ['patterns' => [], 'total_normal' => 0]);
+        return self::cachedLoad('normal', ['patterns' => [], 'total_normal' => 0]);
     }
-    private static function saveNormal($data) { self::saveJson(self::$normal_file, $data); }
+    private static function saveNormal($data) { self::cachedSave('normal', $data); }
 
-    private static function loadJson($file, $default) {
-        if (!is_file($file)) return $default;
-        $data = json_decode(file_get_contents($file), true);
-        return is_array($data) ? $data : $default;
+    private static function getFilePath($key) {
+        $map = [
+            'stats' => self::$stats_file,
+            'patterns' => self::$patterns_file,
+            'weights' => self::$weights_file,
+            'feedback' => self::$feedback_file,
+            'normal' => self::$normal_file,
+        ];
+        return $map[$key] ?? null;
     }
-    private static function saveJson($file, $data) {
-        if (!is_dir(WAF_LOG_PATH)) mkdir(WAF_LOG_PATH, 0700, true);
-        @file_put_contents($file, json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT), LOCK_EX);
+
+    private static function cachedLoad($key, $default) {
+        $now = time();
+        if (isset(self::$static_cache[$key])
+            && isset(self::$static_cache_ts[$key])
+            && ($now - self::$static_cache_ts[$key]) < self::STATIC_CACHE_TTL) {
+            return self::$static_cache[$key];
+        }
+        $file = self::getFilePath($key);
+        if ($file === null) return $default;
+        $data = waf_safe_read_json($file, $default);
+        self::$static_cache[$key] = $data;
+        self::$static_cache_ts[$key] = $now;
+        return $data;
+    }
+
+    private static function cachedSave($key, $data) {
+        $file = self::getFilePath($key);
+        if ($file === null) return;
+        waf_safe_write_json($file, $data);
+        self::$static_cache[$key] = $data;
+        self::$static_cache_ts[$key] = time();
+    }
+
+    private static function invalidateCache($key = null) {
+        if ($key === null) {
+            self::$static_cache = [];
+            self::$static_cache_ts = [];
+        } else {
+            unset(self::$static_cache[$key], self::$static_cache_ts[$key]);
+        }
     }
 
     private static function pruneStats($stats) {

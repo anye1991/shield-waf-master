@@ -944,6 +944,166 @@ class AdversarialDefense {
         return min(100, max(0, $score));
     }
 
+    // === 兼容层：WafNormalizer 接口适配 ===
+
+    /**
+     * 兼容 WafNormalizer::normalizeWithContext() 的返回格式
+     * 用于平滑迁移，逐步替换旧归一化引擎
+     */
+    public static function normalizeWithContext(string $input): array {
+        if (empty($input)) {
+            return [
+                'output' => '',
+                'layers' => [],
+                'encoding_depth' => 0,
+                'encoding_complexity' => 0,
+                'transform_count' => 0,
+                'semantic_score' => 0,
+                'double_encoding_detected' => false,
+                'encoding_types' => [],
+            ];
+        }
+
+        $advResult = self::analyze($input);
+
+        $decoded = $advResult['decoded'] ?? $input;
+        $depth = $advResult['decode_depth'] ?? 0;
+        $path = $advResult['decode_path'] ?? [];
+        $score = $advResult['score'] ?? 0;
+
+        $complexity = self::calcComplexityFromAdv($depth, $path, $score);
+
+        $doubleEncoding = in_array('double_url_encoding', $advResult['patterns'] ?? [])
+            || in_array('html_entity_encoding', $advResult['patterns'] ?? [])
+            || ($depth >= 2 && count($path) >= 2);
+
+        return [
+            'output' => trim($decoded),
+            'layers' => self::buildLayerInfo($path, $input, $decoded),
+            'encoding_depth' => $depth,
+            'encoding_complexity' => $complexity,
+            'transform_count' => count($path),
+            'semantic_score' => $score,
+            'double_encoding_detected' => $doubleEncoding,
+            'encoding_types' => $path,
+        ];
+    }
+
+    /**
+     * 兼容 WafNormalizer::normalize()
+     */
+    public static function normalize(string $input): string {
+        $result = self::normalizeWithContext($input);
+        return $result['output'];
+    }
+
+    /**
+     * 兼容 WafNormalizer::normalizeJson()
+     */
+    public static function normalizeJson(string $rawJson): string {
+        $data = json_decode($rawJson, true);
+        if ($data === null) return self::normalize($rawJson);
+        $normalized = self::_normalizeJsonRecursive($data);
+        return json_encode($normalized, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+
+    private static function _normalizeJsonRecursive($data) {
+        if (is_array($data)) {
+            foreach ($data as $key => $value) {
+                $data[$key] = self::_normalizeJsonRecursive($value);
+            }
+            return $data;
+        } elseif (is_string($data)) {
+            return self::normalize($data);
+        }
+        return $data;
+    }
+
+    /**
+     * 兼容 WafNormalizer::normalizeXml()
+     */
+    public static function normalizeXml(string $rawXml): string {
+        if (!class_exists('DOMDocument')) return self::normalize($rawXml);
+        $dom = new \DOMDocument();
+        libxml_use_internal_errors(true);
+        libxml_disable_entity_loader(true);
+        if (!$dom->loadXML($rawXml, LIBXML_NOENT | LIBXML_NONET)) {
+            libxml_disable_entity_loader(false);
+            return self::normalize($rawXml);
+        }
+        libxml_disable_entity_loader(false);
+        libxml_clear_errors();
+        self::_normalizeXmlNode($dom->documentElement);
+        return $dom->saveXML($dom->documentElement);
+    }
+
+    private static function _normalizeXmlNode($node) {
+        if ($node->nodeType === XML_TEXT_NODE || $node->nodeType === XML_CDATA_SECTION_NODE) {
+            $node->nodeValue = self::normalize($node->nodeValue);
+        }
+        if ($node->hasChildNodes()) {
+            foreach ($node->childNodes as $child) {
+                self::_normalizeXmlNode($child);
+            }
+        }
+    }
+
+    /**
+     * 从对抗防御结果计算编码复杂度（兼容 WafNormalizer 格式）
+     */
+    private static function calcComplexityFromAdv(int $depth, array $path, int $advScore): int {
+        $score = 0;
+        $score += $depth * 8;
+        $score += count($path) * 2;
+        $uniqueTypes = count(array_unique($path));
+        $score += $uniqueTypes * 5;
+
+        $highRiskTypes = ['base64', 'utf8_overlong', 'unicode_percent_u', 'homoglyph_normalize'];
+        foreach ($highRiskTypes as $t) {
+            if (in_array($t, $path)) $score += 10;
+        }
+
+        $score += $advScore * 0.3;
+
+        return min((int)$score, 100);
+    }
+
+    /**
+     * 构建层信息（兼容 WafNormalizer 格式）
+     */
+    private static function buildLayerInfo(array $path, string $input, string $decoded): array {
+        $layers = [];
+        $layerMap = [
+            'urldecode' => 'URL递归解码',
+            'html_numeric_entity' => 'HTML实体解码',
+            'html_named_entity' => 'HTML命名实体解码',
+            'base64' => 'Base64智能解码',
+            'hex_escape' => 'Hex转义解码',
+            'octal_escape' => '八进制转义解码',
+            'hex_literal' => '十六进制字面量解码',
+            'unicode_percent_u' => 'Unicode %u编码解码',
+            'utf8_overlong' => 'UTF-8超集编码解码',
+            'zero_width_remove' => '零宽控制字符清除',
+            'fullwidth_normalize' => '全角半角转换',
+            'homoglyph_normalize' => '同形字符映射',
+            'unicode_escape' => 'Unicode转义解码',
+            'case_normalize_keywords' => '关键词大小写归一化',
+        ];
+
+        $layerNum = 1;
+        foreach ($path as $tech) {
+            $layers[$layerNum] = [
+                'name' => $layerMap[$tech] ?? $tech,
+                'changed' => true,
+                'input_len' => strlen($input),
+                'output_len' => strlen($decoded),
+            ];
+            $layerNum++;
+        }
+
+        return $layers;
+    }
+
     // === 防御建议生成 ===
 
     private static function generateRecommendation(array $threats, int $score): string {
