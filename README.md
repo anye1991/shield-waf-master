@@ -41,6 +41,15 @@
 
 新增 Dockerfile + docker-compose.yml，支持一键容器化部署。
 
+### 爬虫防护全面升级到 5 星
+
+- **32种搜索引擎蜘蛛识别**：Google/Bing/Baidu/Yandex/360/搜狗/神马/字节/Ahrefs/Semrush 等，DNS 反向+正向双验证
+- **搜索引擎绝对放行**：Bot 检测层面 100% 放行，攻击检测阈值从 60 提升到 95，确保正常爬取不误拦
+- **新增无头浏览器检测**：17种（Puppeteer/Playwright/PhantomJS/Selenium/HeadlessChrome 等）
+- **新增 UA 随机化检测**：同 IP 5分钟内≥3个不同UA → 代理池/爬虫集群特征
+- **新增爬取深度分析**：平均深度≥6层=100分（人类通常1-3层）
+- **新增蜜罐链接系统**：页面注入隐藏链接（4种隐藏方式），爬虫点击立即100%标记恶意
+
 ---
 
 ## 核心架构总览
@@ -156,13 +165,14 @@ shield-waf-master/
 │   ├── Learn/                         #   自动学习系统
 │   │   └── AutoLearn.php              #     攻击模式学习+规则生成+动态权重
 │   │
-│   ├── Bot/                           #   机器人检测
-│   │   ├── BotManager.php             #     蜘蛛识别与管理
-│   │   ├── BotClassifier.php          #     机器人分类
-│   │   ├── BotFingerprint.php         #     指纹识别
-│   │   ├── BotScorer.php              #     机器人评分
-│   │   ├── BotSemantic.php            #     语义分析
-│   │   └── CaptchaHandler.php         #     验证码处理
+│   ├── Bot/                           #   🕷️ 机器人检测（7个模块）
+│   │   ├── BotManager.php             #     统一入口 + 决策引擎
+│   │   ├── BotFingerprint.php         #     指纹识别（32种搜索引擎+17种无头浏览器）
+│   │   ├── BotClassifier.php          #     6类机器人分类
+│   │   ├── BotScorer.php              #     四维评分（指纹+语义+行为+攻击链）
+│   │   ├── BotSemantic.php            #     语义行为分析（6维度）
+│   │   ├── HoneypotLinks.php          #     蜜罐链接系统
+│   │   └── CaptchaHandler.php         #     验证码挑战（滑块/点击/行为）
 │   │
 │   ├── Admin/                         #   管理后台
 │   │   ├── Dashboard.php              #     仪表盘页面
@@ -243,16 +253,30 @@ shield-waf-master/
 | **后门扫描** | `src/Defense/MalwareScanner.php` | 集成沙箱多引擎分析，特征码+启发式扫描全站PHP文件 |
 | **7层上传检测** | `src/Defense/Upload.php` | 扩展名白名单→MIME检测→GD库图像验证→SVG专用检测→编码归一化→语义分析→智能评分，防御图像马/SVG恶意文件 |
 
-### 六、协议层与IP管理
+### 六、爬虫防护与机器人检测（⭐ 5星）
+
+| 分类 | 模块 | 说明 |
+|------|------|------|
+| **搜索引擎识别（32种）** | `src/Bot/BotFingerprint.php` | Google/Bing/Baidu/Yandex/360/搜狗/神马/字节/Ahrefs/Semrush等，DNS反向+正向双验证 |
+| **搜索引擎绝对放行** | `src/Bot/BotManager.php` + `shield-waf.php` | Bot层面100%放行，攻击检测阈值从60提升到95，确保正常爬取不误拦 |
+| **无头浏览器检测** | `src/Bot/BotFingerprint.php` | 17种：Puppeteer/Playwright/PhantomJS/Selenium/HeadlessChrome/WebDriver/Lighthouse等 |
+| **UA随机化检测** | `src/Bot/BotSemantic.php` | 同IP 5分钟内≥3个不同UA → 代理池/爬虫集群特征（70~100分） |
+| **爬取深度分析** | `src/Bot/BotSemantic.php` | 平均爬取深度≥6层=100分，人类通常1-3层 |
+| **蜜罐链接系统** | `src/Bot/HoneypotLinks.php` | 页面注入隐藏链接（4种隐藏方式），爬虫点击立即100%标记恶意 |
+| **6维行为语义** | `src/Bot/BotSemantic.php` | 路径多样性/间隔均匀度/资源偏好/敏感探测/UA随机化/爬取深度 |
+| **6类分类器** | `src/Bot/BotClassifier.php` | human / search_engine / social_media / ai / crawler / malicious_bot |
+| **四维智能评分** | `src/Bot/BotScorer.php` | 指纹30% + 语义30% + 行为25% + 攻击链15% |
+| **三级验证码** | `src/Bot/CaptchaHandler.php` | 滑块验证 / 点击验证 / 行为验证 |
+
+### 七、协议层与IP管理
 
 | 分类 | 模块 | 说明 |
 |------|------|------|
 | **协议层防御** | `shield-waf.php` + `src/Defense/Chunked.php` | 请求方法白名单、Content-Type校验、HTTP参数污染检测、分块传输自动重组 |
 | **IP管理** | `src/Admin/IpManager.php` | 封禁/解封、管理员白名单(CIDR支持)、暴力尝试计数器、4阶段累进惩罚 |
 | **速率限制** | `src/Defense/RateLimit.php` + `src/Defense/ApiRateLimit.php` | 单IP窗口计数器；敏感路径独立限流 |
-| **机器人检测** | `src/Bot/BotManager.php` | DNS反查验证、头部异常豁免，确保正常蜘蛛放行 |
 
-### 七、其他安全模块
+### 八、其他安全模块
 
 | 分类 | 模块 | 说明 |
 |------|------|------|
