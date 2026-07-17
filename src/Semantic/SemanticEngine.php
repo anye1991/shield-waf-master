@@ -358,6 +358,14 @@ class SemanticEngine {
             $total += (int)round($patternMatchScore * 0.2);
         }
 
+        // 编码绕过意图加成（核心思想：编码越深+解码后攻击得分越高=刻意绕过意图越强）
+        $encodeBypassScore = self::calcEncodeBypassScore(
+            $decodeDepth, $adversarialScore, $total, $adversarialResult
+        );
+        if ($encodeBypassScore > 0) {
+            $total += $encodeBypassScore;
+        }
+
         $total = max(0, min(100, (int)round($total)));
 
         return [
@@ -477,6 +485,9 @@ class SemanticEngine {
             'pattern_best_match'    => $patternMatchResult['best_match'] ?? null,
             'pattern_match_count'   => count($patternMatchResult['matches'] ?? []),
             'obfuscation_score'     => $obfuscationScore,
+            'encode_bypass_score'   => $encodeBypassScore,
+            'decode_depth'          => $decodeDepth,
+            'decode_path'           => $adversarialResult['decode_path'] ?? [],
             'scene'                 => $businessResult['scene'] ?? 'unknown',
             'business_valid'        => $businessResult['valid'] ?? true,
             'word_roles'            => $wordResult['roles'] ?? [],
@@ -626,6 +637,58 @@ class SemanticEngine {
         if ($total >= 40) return 'medium';
         if ($total >= 15) return 'low';
         return 'clean';
+    }
+
+    /**
+     * 编码绕过意图评分
+     * 核心思想：编码层数越深 + 解码后攻击得分越高 = 刻意编码绕过的意图越强
+     * 这是"编码前后差异分析"的等效实现——原始文本可能看起来无害，但解码后是攻击payload
+     */
+    private static function calcEncodeBypassScore(
+        int $decodeDepth,
+        int $adversarialScore,
+        float $currentTotal,
+        array $adversarialResult
+    ): int {
+        if ($decodeDepth <= 0 || $currentTotal < 20) {
+            return 0;
+        }
+
+        $score = 0;
+        $indicators = [];
+
+        if ($decodeDepth >= 4) { $score += 18; $indicators[] = 'extreme_encode_depth'; }
+        elseif ($decodeDepth >= 3) { $score += 12; $indicators[] = 'high_encode_depth'; }
+        elseif ($decodeDepth >= 2) { $score += 7; $indicators[] = 'double_encode'; }
+        elseif ($decodeDepth >= 1) { $score += 3; $indicators[] = 'single_encode'; }
+
+        if ($adversarialScore >= 70) { $score += 10; }
+        elseif ($adversarialScore >= 50) { $score += 6; }
+        elseif ($adversarialScore >= 30) { $score += 3; }
+
+        if ($currentTotal >= 60 && $decodeDepth >= 2) {
+            $score += 12;
+            $indicators[] = 'encoded_high_severity_combo';
+        } elseif ($currentTotal >= 40 && $decodeDepth >= 1) {
+            $score += 5;
+            $indicators[] = 'encoded_medium_severity_combo';
+        }
+
+        $decodePath = $adversarialResult['decode_path'] ?? [];
+        if (in_array('base64', $decodePath) && $currentTotal >= 30) {
+            $score += 8;
+            $indicators[] = 'base64_plus_payload';
+        }
+        if (in_array('utf8_overlong', $decodePath) && $currentTotal >= 20) {
+            $score += 10;
+            $indicators[] = 'overlong_utf8_bypass';
+        }
+        if (in_array('unicode_percent_u', $decodePath) && $currentTotal >= 20) {
+            $score += 8;
+            $indicators[] = 'unicode_percent_u_bypass';
+        }
+
+        return min(25, $score);
     }
 
     private static function calcChainScore(array $prediction): int {

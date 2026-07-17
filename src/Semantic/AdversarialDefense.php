@@ -217,6 +217,27 @@ class AdversarialDefense {
             }, $text);
             if ($decoded !== null && $decoded !== $text) { $text = $decoded; $applied[] = 'hex_literal'; $changed = true; }
         }
+        // 7. Unicode %uXXXX 编码（IIS经典）
+        if (preg_match('/%u[0-9a-fA-F]{4}/', $text)) {
+            $decoded = preg_replace_callback('/%u([0-9a-fA-F]{4})/', function ($m) {
+                $cp = hexdec($m[1]);
+                if ($cp < 0x80) return chr($cp);
+                if ($cp < 0x800) return chr(0xC0 | ($cp >> 6)) . chr(0x80 | ($cp & 0x3F));
+                return chr(0xE0 | ($cp >> 12)) . chr(0x80 | (($cp >> 6) & 0x3F)) . chr(0x80 | ($cp & 0x3F));
+            }, $text);
+            if ($decoded !== null && $decoded !== $text && self::isPrintableEnough($decoded)) {
+                $text = $decoded; $applied[] = 'unicode_percent_u'; $changed = true;
+            }
+        }
+        // 8. UTF-8超集编码（2字节表示ASCII字符，路径遍历常用绕过）
+        //    注意：检查已经URL解码后的二进制字节（[\xC0-\xE0][\x80-\xBF]模式）
+        if (preg_match('/[\xC0-\xE0][\x80-\xBF]/', $text)) {
+            $before = $text;
+            $decoded = self::decodeOverlongUtf8($text);
+            if ($decoded !== $before && $decoded !== '' && self::isPrintableEnough($decoded)) {
+                $text = $decoded; $applied[] = 'utf8_overlong'; $changed = true;
+            }
+        }
         return ['text' => $text, 'applied' => $applied, 'changed' => $changed];
     }
 
@@ -248,6 +269,57 @@ class AdversarialDefense {
                 . chr(0x80 | (($cp >> 6) & 0x3F)) . chr(0x80 | ($cp & 0x3F));
         }
         return '';
+    }
+
+    /** 解码UTF-8超集编码（2字节序列表示的ASCII字符，路径遍历常用绕过） */
+    private static function decodeOverlongUtf8(string $text): string {
+        $result = '';
+        $len = strlen($text);
+        $i = 0;
+        while ($i < $len) {
+            $byte = ord($text[$i]);
+            if ($byte < 0x80) {
+                $result .= chr($byte);
+                $i++;
+            } elseif (($byte & 0xE0) === 0xC0 && $i + 1 < $len) {
+                $byte2 = ord($text[$i + 1]);
+                if (($byte2 & 0xC0) === 0x80) {
+                    $cp = (($byte & 0x1F) << 6) | ($byte2 & 0x3F);
+                    if ($cp < 0x80) {
+                        $result .= chr($cp);
+                    } else {
+                        $result .= chr($byte) . chr($byte2);
+                    }
+                    $i += 2;
+                } else {
+                    $result .= chr($byte);
+                    $i++;
+                }
+            } elseif (($byte & 0xF0) === 0xE0 && $i + 2 < $len) {
+                $byte2 = ord($text[$i + 1]);
+                $byte3 = ord($text[$i + 2]);
+                if (($byte2 & 0xC0) === 0x80 && ($byte3 & 0xC0) === 0x80) {
+                    $cp = (($byte & 0x0F) << 12) | (($byte2 & 0x3F) << 6) | ($byte3 & 0x3F);
+                    if ($cp < 0x800) {
+                        if ($cp < 0x80) {
+                            $result .= chr($cp);
+                        } else {
+                            $result .= chr(0xC0 | ($cp >> 6)) . chr(0x80 | ($cp & 0x3F));
+                        }
+                    } else {
+                        $result .= chr($byte) . chr($byte2) . chr($byte3);
+                    }
+                    $i += 3;
+                } else {
+                    $result .= chr($byte);
+                    $i++;
+                }
+            } else {
+                $result .= chr($byte);
+                $i++;
+            }
+        }
+        return $result;
     }
 
     /** 尝试 Base64 解码：仅当整体文本是合法 Base64 且解码后可读 */
