@@ -9,7 +9,7 @@
 defined('ABSPATH') || exit;
 
 // ======================== 版本号 ========================
-define('SHIELD_WAF_VERSION', '3.0.0');
+define('SHIELD_WAF_VERSION', '3.1.0');
 
 // ======================== 简易 .env 加载 ========================
 function waf_load_env($dir) {

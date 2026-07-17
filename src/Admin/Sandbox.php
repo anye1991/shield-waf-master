@@ -26,6 +26,10 @@
  */
 defined('ABSPATH') || exit;
 
+if (!function_exists('waf_safe_read_json')) {
+    require_once __DIR__ . '/../Support/Functions.php';
+}
+
 class WafSandbox {
     // 可执行脚本扩展名
     private static $protected_ext = [
@@ -82,7 +86,7 @@ class WafSandbox {
         self::$initialized = true;
 
         $sandboxDir = WAF_LOG_PATH . 'sandbox/';
-        if (!is_dir($sandboxDir)) @mkdir($sandboxDir, 0700, true);
+        waf_ensure_dir($sandboxDir);
 
         self::$log_file          = $sandboxDir . 'sandbox.log';
         self::$snapshot_file      = $sandboxDir . 'snapshot.json';
@@ -93,7 +97,7 @@ class WafSandbox {
             ? WAF_SANDBOX_QUARANTINE_DIR : WAF_LOG_PATH . 'quarantine/';
         self::$manifest_file      = self::$quarantine_dir . 'manifest.json';
 
-        if (!is_dir(self::$quarantine_dir)) @mkdir(self::$quarantine_dir, 0700, true);
+        waf_ensure_dir(self::$quarantine_dir);
 
         // 注册请求结束时的实时文件监控
         if (php_sapi_name() !== 'cli' && !waf_is_admin_ip()) {
@@ -182,13 +186,11 @@ class WafSandbox {
     // ====================== 文件快照管理 ======================
 
     private static function loadSnapshot() {
-        if (!is_file(self::$snapshot_file)) return [];
-        $data = json_decode(file_get_contents(self::$snapshot_file), true);
-        return is_array($data) ? $data : [];
+        return waf_safe_read_json(self::$snapshot_file, []);
     }
 
     private static function saveSnapshot($snapshot) {
-        @file_put_contents(self::$snapshot_file, json_encode($snapshot, JSON_UNESCAPED_UNICODE), LOCK_EX);
+        waf_safe_write_json(self::$snapshot_file, $snapshot);
     }
 
     /**
@@ -276,51 +278,62 @@ class WafSandbox {
         $score = 0;
         $indicators = [];
         $malwareType = 'unknown';
+        $engineHitCount = 0;
 
         // ---------- 1. 特征码快速预筛 ----------
         $sigScore = self::signatureScan($content);
-        $score += $sigScore;
         if ($sigScore > 0) {
-            $indicators[] = ['engine' => 'signature', 'score' => $sigScore, 'desc' => "命中 {$sigScore} 个恶意特征码"];
+            $engineHitCount++;
+            $adjSigScore = min($sigScore * 0.6, 40);
+            $score += $adjSigScore;
+            $indicators[] = ['engine' => 'signature', 'score' => $adjSigScore, 'desc' => "命中恶意特征码 (raw=$sigScore)"];
         }
 
         // ---------- 2. 14 层编码归一化（AdversarialDefense）+ 规则检测 ----------
         if (class_exists('AdversarialDefense')) {
             $normResult = AdversarialDefense::normalizeWithContext($content);
             $normalized = $normResult['output'] ?? $content;
+            $normEngineHit = false;
 
-            // 编码复杂度加成
+            // 编码复杂度加成（权重降低，避免误报）
             $encodingComplexity = $normResult['encoding_complexity'] ?? 0;
             if ($encodingComplexity > 50) {
-                $score += 20;
-                $indicators[] = ['engine' => 'normalizer', 'score' => 20, 'desc' => "编码复杂度极高 ($encodingComplexity)"];
-            } elseif ($encodingComplexity > 30) {
                 $score += 10;
-                $indicators[] = ['engine' => 'normalizer', 'score' => 10, 'desc' => "编码复杂度偏高 ($encodingComplexity)"];
+                $normEngineHit = true;
+                $indicators[] = ['engine' => 'normalizer', 'score' => 10, 'desc' => "编码复杂度极高 ($encodingComplexity)"];
+            } elseif ($encodingComplexity > 30) {
+                $score += 5;
+                $normEngineHit = true;
+                $indicators[] = ['engine' => 'normalizer', 'score' => 5, 'desc' => "编码复杂度偏高 ($encodingComplexity)"];
             }
 
             // 编码深度加成
             $encodingDepth = $normResult['encoding_depth'] ?? 0;
             if ($encodingDepth >= 4) {
-                $score += 15;
-                $indicators[] = ['engine' => 'normalizer', 'score' => 15, 'desc' => "编码深度 $encodingDepth 层（多重编码绕过）"];
+                $score += 10;
+                $normEngineHit = true;
+                $indicators[] = ['engine' => 'normalizer', 'score' => 10, 'desc' => "编码深度 $encodingDepth 层（多重编码绕过）"];
             }
 
             // 归一化后内容与原始内容差异大 — 可能是混淆
             if (strlen($normalized) !== strlen($content) && strlen($content) > 0) {
                 $diffRatio = abs(strlen($normalized) - strlen($content)) / strlen($content);
                 if ($diffRatio > 0.3) {
-                    $score += 10;
-                    $indicators[] = ['engine' => 'normalizer', 'score' => 10, 'desc' => "归一化后长度变化 " . round($diffRatio * 100) . "%"];
+                    $score += 5;
+                    $normEngineHit = true;
+                    $indicators[] = ['engine' => 'normalizer', 'score' => 5, 'desc' => "归一化后长度变化 " . round($diffRatio * 100) . "%"];
                 }
             }
+
+            if ($normEngineHit) $engineHitCount++;
 
             // 规则检测（归一化后的内容）
             if (function_exists('waf_analyze_attack')) {
                 $attackResult = waf_analyze_attack($normalized, $normResult);
                 if ($attackResult['is_attack']) {
-                    $attackScore = min($attackResult['total_score'] * 0.4, 40);
+                    $attackScore = min($attackResult['total_score'] * 0.35, 35);
                     $score += $attackScore;
+                    $engineHitCount++;
                     $indicators[] = [
                         'engine' => 'detector',
                         'score' => round($attackScore, 1),
@@ -335,13 +348,14 @@ class WafSandbox {
             }
         }
 
-        // ---------- 3. 语义分析引擎 ----------
+        // ---------- 3. 语义分析引擎（核心权重） ----------
         if (class_exists('SemanticEngine')) {
             $semResult = SemanticEngine::analyze($content);
             $semScore = $semResult['total_score'] ?? 0;
             if ($semScore > 30) {
-                $adjScore = min($semScore * 0.3, 25);
+                $adjScore = min($semScore * 0.4, 30);
                 $score += $adjScore;
+                $engineHitCount++;
                 $indicators[] = [
                     'engine' => 'semantic',
                     'score' => round($adjScore, 1),
@@ -350,11 +364,12 @@ class WafSandbox {
             }
         }
 
-        // ---------- 4. 结构分析（原编译引擎整合） ----------
-        $structScore = self::structuralAnalysis($content, $uri, $_GET ?? []);
+        // ---------- 4. 结构分析（辅助，权重低） ----------
+        $structScore = self::structuralAnalysis($content);
         if ($structScore > 40) {
-            $adjScore = min($structScore * 0.2, 20);
+            $adjScore = min($structScore * 0.15, 15);
             $score += $adjScore;
+            $engineHitCount++;
             $indicators[] = [
                 'engine' => 'structure',
                 'score'  => round($adjScore, 1),
@@ -362,20 +377,41 @@ class WafSandbox {
             ];
         }
 
-        // ---------- 5. 启发式特征 ----------
+        // ---------- 5. 启发式特征（辅助，权重最低） ----------
         $heuristicScore = self::heuristicScan($content);
-        $score += $heuristicScore;
         if ($heuristicScore > 0) {
-            $indicators[] = ['engine' => 'heuristic', 'score' => $heuristicScore, 'desc' => '启发式分析命中'];
+            $adjHeurScore = min($heuristicScore * 0.4, 15);
+            $score += $adjHeurScore;
+            $engineHitCount++;
+            $indicators[] = ['engine' => 'heuristic', 'score' => $adjHeurScore, 'desc' => "启发式分析命中 (raw=$heuristicScore)"];
         }
 
         $score = min(round($score, 1), 100);
-        $is_malicious = $score >= $threshold;
+
+        // ---------- 多引擎交叉验证：命中引擎越多，阈值越低 ----------
+        $effectiveThreshold = $threshold;
+        if ($engineHitCount >= 4) {
+            $effectiveThreshold = max(35, $threshold - 15); // 4个以上引擎命中，阈值降15
+        } elseif ($engineHitCount >= 3) {
+            $effectiveThreshold = max(40, $threshold - 10); // 3个引擎命中，阈值降10
+        } elseif ($engineHitCount >= 2) {
+            $effectiveThreshold = max(45, $threshold - 5);  // 2个引擎命中，阈值降5
+        }
+        // 只有1个引擎命中 → 阈值不变，保持高标准避免误报
+
+        $is_malicious = $score >= $effectiveThreshold;
+
+        // 命中恶意时自动投喂给 AutoLearn 学习（形成闭环）
+        if ($is_malicious && $engineHitCount >= 2 && class_exists('AutoLearn')) {
+            self::feedToAutoLearn($content, $score, $malwareType, $engineHitCount);
+        }
 
         return [
             'is_malicious' => $is_malicious,
             'score'        => $score,
             'threshold'    => $threshold,
+            'effective_threshold' => $effectiveThreshold,
+            'engine_hit_count' => $engineHitCount,
             'type'         => $malwareType,
             'engines'      => $indicators,
             'file_size'    => strlen($content),
@@ -384,39 +420,64 @@ class WafSandbox {
         ];
     }
 
+    // ====================== AutoLearn 联动：恶意样本投喂 ======================
+
+    /**
+     * 将沙箱发现的恶意样本投喂给自动学习系统
+     * 形成 WAF → 沙箱 → 学习 → WAF 规则更新 的闭环
+     */
+    private static function feedToAutoLearn($content, $score, $attackType, $engineHitCount) {
+        try {
+            if (!class_exists('AutoLearn')) return;
+
+            // 归一化后提取特征
+            $normalized = $content;
+            if (class_exists('AdversarialDefense')) {
+                $normResult = AdversarialDefense::normalize($content);
+                if (!empty($normResult)) $normalized = $normResult;
+            }
+
+            // 高置信度才记录，避免误报污染学习数据
+            if ($score >= 60 && $engineHitCount >= 3) {
+                $attackResult = [
+                    'risk_level' => $score >= 80 ? 'high' : 'medium',
+                    'attack_type_scores' => [
+                        $attackType => $score,
+                    ],
+                    'source' => 'sandbox',
+                ];
+                AutoLearn::recordAttack($normalized, $attackResult);
+            }
+        } catch (Exception $e) {
+            // 静默失败，不影响沙箱主流程
+            self::log("FEED_AUTOLEARN_ERR: " . $e->getMessage());
+        }
+    }
+
     // ====================== 结构分析（v3.0 整合自原 CompilerEngine） ======================
 
     /**
-     * URI/参数的结构特征评分（替代原 CompilerEngine 维度）
+     * 文件内容的结构特征评分（沙箱专用：仅分析文件内容本身）
      */
-    private static function structuralAnalysis($text, $uri = '', $params = []) {
+    private static function structuralAnalysis($text) {
         $score = 0;
-        $uri = (string)$uri;
-
-        // URI 异常
-        if (strlen($uri) > 200)                              $score += 15;
-        if (substr_count($uri, '/') > 8)                     $score += 10;
-        if (preg_match('/\.\.\//', $uri))                    $score += 20;
-        if (preg_match('/\.(php|asp|jsp|cgi|env|sql)$/i', $uri)) $score += 10;
-        if (preg_match('/(?:union|select|concat|script|onerror|javascript:)/i', $uri)) $score += 25;
-
-        // 参数键名
-        $suspiciousKeys = ['cmd', 'exec', 'command', 'shell', 'eval', 'code', 'file', 'path', 'url', 'redirect', 'return', 'jump', 'include', 'require'];
-        foreach ($params as $k => $v) {
-            $lk = strtolower((string)$k);
-            foreach ($suspiciousKeys as $s) {
-                if (strpos($lk, $s) !== false) { $score += 8; break; }
-            }
-        }
+        $len = strlen($text);
+        if ($len === 0) return 0;
 
         // 文本结构
-        $len = strlen($text);
-        if ($len > 0) {
-            $upperRatio = strlen(preg_replace('/[^A-Z]/', '', $text)) / $len;
-            $digitRatio = strlen(preg_replace('/[^0-9]/', '', $text)) / $len;
-            $symRatio   = strlen(preg_replace('/[a-zA-Z0-9\s]/', '', $text)) / $len;
-            if ($upperRatio > 0.5 && $digitRatio > 0.3) $score += 15;
-            if ($symRatio > 0.4)                          $score += 15;
+        $upperRatio = strlen(preg_replace('/[^A-Z]/', '', $text)) / $len;
+        $digitRatio = strlen(preg_replace('/[^0-9]/', '', $text)) / $len;
+        $symRatio   = strlen(preg_replace('/[a-zA-Z0-9\s]/', '', $text)) / $len;
+        if ($upperRatio > 0.5 && $digitRatio > 0.3) $score += 15;
+        if ($symRatio > 0.4)                          $score += 15;
+
+        // 可疑变量命名模式
+        if (preg_match_all('/\$[a-z]{1,2}[0-9a-z]{0,3}\s*=/i', $text) > 10) $score += 10;
+
+        // 超长单行（混淆代码通常不换行）
+        $lines = explode("\n", $text);
+        foreach ($lines as $line) {
+            if (strlen($line) > 2000) { $score += 10; break; }
         }
 
         return min(round($score, 1), 100);
@@ -932,13 +993,11 @@ class WafSandbox {
             'locations'  => $locations,
             'updated_at' => time(),
         ];
-        @file_put_contents(self::$locations_file, json_encode($all, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT), LOCK_EX);
+        waf_safe_write_json(self::$locations_file, $all);
     }
 
     private static function loadMaliciousLocationsAll() {
-        if (!is_file(self::$locations_file)) return [];
-        $data = json_decode(file_get_contents(self::$locations_file), true);
-        return is_array($data) ? $data : [];
+        return waf_safe_read_json(self::$locations_file, []);
     }
 
     /**
@@ -953,20 +1012,15 @@ class WafSandbox {
     // ====================== 扫描结果存储 ======================
 
     private static function loadScanResult() {
-        if (!is_file(self::$scan_result_file)) return [];
-        $data = json_decode(file_get_contents(self::$scan_result_file), true);
-        return is_array($data) ? $data : [];
+        return waf_safe_read_json(self::$scan_result_file, []);
     }
 
     private static function saveScanResult($result) {
-        @file_put_contents(self::$scan_result_file, json_encode($result, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT), LOCK_EX);
+        waf_safe_write_json(self::$scan_result_file, $result);
     }
 
     private static function saveScanHistory($result) {
-        $history = [];
-        if (is_file(self::$scan_history_file)) {
-            $history = json_decode(file_get_contents(self::$scan_history_file), true) ?: [];
-        }
+        $history = waf_safe_read_json(self::$scan_history_file, []);
         // 只保留摘要，不保留完整文件列表
         $summary = [
             'scan_time'       => $result['scan_time'],
@@ -977,20 +1031,18 @@ class WafSandbox {
         ];
         $history[] = $summary;
         $history = array_slice($history, -20); // 保留最近 20 次
-        @file_put_contents(self::$scan_history_file, json_encode($history, JSON_UNESCAPED_UNICODE), LOCK_EX);
+        waf_safe_write_json(self::$scan_history_file, $history);
     }
 
     // ====================== 隔离清单管理 ======================
 
     private static function loadManifest() {
-        if (!is_file(self::$manifest_file)) return [];
-        $data = json_decode(file_get_contents(self::$manifest_file), true);
-        return is_array($data) ? $data : [];
+        return waf_safe_read_json(self::$manifest_file, []);
     }
 
     private static function saveManifest($manifest) {
-        if (!is_dir(self::$quarantine_dir)) @mkdir(self::$quarantine_dir, 0700, true);
-        @file_put_contents(self::$manifest_file, json_encode($manifest, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT), LOCK_EX);
+        waf_ensure_dir(self::$quarantine_dir);
+        waf_safe_write_json(self::$manifest_file, $manifest);
     }
 
     // ====================== 日志与告警 ======================

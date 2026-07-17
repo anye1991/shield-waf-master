@@ -119,6 +119,7 @@ function waf_upload_deep_analyze($content, $ext = '') {
     $locations = [];
     $attackType = 'unknown';
     $actualMime = '';
+    $engineHitCount = 0;
 
     // 图像文件：在二进制内容中搜索嵌入的代码特征
     $isImage = in_array($ext, ['jpg','jpeg','png','gif','webp','bmp','ico']);
@@ -126,6 +127,7 @@ function waf_upload_deep_analyze($content, $ext = '') {
     // ---------- 1. 归一化 + 编码复杂度（AdversarialDefense 14层解码） ----------
     $normContext = null;
     $normalized = $content;
+    $normEngineHit = false;
     if (class_exists('AdversarialDefense')) {
         $normContext = AdversarialDefense::normalizeWithContext($content);
         $normalized = $normContext['output'] ?? $content;
@@ -136,47 +138,57 @@ function waf_upload_deep_analyze($content, $ext = '') {
         $doubleEnc = !empty($normContext['double_encoding_detected']);
 
         if ($encodingComplexity > 50) {
-            $score += 15;
-            $engines[] = ['engine' => 'normalizer', 'score' => 15, 'desc' => "编码复杂度极高 ($encodingComplexity)"];
+            $score += 10;
+            $normEngineHit = true;
+            $engines[] = ['engine' => 'normalizer', 'score' => 10, 'desc' => "编码复杂度极高 ($encodingComplexity)"];
         } elseif ($encodingComplexity > 30) {
-            $score += 8;
-            $engines[] = ['engine' => 'normalizer', 'score' => 8, 'desc' => "编码复杂度偏高 ($encodingComplexity)"];
+            $score += 5;
+            $normEngineHit = true;
+            $engines[] = ['engine' => 'normalizer', 'score' => 5, 'desc' => "编码复杂度偏高 ($encodingComplexity)"];
         }
 
         if ($encodingDepth >= 4) {
-            $score += 15;
-            $engines[] = ['engine' => 'normalizer', 'score' => 15, 'desc' => "多重编码绕过（深度 $encodingDepth 层）"];
+            $score += 10;
+            $normEngineHit = true;
+            $engines[] = ['engine' => 'normalizer', 'score' => 10, 'desc' => "多重编码绕过（深度 $encodingDepth 层）"];
         } elseif ($encodingDepth >= 2) {
-            $score += 8;
-            $engines[] = ['engine' => 'normalizer', 'score' => 8, 'desc' => "编码深度 $encodingDepth 层"];
+            $score += 5;
+            $normEngineHit = true;
+            $engines[] = ['engine' => 'normalizer', 'score' => 5, 'desc' => "编码深度 $encodingDepth 层"];
         }
 
         if ($semanticScore >= 50) {
-            $score += 10;
-            $engines[] = ['engine' => 'normalizer', 'score' => 10, 'desc' => "语义异常分高 ($semanticScore)"];
+            $score += 8;
+            $normEngineHit = true;
+            $engines[] = ['engine' => 'normalizer', 'score' => 8, 'desc' => "语义异常分高 ($semanticScore)"];
         }
 
         if ($doubleEnc) {
-            $score += 10;
-            $engines[] = ['engine' => 'normalizer', 'score' => 10, 'desc' => '检测到双重编码'];
+            $score += 8;
+            $normEngineHit = true;
+            $engines[] = ['engine' => 'normalizer', 'score' => 8, 'desc' => '检测到双重编码'];
         }
 
         // 归一化后与原始内容差异大 → 混淆
         if (strlen($normalized) > 0 && strlen($content) > 0) {
             $diffRatio = abs(strlen($normalized) - strlen($content)) / strlen($content);
             if ($diffRatio > 0.3) {
-                $score += 8;
-                $engines[] = ['engine' => 'normalizer', 'score' => 8, 'desc' => '归一化后长度变化显著（混淆）'];
+                $score += 5;
+                $normEngineHit = true;
+                $engines[] = ['engine' => 'normalizer', 'score' => 5, 'desc' => '归一化后长度变化显著（混淆）'];
             }
         }
+
+        if ($normEngineHit) $engineHitCount++;
     }
 
     // ---------- 2. 规则检测（归一化后的内容） ----------
     if (function_exists('waf_analyze_attack') && $normContext) {
         $attackResult = waf_analyze_attack($normalized, $normContext);
         if ($attackResult['is_attack']) {
-            $attackScore = min($attackResult['total_score'] * 0.5, 50);
+            $attackScore = min($attackResult['total_score'] * 0.4, 40);
             $score += $attackScore;
+            $engineHitCount++;
             $engines[] = [
                 'engine' => 'detector',
                 'score'  => round($attackScore, 1),
@@ -189,13 +201,14 @@ function waf_upload_deep_analyze($content, $ext = '') {
         }
     }
 
-    // ---------- 3. 语义分析引擎 ----------
+    // ---------- 3. 语义分析引擎（核心权重） ----------
     if (class_exists('SemanticEngine')) {
         $semResult = SemanticEngine::analyze($normalized);
         $semScore = $semResult['total_score'] ?? 0;
         if ($semScore > 30) {
             $adjScore = min($semScore * 0.35, 30);
             $score += $adjScore;
+            $engineHitCount++;
             $engines[] = [
                 'engine' => 'semantic',
                 'score'  => round($adjScore, 1),
@@ -204,13 +217,14 @@ function waf_upload_deep_analyze($content, $ext = '') {
         }
     }
 
-    // ---------- 4. 编译引擎 ----------
+    // ---------- 4. 编译引擎（辅助） ----------
     if (class_exists('CompilerEngine')) {
         $compResult = CompilerEngine::compile($normalized);
         $compScore = $compResult['score'] ?? 0;
         if ($compScore > 40) {
-            $adjScore = min($compScore * 0.25, 25);
+            $adjScore = min($compScore * 0.2, 20);
             $score += $adjScore;
+            $engineHitCount++;
             $engines[] = [
                 'engine' => 'compiler',
                 'score'  => round($adjScore, 1),
@@ -226,33 +240,98 @@ function waf_upload_deep_analyze($content, $ext = '') {
     if ($isImage) {
         $imgScore = waf_upload_imagemalware_check($content);
         if ($imgScore > 0) {
-            $score += $imgScore;
-            $engines[] = ['engine' => 'image_malware', 'score' => $imgScore, 'desc' => '图像中检测到代码特征'];
+            $adjImgScore = min($imgScore * 0.7, 35);
+            $score += $adjImgScore;
+            $engineHitCount++;
+            $engines[] = ['engine' => 'image_malware', 'score' => $adjImgScore, 'desc' => "图像中检测到代码特征 (raw=$imgScore)"];
         }
     }
 
-    // ---------- 6. 启发式检测 ----------
+    // ---------- 6. 启发式检测（辅助，权重最低） ----------
     $heurScore = waf_upload_heuristic($normalized, $ext);
     if ($heurScore > 0) {
-        $score += $heurScore;
-        $engines[] = ['engine' => 'heuristic', 'score' => $heurScore, 'desc' => '启发式分析命中'];
+        $adjHeurScore = min($heurScore * 0.4, 12);
+        $score += $adjHeurScore;
+        $engineHitCount++;
+        $engines[] = ['engine' => 'heuristic', 'score' => $adjHeurScore, 'desc' => "启发式分析命中 (raw=$heurScore)"];
     }
 
     // ---------- 7. 精确定位恶意代码位置 ----------
     $locations = waf_upload_locate_malware($normalized, $content);
 
     $score = min(round($score, 1), 100);
-    $level = $score >= 60 ? 'high' : ($score >= 30 ? 'medium' : 'low');
+
+    // ---------- 多引擎交叉验证：命中引擎越多，拦截阈值越低 ----------
+    $blockThreshold = defined('WAF_UPLOAD_BLOCK_THRESHOLD') ? WAF_UPLOAD_BLOCK_THRESHOLD : 60;
+    $logThreshold = defined('WAF_UPLOAD_LOG_THRESHOLD') ? WAF_UPLOAD_LOG_THRESHOLD : 30;
+
+    if ($engineHitCount >= 4) {
+        $blockThreshold = max(40, $blockThreshold - 20); // 4个以上引擎命中，拦截阈值降20
+        $logThreshold = max(20, $logThreshold - 10);
+    } elseif ($engineHitCount >= 3) {
+        $blockThreshold = max(45, $blockThreshold - 15); // 3个引擎命中，拦截阈值降15
+        $logThreshold = max(25, $logThreshold - 5);
+    } elseif ($engineHitCount >= 2) {
+        $blockThreshold = max(50, $blockThreshold - 10); // 2个引擎命中，拦截阈值降10
+    }
+    // 只有1个引擎命中 → 阈值不变，保持高标准避免误报
+
+    $level = $score >= $blockThreshold ? 'high' : ($score >= $logThreshold ? 'medium' : 'low');
+
+    // 高/中风险时自动投喂给 AutoLearn 学习（形成闭环）
+    if ($level !== 'low' && $engineHitCount >= 2 && class_exists('AutoLearn')) {
+        waf_upload_feed_to_autolearn($normalized, $score, $attackType, $engineHitCount, $level);
+    }
 
     return [
         'score'        => $score,
         'risk_level'   => $level,
         'attack_type'  => $attackType,
         'engines'      => $engines,
+        'engine_hit_count' => $engineHitCount,
+        'block_threshold' => $blockThreshold,
+        'log_threshold' => $logThreshold,
         'locations'    => $locations,
         'mime_type'    => $actualMime ?? '',
         'content_size' => strlen($content),
     ];
+}
+
+/**
+ * 上传检测投喂 AutoLearn 学习
+ * 形成 上传检测 → 学习 → WAF 规则更新 的闭环
+ */
+function waf_upload_feed_to_autolearn($normalized, $score, $attackType, $engineHitCount, $riskLevel) {
+    try {
+        if (!class_exists('AutoLearn')) return;
+
+        // 高风险且多引擎命中 → 高置信度，直接记录为攻击样本
+        if ($score >= 60 && $engineHitCount >= 3) {
+            $attackResult = [
+                'risk_level' => 'high',
+                'attack_type_scores' => [
+                    $attackType => $score,
+                ],
+                'source' => 'upload',
+            ];
+            AutoLearn::recordAttack($normalized, $attackResult);
+        }
+        // 中风险 → 只记录统计，不生成规则，避免误报污染
+        elseif ($score >= 30 && $engineHitCount >= 2) {
+            // 中风险样本只增加计数，不触发规则生成
+            $attackResult = [
+                'risk_level' => 'medium',
+                'attack_type_scores' => [
+                    $attackType => $score,
+                ],
+                'source' => 'upload_medium',
+                'pending_review' => true,
+            ];
+            AutoLearn::recordAttack($normalized, $attackResult);
+        }
+    } catch (Exception $e) {
+        // 静默失败，不影响上传检测主流程
+    }
 }
 
 /**
