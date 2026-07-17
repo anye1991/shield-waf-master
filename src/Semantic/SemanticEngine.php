@@ -32,22 +32,27 @@ require_once __DIR__ . '/ActiveDefense.php';
 require_once __DIR__ . '/SqlSemanticParser.php';
 require_once __DIR__ . '/HtmlSemanticParser.php';
 require_once __DIR__ . '/PhpCodeSemanticParser.php';
+require_once __DIR__ . '/PathTraversalSemanticParser.php';
+require_once __DIR__ . '/CommandInjectionSemanticParser.php';
+require_once __DIR__ . '/AttackPatternLibrary.php';
 
 class SemanticEngine {
     private static $weights = [
-        'char'        => 0.04,
-        'word'        => 0.04,
-        'structure'   => 0.08,
-        'param'       => 0.05,
-        'business'    => 0.05,
-        'logic'       => 0.09,
-        'intent'      => 0.14,
-        'chain'       => 0.10,
-        'memory'      => 0.06,
-        'adversarial' => 0.07,
-        'sql_parser'  => 0.12,
-        'html_parser' => 0.08,
-        'php_parser'  => 0.08,
+        'char'        => 0.03,
+        'word'        => 0.03,
+        'structure'   => 0.06,
+        'param'       => 0.04,
+        'business'    => 0.04,
+        'logic'       => 0.07,
+        'intent'      => 0.10,
+        'chain'       => 0.07,
+        'memory'      => 0.05,
+        'adversarial' => 0.06,
+        'sql_parser'      => 0.10,
+        'html_parser'     => 0.07,
+        'php_parser'      => 0.07,
+        'path_parser'     => 0.09,
+        'command_parser'  => 0.08,
     ];
 
     /**
@@ -201,10 +206,22 @@ class SemanticEngine {
         $sqlParserResult = SqlSemanticParser::analyze($decodedText);
         $htmlParserResult = HtmlSemanticParser::analyze($decodedText);
         $phpParserResult = PhpCodeSemanticParser::analyze($decodedText);
+        $pathParserResult = PathTraversalSemanticParser::analyze($decodedText);
+        $commandParserResult = CommandInjectionSemanticParser::analyze($decodedText);
 
         $sqlParserScore  = $sqlParserResult['score'] ?? 0;
         $htmlParserScore = $htmlParserResult['score'] ?? 0;
         $phpParserScore  = $phpParserResult['score'] ?? 0;
+        $pathParserScore = $pathParserResult['score'] ?? 0;
+        $commandParserScore = $commandParserResult['score'] ?? 0;
+
+        // ---- 攻击模式泛化匹配（结构相似度，非字符串匹配） ----
+        $patternMatchResult = AttackPatternLibrary::match($text, $decodedText);
+        $patternMatchScore = 0;
+        if ($patternMatchResult['is_attack_like'] && !empty($patternMatchResult['best_match'])) {
+            $sim = $patternMatchResult['best_match']['similarity'];
+            $patternMatchScore = (int)round($sim * 40);
+        }
 
         // 加权计算
         $total = 0;
@@ -221,6 +238,8 @@ class SemanticEngine {
         $total += $sqlParserScore             * self::$weights['sql_parser'];
         $total += $htmlParserScore            * self::$weights['html_parser'];
         $total += $phpParserScore             * self::$weights['php_parser'];
+        $total += $pathParserScore            * self::$weights['path_parser'];
+        $total += $commandParserScore         * self::$weights['command_parser'];
 
         $multiVectorScore = $multiVectorResult['fusion_score'] ?? 0;
         if ($multiVectorScore >= 30) {
@@ -238,6 +257,7 @@ class SemanticEngine {
             $charResult['score'], $wordResult['score'], $structResult['score'], $paramScore,
             $businessResult['score'], $logicResult['score'], $intentResult['score'], $chainScore,
             $memoryScore, $adversarialScore, $sqlParserScore, $htmlParserScore, $phpParserScore,
+            $pathParserScore, $commandParserScore,
         ]);
 
         if ($highDimensions >= 6) $total += 18;
@@ -252,12 +272,13 @@ class SemanticEngine {
         if ($adversarialResult['is_adversarial'] && $intentResult['score'] >= 40) $total += 15;
         if ($memoryScore >= 40 && $intentResult['score'] >= 40) $total += 10;
 
-        // 攻击意图强证据加成（路径遍历/命令注入等无专用深度解析器的攻击类型）
+        // 深度解析器+意图双证加成（5大深度解析器各有强证据通道）
         $primaryIntent = $intentResult['primary_intent'] ?? 'unknown';
-        if ($primaryIntent === 'path_traversal' && $intentResult['score'] >= 60 && $structResult['score'] >= 30) $total += 15;
-        if ($primaryIntent === 'command_injection' && $intentResult['score'] >= 60 && $structResult['score'] >= 20) $total += 15;
-        if ($primaryIntent === 'sql_injection' && $sqlParserScore >= 30 && $logicResult['score'] >= 40) $total += 8;
-        if ($primaryIntent === 'xss' && $htmlParserScore >= 30 && $structResult['score'] >= 20) $total += 8;
+        if ($primaryIntent === 'path_traversal' && $pathParserScore >= 30) $total += 15;
+        if ($primaryIntent === 'command_injection' && $commandParserScore >= 25) $total += 15;
+        if ($primaryIntent === 'sql_injection' && $sqlParserScore >= 30) $total += 12;
+        if ($primaryIntent === 'xss' && $htmlParserScore >= 15) $total += 12;
+        if ($primaryIntent === 'webshell' && $phpParserScore >= 30) $total += 15;
 
         // 算术/逻辑恒真双证加成（LogicInference + SQLParser 都检测到恒真）
         $logicHasTaut = ($logicResult['logic_type'] ?? '') === 'tautology'
@@ -271,7 +292,21 @@ class SemanticEngine {
         if ($sqlParserScore >= 50 && $logicResult['score'] >= 40) $total += 12;
         if ($htmlParserScore >= 50 && $structResult['score'] >= 40) $total += 10;
         if ($phpParserScore >= 50 && $adversarialScore >= 40) $total += 15;
-        if ($sqlParserScore >= 30 && $htmlParserScore >= 30 && $phpParserScore >= 30) $total += 20;
+        if ($pathParserScore >= 50 && $intentResult['score'] >= 40) $total += 12;
+        if ($commandParserScore >= 50 && $intentResult['score'] >= 40) $total += 12;
+        $parserCount = 0;
+        if ($sqlParserScore >= 30) $parserCount++;
+        if ($htmlParserScore >= 30) $parserCount++;
+        if ($phpParserScore >= 30) $parserCount++;
+        if ($pathParserScore >= 30) $parserCount++;
+        if ($commandParserScore >= 30) $parserCount++;
+        if ($parserCount >= 3) $total += 20;
+        elseif ($parserCount >= 2) $total += 10;
+
+        // 攻击模式泛化加成（结构相似度作为辅助增强，需有其他层证据支撑）
+        if ($patternMatchScore >= 25 && $intentScore >= 40) {
+            $total += (int)round($patternMatchScore * 0.2);
+        }
 
         $total = max(0, min(100, (int)round($total)));
 
@@ -291,6 +326,8 @@ class SemanticEngine {
             'sql_parser_score'      => $sqlParserScore,
             'html_parser_score'     => $htmlParserScore,
             'php_parser_score'      => $phpParserScore,
+            'path_parser_score'     => $pathParserScore,
+            'command_parser_score'  => $commandParserScore,
             'sql_parser_result'     => [
                 'has_tautology'       => $sqlParserResult['has_tautology'] ?? false,
                 'tautology_type'      => $sqlParserResult['tautology_type'] ?? '',
@@ -319,6 +356,26 @@ class SemanticEngine {
                 'dangerous_func_count'   => count($phpParserResult['dangerous_functions'] ?? []),
                 'code_complexity'        => $phpParserResult['code_complexity'] ?? 0,
             ],
+            'path_parser_result'    => [
+                'is_path_traversal'    => $pathParserResult['is_path_traversal'] ?? false,
+                'traversal_depth'      => $pathParserResult['traversal_depth'] ?? 0,
+                'decode_depth'         => $pathParserResult['decode_depth'] ?? 0,
+                'os_type'              => $pathParserResult['os_type'] ?? 'unknown',
+                'sensitive_hits_count' => count($pathParserResult['sensitive_hits'] ?? []),
+                'has_null_byte'        => $pathParserResult['has_null_byte'] ?? false,
+                'has_unicode_bypass'   => $pathParserResult['has_unicode_bypass'] ?? false,
+            ],
+            'command_parser_result' => [
+                'is_command_injection'   => $commandParserResult['is_command_injection'] ?? false,
+                'command_count'          => $commandParserResult['command_count'] ?? 0,
+                'dangerous_cmd_count'    => count($commandParserResult['dangerous_commands'] ?? []),
+                'categories'             => $commandParserResult['categories'] ?? [],
+                'has_command_substitution' => $commandParserResult['has_command_substitution'] ?? false,
+                'has_wildcard_bypass'    => $commandParserResult['has_wildcard_bypass'] ?? false,
+            ],
+            'pattern_match_score'   => $patternMatchScore,
+            'pattern_best_match'    => $patternMatchResult['best_match'] ?? null,
+            'pattern_match_count'   => count($patternMatchResult['matches'] ?? []),
             'obfuscation_score'     => $obfuscationScore,
             'scene'                 => $businessResult['scene'] ?? 'unknown',
             'business_valid'        => $businessResult['valid'] ?? true,
