@@ -1,27 +1,27 @@
 # ============================================
-# 盾甲 WAF v3.0.0 Docker 镜像
+# 盾甲 WAF v3.1.0 Docker 镜像
 # ============================================
 # 构建：docker build -t shield-waf .
 # 运行：docker run -d -p 80:80 --name shield-waf shield-waf
 #
 # 官方镜像（GitHub Container Registry）：
-#   ghcr.io/anye1991/shield-waf:3.0.0
+#   ghcr.io/anye1991/shield-waf:3.1.0
 #
 # 快速启动：
-#   docker run -d -p 8080:80 ghcr.io/anye1991/shield-waf:3.0.0
+#   docker run -d -p 8080:80 ghcr.io/anye1991/shield-waf:3.1.0
 #
 # 带自定义环境变量：
 #   docker run -d -p 8080:80 \
 #     -e WAF_MAGIC_KEY=your-magic-key \
 #     -e WAF_2FA_PASS=your-2fa-pass \
-#     ghcr.io/anye1991/shield-waf:3.0.0
+#     ghcr.io/anye1991/shield-waf:3.1.0
 # ============================================
 
 FROM php:8.2-fpm-alpine
 
 LABEL org.opencontainers.image.title="Shield WAF"
-LABEL org.opencontainers.image.description="盾甲 WAF v3.0.0 - 全球顶级编码归一化 · 10维语义分析 · 主动路径围堵"
-LABEL org.opencontainers.image.version="3.0.0"
+LABEL org.opencontainers.image.description="盾甲 WAF v3.1.0 - 14层编码归一化 · 智能语义分析 · 主动防御围堵"
+LABEL org.opencontainers.image.version="3.1.0"
 LABEL org.opencontainers.image.source="https://github.com/anye1991/shield-waf-master"
 
 # 安装 Nginx 和常用工具

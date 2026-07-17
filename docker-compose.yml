@@ -1,5 +1,5 @@
 # ============================================
-# 盾甲 WAF v3.0.0 Docker Compose 部署
+# 盾甲 WAF v3.1.0 Docker Compose 部署
 # ============================================
 # 启动：docker compose up -d
 # 停止：docker compose down
@@ -9,7 +9,7 @@
 services:
   shield-waf:
     build: .
-    image: ghcr.io/anye1991/shield-waf:3.0.0
+    image: ghcr.io/anye1991/shield-waf:3.1.0
     container_name: shield-waf
     restart: unless-stopped
 
