@@ -1,37 +1,40 @@
 <?php
 /**
- * 盾甲 WAF 智能评分系统 (Scorer.php)
+ * 盾甲 WAF 智能评分系统 (Scorer.php) - 极致优化版
  *
- * WafScorer 类采用四维评分机制综合判断请求是否为攻击：
- *   - 熵值分析 (Entropy, 权重 15%): 计算 payload 的信息熵，高熵值通常表示编码或混淆内容
- *   - 语义分析 (Semantic, 权重 30%): 结合语义引擎判断请求是否符合正常业务逻辑
- *   - 编译偏差分析 (Compiler, 权重 25%): 检测代码结构、SQL 结构等异常模式
- *   - 偏离分析 (Deviation, 权重 30%): 与历史正常请求对比，检测异常偏离
+ * 四维基础评分 + 编码绕过专项加成：
+ *   - 熵值分析 (Entropy, 权重 15%): 信息熵与特殊字符比例
+ *   - 语义分析 (Semantic, 权重 40%): 10维语义 + 11大深度解析器
+ *   - 编译偏差分析 (Compiler, 权重 20%): URI/参数结构异常
+ *   - 偏离分析 (Deviation, 权重 15%): 与历史正常请求对比
+ *   - 编码绕过加成 (+0~40分): 14层解码深度 + 混淆技术 + 对抗样本特征
  *
  * 评分阈值：
  *   0-30   → 通过
  *   30-50  → 记录日志
  *   50-70  → 观察
- *   80+    → 拦截
+ *   70+    → 拦截
  */
 defined('ABSPATH') || exit;
 
 require_once __DIR__ . '/../Semantic/SemanticEngine.php';
 require_once __DIR__ . '/../Learn/AutoLearn.php';
+require_once __DIR__ . '/../Semantic/FalsePositiveGuard.php';
+require_once __DIR__ . '/../Semantic/SemanticMemoryPool.php';
 
 class WafScorer {
     private static $weights = [
         'entropy'   => 0.15,
-        'semantic'  => 0.30,
-        'compiler'  => 0.25,
-        'deviation' => 0.30,
+        'semantic'  => 0.40,
+        'compiler'  => 0.20,
+        'deviation' => 0.15,
     ];
 
     private static $thresholds = [
         'pass'    => 30,
         'log'     => 50,
         'observe' => 70,
-        'block'   => 80,
+        'block'   => 70,
     ];
 
     /**
@@ -55,9 +58,66 @@ class WafScorer {
                     + $compilerScore * self::$weights['compiler']
                     + $deviationScore * self::$weights['deviation'];
 
+        $encodeBypassBonus = self::calcEncodeBypassBonus($semanticResult, $normalizerContext);
+        $totalScore += $encodeBypassBonus;
+
         $totalScore = min(round($totalScore, 1), 100);
 
+        // ====== 误报控制：FalsePositiveGuard 7层防御 ======
+        $fpResult = FalsePositiveGuard::analyze(
+            $uri,
+            $_SERVER['REQUEST_METHOD'] ?? 'GET',
+            $params,
+            function_exists('getallheaders') ? (getallheaders() ?: []) : [],
+            $semanticResult,
+            $ip
+        );
+
+        $fpAdjustment = 0;
+        if ($fpResult['is_false_positive']) {
+            if ($fpResult['confidence'] >= 90) {
+                $fpAdjustment = -30; // 极高置信度误报，大幅降分
+            } elseif ($fpResult['confidence'] >= 75) {
+                $fpAdjustment = -15; // 高置信度误报，中幅降分
+            } else {
+                $fpAdjustment = -5; // 低置信度误报，小幅降分
+            }
+            $totalScore = max(0, $totalScore + $fpAdjustment);
+        }
+
+        // 需要二次验证的（高分但疑似误报），降低一个级别
+        if (!empty($fpResult['needs_verification'])) {
+            $totalScore = max(0, $totalScore - 10);
+        }
+
         $action = self::decideAction($totalScore);
+
+        // ====== 自动学习：记录请求到记忆池，建立行为基线 ======
+        if (!empty($ip)) {
+            $memFeatures = array_merge($semanticResult, [
+                'risk_level' => self::getRiskLevel($totalScore),
+            ]);
+            SemanticMemoryPool::record($ip, $payload, $uri, $params, $memFeatures);
+            
+            // 行为基线偏离分析（有基线才加分，无基线不加分）
+            $evolutionResult = SemanticMemoryPool::analyzeEvolution($ip, $memFeatures);
+            if (!empty($evolutionResult['baseline_exists']) && $evolutionResult['score'] > 0) {
+                $behaviorBonus = min(25, $evolutionResult['score'] * 0.3);
+                $totalScore += $behaviorBonus;
+                $action = self::decideAction($totalScore);
+            }
+        }
+
+        // ====== 自动学习：记录正常请求 / 攻击载荷 ======
+        if ($totalScore < 20) {
+            AutoLearn::recordNormal($uri, array_keys($params));
+        } elseif ($totalScore >= 50) {
+            $attackResult = [
+                'risk_level' => self::getRiskLevel($totalScore),
+                'attack_type_scores' => self::extractAttackTypeScores($semanticResult),
+            ];
+            AutoLearn::recordAttack($semanticResult['decoded_text'] ?? $payload, $attackResult);
+        }
 
         return [
             'total_score'     => $totalScore,
@@ -65,15 +125,24 @@ class WafScorer {
             'semantic_score'  => $semanticScore,
             'compiler_score'  => $compilerScore,
             'deviation_score' => $deviationScore,
+            'encode_bypass_bonus' => $encodeBypassBonus,
             'action'          => $action,
             'risk_level'      => self::getRiskLevel($totalScore),
             'is_attack'       => $totalScore >= self::$thresholds['block'],
             'semantic_detail' => $semanticResult,
+            'fp_guard'        => $fpResult,
+            'fp_adjustment'   => $fpAdjustment,
+            'memory_pool'     => $evolutionResult ?? null,
+            'learned'        => [
+                'behavior_baseline_exists' => !empty($evolutionResult['baseline_exists']),
+                'evolution_score' => $evolutionResult['score'] ?? 0,
+            ],
             'components'      => [
                 'entropy'   => ['score' => $entropyScore, 'weight' => self::$weights['entropy']],
                 'semantic'  => ['score' => $semanticScore, 'weight' => self::$weights['semantic']],
                 'compiler'  => ['score' => $compilerScore, 'weight' => self::$weights['compiler']],
                 'deviation' => ['score' => $deviationScore, 'weight' => self::$weights['deviation']],
+                'encode_bypass' => ['bonus' => $encodeBypassBonus],
             ],
         ];
     }
@@ -238,6 +307,91 @@ class WafScorer {
         }
 
         return min(round($score, 1), 100);
+    }
+
+    /**
+     * 从语义结果中提取攻击类型分数（用于学习系统记录）
+     */
+    private static function extractAttackTypeScores(array $semanticResult): array {
+        $scores = [];
+        $logicType = $semanticResult['logic_type'] ?? '';
+        if ($logicType) {
+            $scores[$logicType] = $semanticResult['total_score'] ?? 50;
+        }
+        if (!empty($semanticResult['parser_results'])) {
+            foreach ($semanticResult['parser_results'] as $type => $result) {
+                if (is_array($result) && isset($result['score'])) {
+                    $scores[$type] = $result['score'];
+                }
+            }
+        }
+        return $scores;
+    }
+
+    // ====================== 编码绕过专项加成 (+0~40分) ======================
+
+    /**
+     * 编码绕过专项加成：14层解码深度 + 混淆技术 + 对抗样本特征
+     * 核心思想：刻意编码绕过WAF的攻击，其危害等级远高于明文攻击
+     */
+    private static function calcEncodeBypassBonus(array $semanticResult, array $normalizerContext): float {
+        $bonus = 0;
+
+        $decodeDepth = $semanticResult['decode_depth'] ?? 0;
+        $decodePath = $semanticResult['decode_path'] ?? [];
+        $adversarialScore = $semanticResult['l10_adversarial_score'] ?? 0;
+        $encodeBypassScore = $semanticResult['encode_bypass_score'] ?? 0;
+        $semanticScore = $semanticResult['total_score'] ?? 0;
+
+        if ($decodeDepth <= 0 || $semanticScore < 20) {
+            return 0;
+        }
+
+        // 1. 解码深度加成（层数越深，绕过意图越强）
+        if ($decodeDepth >= 4) $bonus += 12;
+        elseif ($decodeDepth >= 3) $bonus += 8;
+        elseif ($decodeDepth >= 2) $bonus += 5;
+        elseif ($decodeDepth >= 1) $bonus += 2;
+
+        // 2. 高级混淆技术加成（每种技术 +3~10分）
+        $highValueTechs = [
+            'base64' => 10,
+            'utf8_overlong' => 9,
+            'unicode_percent_u' => 7,
+            'homoglyph_normalize' => 7,
+            'zero_width_remove' => 6,
+            'fullwidth_normalize' => 5,
+            'html_numeric_entity' => 4,
+            'html_named_entity' => 4,
+            'hex_escape' => 5,
+            'octal_escape' => 5,
+            'unicode_escape' => 5,
+        ];
+        foreach ($highValueTechs as $tech => $points) {
+            if (in_array($tech, $decodePath)) {
+                $bonus += $points;
+            }
+        }
+
+        // 3. 对抗样本评分加成
+        if ($adversarialScore >= 70) $bonus += 8;
+        elseif ($adversarialScore >= 50) $bonus += 5;
+        elseif ($adversarialScore >= 30) $bonus += 3;
+
+        // 4. 语义引擎编码绕过评分加成
+        if ($encodeBypassScore >= 20) $bonus += 6;
+        elseif ($encodeBypassScore >= 10) $bonus += 3;
+
+        // 5. 组合加成：高语义分 + 编码 = 强证据（刻意隐藏的攻击）
+        if ($semanticScore >= 60 && $decodeDepth >= 2) $bonus += 8;
+        elseif ($semanticScore >= 40 && $decodeDepth >= 1) $bonus += 4;
+
+        // 6. 多混淆技术交叉加成（同时使用2种以上混淆技术）
+        $obfuscationTechs = array_intersect(array_keys($highValueTechs), $decodePath);
+        if (count($obfuscationTechs) >= 3) $bonus += 6;
+        elseif (count($obfuscationTechs) >= 2) $bonus += 3;
+
+        return min(50, round($bonus, 1));
     }
 
     // ====================== 决策 ======================

@@ -230,15 +230,15 @@ class AutoLearn {
     public static function getDeviationScore($uri, $params = []) {
         self::init();
         $normal = self::loadNormal();
-        if (empty($normal['patterns'])) return 1.0;
+        if (empty($normal['patterns'])) return 0.0;
 
         $path = parse_url($uri, PHP_URL_PATH) ?: $uri;
         $hash = md5($path);
 
-        if (!isset($normal['patterns'][$hash])) return 1.0;
+        if (!isset($normal['patterns'][$hash])) return 0.3;
 
         $pattern = $normal['patterns'][$hash];
-        if ($pattern['count'] < 5) return 0.5; // 数据不足
+        if ($pattern['count'] < 5) return 0.2;
 
         // 检查参数键偏差
         $knownKeys = array_map('strtolower', $pattern['param_keys']);

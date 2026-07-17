@@ -131,7 +131,7 @@ class FalsePositiveGuard {
         // ---- 第1层：业务模式匹配 ----
         $matchedPattern = self::matchTrustedPattern($uri, $method, $params, $headers);
         if ($matchedPattern) {
-            $confidence += 30;
+            $confidence += 20;
             $reason = "匹配可信业务模式: {$matchedPattern}";
             $recommendations[] = '业务模式匹配';
         }
@@ -159,7 +159,7 @@ class FalsePositiveGuard {
         if (!empty($ip)) {
             $baselineCheck = self::checkBehaviorBaseline($ip, $semanticResult);
             if ($baselineCheck['is_consistent']) {
-                $confidence += 15;
+                $confidence += $baselineCheck['confidence_add'] ?? 15;
                 $reason .= ($reason ? '; ' : '') . '符合行为基线';
                 $recommendations[] = '行为基线正常';
             }
@@ -189,17 +189,17 @@ class FalsePositiveGuard {
         }
 
         // ---- 最终判定 ----
-        $isFalsePositive = $confidence >= 50;
+        $isFalsePositive = $confidence >= 60;
 
-        // 低分数直接放行
-        if ($totalScore < 20) {
+        // 极低分数直接放行（明确不是攻击）
+        if ($totalScore < 10) {
             $isFalsePositive = true;
             $confidence = 100;
-            $reason = '分数低于阈值';
+            $reason = '分数极低，明确为正常请求';
         }
 
         // 高置信度误报直接放行
-        if ($confidence >= 80) {
+        if ($confidence >= 85) {
             $isFalsePositive = true;
         }
 
@@ -345,22 +345,22 @@ class FalsePositiveGuard {
      */
     private static function checkBehaviorBaseline(string $ip, array $semanticResult): array {
         if (!class_exists('SemanticMemoryPool')) {
-            return ['is_consistent' => true];
+            return ['is_consistent' => false, 'confidence_add' => 0];
         }
 
         $profile = SemanticMemoryPool::getProfile($ip);
         if (!$profile['exists']) {
-            return ['is_consistent' => true];
+            return ['is_consistent' => false, 'confidence_add' => 0];
         }
 
         $currentScore = $semanticResult['total_score'] ?? 0;
         $avgScore = $profile['avg_score'] ?? 0;
 
         if ($avgScore < 10 && $currentScore < 30) {
-            return ['is_consistent' => true];
+            return ['is_consistent' => true, 'confidence_add' => 15];
         }
 
-        return ['is_consistent' => false];
+        return ['is_consistent' => false, 'confidence_add' => 0];
     }
 
     /**
