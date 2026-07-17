@@ -35,24 +35,36 @@ require_once __DIR__ . '/PhpCodeSemanticParser.php';
 require_once __DIR__ . '/PathTraversalSemanticParser.php';
 require_once __DIR__ . '/CommandInjectionSemanticParser.php';
 require_once __DIR__ . '/AttackPatternLibrary.php';
+require_once __DIR__ . '/XxeSemanticParser.php';
+require_once __DIR__ . '/SsrfSemanticParser.php';
+require_once __DIR__ . '/SstiSemanticParser.php';
+require_once __DIR__ . '/DeserializationSemanticParser.php';
+require_once __DIR__ . '/CrlfInjectionSemanticParser.php';
+require_once __DIR__ . '/ExpressionInjectionSemanticParser.php';
 
 class SemanticEngine {
     private static $weights = [
-        'char'        => 0.03,
-        'word'        => 0.03,
-        'structure'   => 0.06,
-        'param'       => 0.04,
-        'business'    => 0.04,
-        'logic'       => 0.07,
-        'intent'      => 0.10,
-        'chain'       => 0.07,
-        'memory'      => 0.05,
-        'adversarial' => 0.06,
-        'sql_parser'      => 0.10,
-        'html_parser'     => 0.07,
-        'php_parser'      => 0.07,
-        'path_parser'     => 0.09,
-        'command_parser'  => 0.08,
+        'char'        => 0.02,
+        'word'        => 0.02,
+        'structure'   => 0.04,
+        'param'       => 0.03,
+        'business'    => 0.03,
+        'logic'       => 0.05,
+        'intent'      => 0.07,
+        'chain'       => 0.04,
+        'memory'      => 0.03,
+        'adversarial' => 0.04,
+        'sql_parser'        => 0.07,
+        'html_parser'       => 0.05,
+        'php_parser'        => 0.05,
+        'path_parser'       => 0.06,
+        'command_parser'    => 0.06,
+        'xxe_parser'        => 0.05,
+        'ssrf_parser'       => 0.05,
+        'ssti_parser'       => 0.05,
+        'deser_parser'      => 0.05,
+        'crlf_parser'       => 0.04,
+        'expr_parser'       => 0.05,
     ];
 
     /**
@@ -208,12 +220,24 @@ class SemanticEngine {
         $phpParserResult = PhpCodeSemanticParser::analyze($decodedText);
         $pathParserResult = PathTraversalSemanticParser::analyze($decodedText);
         $commandParserResult = CommandInjectionSemanticParser::analyze($decodedText);
+        $xxeParserResult = XxeSemanticParser::analyze($decodedText);
+        $ssrfParserResult = SsrfSemanticParser::analyze($decodedText);
+        $sstiParserResult = SstiSemanticParser::analyze($decodedText);
+        $deserParserResult = DeserializationSemanticParser::analyze($decodedText);
+        $crlfParserResult = CrlfInjectionSemanticParser::analyze($decodedText);
+        $exprParserResult = ExpressionInjectionSemanticParser::analyze($decodedText);
 
         $sqlParserScore  = $sqlParserResult['score'] ?? 0;
         $htmlParserScore = $htmlParserResult['score'] ?? 0;
         $phpParserScore  = $phpParserResult['score'] ?? 0;
         $pathParserScore = $pathParserResult['score'] ?? 0;
         $commandParserScore = $commandParserResult['score'] ?? 0;
+        $xxeParserScore  = $xxeParserResult['score'] ?? 0;
+        $ssrfParserScore = $ssrfParserResult['score'] ?? 0;
+        $sstiParserScore = $sstiParserResult['score'] ?? 0;
+        $deserParserScore = $deserParserResult['score'] ?? 0;
+        $crlfParserScore = $crlfParserResult['score'] ?? 0;
+        $exprParserScore = $exprParserResult['score'] ?? 0;
 
         // ---- 攻击模式泛化匹配（结构相似度，非字符串匹配） ----
         $patternMatchResult = AttackPatternLibrary::match($text, $decodedText);
@@ -240,6 +264,12 @@ class SemanticEngine {
         $total += $phpParserScore             * self::$weights['php_parser'];
         $total += $pathParserScore            * self::$weights['path_parser'];
         $total += $commandParserScore         * self::$weights['command_parser'];
+        $total += $xxeParserScore             * self::$weights['xxe_parser'];
+        $total += $ssrfParserScore            * self::$weights['ssrf_parser'];
+        $total += $sstiParserScore            * self::$weights['ssti_parser'];
+        $total += $deserParserScore           * self::$weights['deser_parser'];
+        $total += $crlfParserScore            * self::$weights['crlf_parser'];
+        $total += $exprParserScore            * self::$weights['expr_parser'];
 
         $multiVectorScore = $multiVectorResult['fusion_score'] ?? 0;
         if ($multiVectorScore >= 30) {
@@ -257,7 +287,8 @@ class SemanticEngine {
             $charResult['score'], $wordResult['score'], $structResult['score'], $paramScore,
             $businessResult['score'], $logicResult['score'], $intentResult['score'], $chainScore,
             $memoryScore, $adversarialScore, $sqlParserScore, $htmlParserScore, $phpParserScore,
-            $pathParserScore, $commandParserScore,
+            $pathParserScore, $commandParserScore, $xxeParserScore, $ssrfParserScore,
+            $sstiParserScore, $deserParserScore, $crlfParserScore, $exprParserScore,
         ]);
 
         if ($highDimensions >= 6) $total += 18;
@@ -272,13 +303,18 @@ class SemanticEngine {
         if ($adversarialResult['is_adversarial'] && $intentResult['score'] >= 40) $total += 15;
         if ($memoryScore >= 40 && $intentResult['score'] >= 40) $total += 10;
 
-        // 深度解析器+意图双证加成（5大深度解析器各有强证据通道）
+        // 深度解析器+意图双证加成（11大深度解析器各有强证据通道）
         $primaryIntent = $intentResult['primary_intent'] ?? 'unknown';
         if ($primaryIntent === 'path_traversal' && $pathParserScore >= 30) $total += 15;
         if ($primaryIntent === 'command_injection' && $commandParserScore >= 25) $total += 15;
         if ($primaryIntent === 'sql_injection' && $sqlParserScore >= 30) $total += 12;
         if ($primaryIntent === 'xss' && $htmlParserScore >= 15) $total += 12;
         if ($primaryIntent === 'webshell' && $phpParserScore >= 30) $total += 15;
+        if ($primaryIntent === 'xxe' && $xxeParserScore >= 30) $total += 12;
+        if ($primaryIntent === 'ssrf' && $ssrfParserScore >= 30) $total += 12;
+        if ($primaryIntent === 'ssti' && $sstiParserScore >= 30) $total += 12;
+        if ($primaryIntent === 'deserialization' && $deserParserScore >= 30) $total += 15;
+        if ($primaryIntent === 'crlf_injection' && $crlfParserScore >= 30) $total += 10;
 
         // 算术/逻辑恒真双证加成（LogicInference + SQLParser 都检测到恒真）
         $logicHasTaut = ($logicResult['logic_type'] ?? '') === 'tautology'
@@ -294,13 +330,27 @@ class SemanticEngine {
         if ($phpParserScore >= 50 && $adversarialScore >= 40) $total += 15;
         if ($pathParserScore >= 50 && $intentResult['score'] >= 40) $total += 12;
         if ($commandParserScore >= 50 && $intentResult['score'] >= 40) $total += 12;
+        if ($xxeParserScore >= 50) $total += 12;
+        if ($ssrfParserScore >= 50) $total += 12;
+        if ($sstiParserScore >= 50) $total += 12;
+        if ($deserParserScore >= 50) $total += 15;
+        if ($crlfParserScore >= 50) $total += 10;
+        if ($exprParserScore >= 50) $total += 12;
         $parserCount = 0;
         if ($sqlParserScore >= 30) $parserCount++;
         if ($htmlParserScore >= 30) $parserCount++;
         if ($phpParserScore >= 30) $parserCount++;
         if ($pathParserScore >= 30) $parserCount++;
         if ($commandParserScore >= 30) $parserCount++;
-        if ($parserCount >= 3) $total += 20;
+        if ($xxeParserScore >= 30) $parserCount++;
+        if ($ssrfParserScore >= 30) $parserCount++;
+        if ($sstiParserScore >= 30) $parserCount++;
+        if ($deserParserScore >= 30) $parserCount++;
+        if ($crlfParserScore >= 30) $parserCount++;
+        if ($exprParserScore >= 30) $parserCount++;
+        if ($parserCount >= 5) $total += 25;
+        elseif ($parserCount >= 4) $total += 20;
+        elseif ($parserCount >= 3) $total += 15;
         elseif ($parserCount >= 2) $total += 10;
 
         // 攻击模式泛化加成（结构相似度作为辅助增强，需有其他层证据支撑）
@@ -328,6 +378,12 @@ class SemanticEngine {
             'php_parser_score'      => $phpParserScore,
             'path_parser_score'     => $pathParserScore,
             'command_parser_score'  => $commandParserScore,
+            'xxe_parser_score'      => $xxeParserScore,
+            'ssrf_parser_score'     => $ssrfParserScore,
+            'ssti_parser_score'     => $sstiParserScore,
+            'deser_parser_score'    => $deserParserScore,
+            'crlf_parser_score'     => $crlfParserScore,
+            'expr_parser_score'     => $exprParserScore,
             'sql_parser_result'     => [
                 'has_tautology'       => $sqlParserResult['has_tautology'] ?? false,
                 'tautology_type'      => $sqlParserResult['tautology_type'] ?? '',
@@ -372,6 +428,50 @@ class SemanticEngine {
                 'categories'             => $commandParserResult['categories'] ?? [],
                 'has_command_substitution' => $commandParserResult['has_command_substitution'] ?? false,
                 'has_wildcard_bypass'    => $commandParserResult['has_wildcard_bypass'] ?? false,
+            ],
+            'xxe_parser_result' => [
+                'is_xxe'               => $xxeParserResult['is_xxe'] ?? false,
+                'has_doctype'          => $xxeParserResult['has_doctype'] ?? false,
+                'has_external_ref'     => $xxeParserResult['has_external_ref'] ?? false,
+                'has_parameter_entity' => $xxeParserResult['has_parameter_entity'] ?? false,
+                'is_blind_xxe'         => $xxeParserResult['is_blind_xxe'] ?? false,
+                'entity_count'         => $xxeParserResult['entity_count'] ?? 0,
+            ],
+            'ssrf_parser_result' => [
+                'is_ssrf'              => $ssrfParserResult['is_ssrf'] ?? false,
+                'has_internal_ip'      => $ssrfParserResult['has_internal_ip'] ?? false,
+                'has_cloud_metadata'   => $ssrfParserResult['has_cloud_metadata'] ?? false,
+                'dangerous_scheme_count' => count($ssrfParserResult['dangerous_schemes'] ?? []),
+                'has_bypass_technique' => !empty($ssrfParserResult['bypass_techniques']),
+            ],
+            'ssti_parser_result' => [
+                'is_ssti'              => $sstiParserResult['is_ssti'] ?? false,
+                'detected_engines'     => $sstiParserResult['detected_engines'] ?? [],
+                'expression_depth'     => $sstiParserResult['expression_depth'] ?? 0,
+                'has_mixed_engines'    => $sstiParserResult['has_mixed_engines'] ?? false,
+                'payload_hits_count'   => count($sstiParserResult['payload_hits'] ?? []),
+            ],
+            'deser_parser_result' => [
+                'is_deserialization'   => $deserParserResult['is_deserialization'] ?? false,
+                'object_count'         => $deserParserResult['object_count'] ?? 0,
+                'array_count'          => $deserParserResult['array_count'] ?? 0,
+                'max_nesting_depth'    => $deserParserResult['max_nesting_depth'] ?? 0,
+                'dangerous_classes'    => $deserParserResult['dangerous_classes'] ?? [],
+                'has_pop_chain'        => $deserParserResult['has_pop_chain_feature'] ?? false,
+            ],
+            'crlf_parser_result' => [
+                'is_crlf'              => $crlfParserResult['is_crlf'] ?? false,
+                'crlf_count'           => $crlfParserResult['crlf_count'] ?? 0,
+                'has_header_injection' => $crlfParserResult['has_header_injection'] ?? false,
+                'has_response_splitting' => $crlfParserResult['has_response_splitting'] ?? false,
+                'decode_depth'         => $crlfParserResult['decode_depth'] ?? 0,
+            ],
+            'expr_parser_result' => [
+                'is_expression_injection' => $exprParserResult['is_expression_injection'] ?? false,
+                'injection_type'        => $exprParserResult['injection_type'] ?? 'none',
+                'xpath_score'           => $exprParserResult['xpath_score'] ?? 0,
+                'ldap_score'            => $exprParserResult['ldap_score'] ?? 0,
+                'nosql_score'           => $exprParserResult['nosql_score'] ?? 0,
             ],
             'pattern_match_score'   => $patternMatchScore,
             'pattern_best_match'    => $patternMatchResult['best_match'] ?? null,
