@@ -140,6 +140,31 @@ if (!empty($_SERVER['QUERY_STRING'])) {
 require_once __DIR__ . '/src/Defense/GraphQLDefender.php';
 GraphQLDefender::check();
 
+// ====================== 高级防护模块 ======================
+require_once __DIR__ . '/src/Defense/SsrfDefender.php';
+SsrfDefender::check();
+
+require_once __DIR__ . '/src/Defense/NoSqlInjection.php';
+NoSqlInjection::check();
+
+require_once __DIR__ . '/src/Defense/RequestSmuggling.php';
+RequestSmuggling::check();
+
+require_once __DIR__ . '/src/Defense/JwtSecurity.php';
+JwtSecurity::check();
+
+require_once __DIR__ . '/src/Defense/TemplateInjection.php';
+TemplateInjection::check();
+
+require_once __DIR__ . '/src/Defense/ApiSecurity.php';
+ApiSecurity::check();
+
+require_once __DIR__ . '/src/Defense/CrlfInjection.php';
+CrlfInjection::check();
+
+require_once __DIR__ . '/src/Defense/CachePoisoning.php';
+CachePoisoning::check();
+
 // ====================== 收集其他输入源并全局归一化 ======================
 $post = !empty($_POST) ? http_build_query($_POST) : '';
 $headers = '';
