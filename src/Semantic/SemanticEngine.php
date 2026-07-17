@@ -1,11 +1,12 @@
 <?php
 /**
- * 语义分析总引擎（终极版本 - 全球顶级围堵策略）
- * 职责：整合10维语义分析 + 误报控制 + 路径预判 + 主动防御，
+ * 语义分析总引擎（终极版本 - 全球顶级深度语义解析）
+ * 职责：整合10维语义分析 + 3大深度解析器 + 误报控制 + 路径预判 + 主动防御，
  *       实现"预判路径围追堵截"的革命性安全战略。
  *
  * 核心架构：
- *   L1-L10: 10维语义分析（基础）
+ *   L1-L10: 10维语义分析（基础特征层）
+ *   SQL/HTML/PHP 3大深度解析器（真正语法分析，不是正则匹配）
  *   FP Guard: 误报控制（确保不误杀）
  *   Path Predictor: 路径预判（提前布防）
  *   Active Defense: 主动防御（围追堵截）
@@ -28,19 +29,25 @@ require_once __DIR__ . '/MultiVectorFusion.php';
 require_once __DIR__ . '/FalsePositiveGuard.php';
 require_once __DIR__ . '/AttackPathPredictor.php';
 require_once __DIR__ . '/ActiveDefense.php';
+require_once __DIR__ . '/SqlSemanticParser.php';
+require_once __DIR__ . '/HtmlSemanticParser.php';
+require_once __DIR__ . '/PhpCodeSemanticParser.php';
 
 class SemanticEngine {
     private static $weights = [
-        'char'        => 0.06,
-        'word'        => 0.08,
-        'structure'   => 0.08,
-        'param'       => 0.06,
-        'business'    => 0.06,
-        'logic'       => 0.12,
-        'intent'      => 0.14,
-        'chain'       => 0.17,
-        'memory'      => 0.10,
-        'adversarial' => 0.13,
+        'char'        => 0.05,
+        'word'        => 0.05,
+        'structure'   => 0.06,
+        'param'       => 0.05,
+        'business'    => 0.05,
+        'logic'       => 0.08,
+        'intent'      => 0.10,
+        'chain'       => 0.12,
+        'memory'      => 0.07,
+        'adversarial' => 0.08,
+        'sql_parser'  => 0.12,
+        'html_parser' => 0.08,
+        'php_parser'  => 0.09,
     ];
 
     /**
@@ -183,6 +190,15 @@ class SemanticEngine {
 
         $obfuscationScore = $obfuscationResult['score'];
 
+        // ---- 深度语义解析器（真正的语法分析，不是正则匹配） ----
+        $sqlParserResult = SqlSemanticParser::analyze($text);
+        $htmlParserResult = HtmlSemanticParser::analyze($text);
+        $phpParserResult = PhpCodeSemanticParser::analyze($text);
+
+        $sqlParserScore  = $sqlParserResult['score'] ?? 0;
+        $htmlParserScore = $htmlParserResult['score'] ?? 0;
+        $phpParserScore  = $phpParserResult['score'] ?? 0;
+
         // 加权计算
         $total = 0;
         $total += $charResult['score']        * self::$weights['char'];
@@ -195,6 +211,9 @@ class SemanticEngine {
         $total += $chainScore                 * self::$weights['chain'];
         $total += $memoryScore                * self::$weights['memory'];
         $total += $adversarialScore           * self::$weights['adversarial'];
+        $total += $sqlParserScore             * self::$weights['sql_parser'];
+        $total += $htmlParserScore            * self::$weights['html_parser'];
+        $total += $phpParserScore             * self::$weights['php_parser'];
 
         $multiVectorScore = $multiVectorResult['fusion_score'] ?? 0;
         if ($multiVectorScore >= 30) {
@@ -211,7 +230,7 @@ class SemanticEngine {
         $highDimensions = self::countHighDimensions([
             $charResult['score'], $wordResult['score'], $structResult['score'], $paramScore,
             $businessResult['score'], $logicResult['score'], $intentResult['score'], $chainScore,
-            $memoryScore, $adversarialScore,
+            $memoryScore, $adversarialScore, $sqlParserScore, $htmlParserScore, $phpParserScore,
         ]);
 
         if ($highDimensions >= 6) $total += 18;
@@ -225,6 +244,12 @@ class SemanticEngine {
         if (!empty($chainInfo['chain_detected']) && ($chainInfo['chain_progress'] ?? 0) >= 40) $total += 12;
         if ($adversarialResult['is_adversarial'] && $intentResult['score'] >= 40) $total += 15;
         if ($memoryScore >= 40 && $intentResult['score'] >= 40) $total += 10;
+
+        // 深度解析器强证据加成（真正的语法分析命中，不是正则）
+        if ($sqlParserScore >= 50 && $logicResult['score'] >= 40) $total += 12;
+        if ($htmlParserScore >= 50 && $structResult['score'] >= 40) $total += 10;
+        if ($phpParserScore >= 50 && $adversarialScore >= 40) $total += 15;
+        if ($sqlParserScore >= 30 && $htmlParserScore >= 30 && $phpParserScore >= 30) $total += 20;
 
         $total = max(0, min(100, (int)round($total)));
 
@@ -241,6 +266,37 @@ class SemanticEngine {
             'l8_chain_score'        => $chainScore,
             'l9_memory_score'       => $memoryScore,
             'l10_adversarial_score' => $adversarialScore,
+            'sql_parser_score'      => $sqlParserScore,
+            'html_parser_score'     => $htmlParserScore,
+            'php_parser_score'      => $phpParserScore,
+            'sql_parser_result'     => [
+                'has_tautology'       => $sqlParserResult['has_tautology'] ?? false,
+                'tautology_type'      => $sqlParserResult['tautology_type'] ?? '',
+                'has_union'           => $sqlParserResult['has_union'] ?? false,
+                'union_count'         => $sqlParserResult['union_count'] ?? 0,
+                'subquery_depth'      => $sqlParserResult['subquery_depth'] ?? 0,
+                'dangerous_functions' => $sqlParserResult['dangerous_functions'] ?? [],
+                'sensitive_tables'    => $sqlParserResult['sensitive_tables'] ?? [],
+                'sql_type'            => $sqlParserResult['sql_type'] ?? 'unknown',
+            ],
+            'html_parser_result'    => [
+                'parser_used'           => $htmlParserResult['parser_used'] ?? 'regex',
+                'has_script'            => $htmlParserResult['has_script'] ?? false,
+                'has_event_handler'     => $htmlParserResult['has_event_handler'] ?? false,
+                'has_javascript_proto'  => $htmlParserResult['has_javascript_protocol'] ?? false,
+                'has_svg_payload'       => $htmlParserResult['has_svg_payload'] ?? false,
+                'event_handler_count'   => count($htmlParserResult['event_handlers'] ?? []),
+                'max_nesting_depth'     => $htmlParserResult['max_nesting_depth'] ?? 0,
+            ],
+            'php_parser_result'     => [
+                'parser_used'            => $phpParserResult['parser_used'] ?? 'regex',
+                'has_eval'               => $phpParserResult['has_eval'] ?? false,
+                'has_command_exec'       => $phpParserResult['has_command_exec'] ?? false,
+                'has_superglobal_danger' => $phpParserResult['has_superglobal_in_danger'] ?? false,
+                'obfuscation_level'      => $phpParserResult['obfuscation_level'] ?? 0,
+                'dangerous_func_count'   => count($phpParserResult['dangerous_functions'] ?? []),
+                'code_complexity'        => $phpParserResult['code_complexity'] ?? 0,
+            ],
             'obfuscation_score'     => $obfuscationScore,
             'scene'                 => $businessResult['scene'] ?? 'unknown',
             'business_valid'        => $businessResult['valid'] ?? true,
