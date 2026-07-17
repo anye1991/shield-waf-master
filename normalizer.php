@@ -6,9 +6,12 @@ class WafNormalizer {
     private static $fullwidth_map = [];
     private static $base64_max_len = 2000;
     private static $homoglyph_file = 'homoglyph_map.json';
+    private static $initialized = false;
+    public static $double_encoding_detected = false;
 
     public static function init() {
-        if (!empty(self::$fullwidth_map)) return;
+        if (self::$initialized) return;
+        self::$initialized = true;
         self::$fullwidth_map = [
             '０' => '0','１' => '1','２' => '2','３' => '3','４' => '4',
             '５' => '5','６' => '6','７' => '7','８' => '8','９' => '9',
@@ -64,46 +67,297 @@ class WafNormalizer {
             'र' => 'd','न' => 'n','ल' => 'l','त' => 't','क' => 'k','म' => 'm','स' => 's',
             '₿' => 'B','€' => 'E','₹' => 'R','₽' => 'P','₩' => 'W','₪' => 'S',
             'ℕ' => 'N','ℤ' => 'Z','ℚ' => 'Q','ℝ' => 'R','ℂ' => 'C',
-            ' ' => ' ',' ' => ' ',' ' => ' ',
+            ' ' => ' ',' ' => ' ',' ' => ' ',
         ];
     }
 
     public static function normalize($input) {
         if (empty($input)) return '';
+        $result = self::normalizeWithContext($input);
+        return $result['output'];
+    }
+
+    public static function normalizeWithContext($input) {
+        if (empty($input)) {
+            return [
+                'output' => '',
+                'layers' => [],
+                'encoding_depth' => 0,
+                'encoding_complexity' => 0,
+                'transform_count' => 0,
+                'semantic_score' => 0,
+            ];
+        }
         self::init();
+        self::$double_encoding_detected = false;
+
         $working = $input;
-        $maxPasses = 8;
-        $lastLen = 0;
+        $layers = [];
+        $totalTransforms = 0;
+        $encodingDepth = 0;
+        $encodingTypes = [];
+
+        $layerDefs = [
+            1  => ['name' => 'URL递归解码', 'method' => 'layerUrlDecode'],
+            2  => ['name' => 'HTML实体解码', 'method' => 'layerHtmlEntity'],
+            3  => ['name' => 'Unicode转义解码', 'method' => 'layerUnicode'],
+            4  => ['name' => 'UTF-7解码', 'method' => 'layerUtf7'],
+            5  => ['name' => 'Base64智能解码', 'method' => 'layerBase64'],
+            6  => ['name' => 'NFKC规范化', 'method' => 'layerNfkc'],
+            7  => ['name' => '全角半角转换', 'method' => 'layerFullwidth'],
+            8  => ['name' => '同形字符映射', 'method' => 'layerHomoglyph'],
+            9  => ['name' => '零宽控制字符清除', 'method' => 'layerZeroWidth'],
+            10 => ['name' => 'SQL注释移除', 'method' => 'layerSqlComments'],
+            11 => ['name' => '空格压缩规范化', 'method' => 'layerWhitespace'],
+            12 => ['name' => '大小写统一', 'method' => 'layerLowercase'],
+            13 => ['name' => '语义上下文归一化', 'method' => 'layerSemantic'],
+            14 => ['name' => '双重编码检测与深度解码', 'method' => 'layerDoubleEncoding'],
+        ];
+
+        $maxPasses = 12;
+        $urlChanged = false;
+        $htmlChanged = false;
         for ($pass = 0; $pass < $maxPasses; $pass++) {
-            $working = self::recursiveUrlDecode($working);
-            $working = html_entity_decode($working, ENT_QUOTES, 'UTF-8');
-            $working = self::unescapeUnicode($working);
-            $working = self::utf7Decode($working);
-            if (strlen($working) <= self::$base64_max_len && strlen($working) > 8 && preg_match('/^[A-Za-z0-9+\/]+={0,2}$/', $working)) {
-                $decoded = base64_decode($working, true);
-                if ($decoded !== false && self::isLikelyText($decoded)) {
-                    $working = $decoded;
+            $prevLen = strlen($working);
+            $passChanged = false;
+
+            for ($l = 1; $l <= 5; $l++) {
+                $method = $layerDefs[$l]['method'];
+                $before = $working;
+                $working = self::$method($working);
+                $changed = $before !== $working;
+                if ($changed) {
+                    $passChanged = true;
+                    $encodingTypes[] = "L{$l}";
+                    $totalTransforms++;
+                    if ($l === 1) $urlChanged = true;
+                    if ($l === 2) $htmlChanged = true;
+                }
+                // 首次pass记录L1-L5层信息
+                if ($pass === 0) {
+                    $layers[$l] = [
+                        'name' => $layerDefs[$l]['name'],
+                        'changed' => $changed,
+                        'input_len' => strlen($before),
+                        'output_len' => strlen($working),
+                    ];
                 }
             }
-            if (strlen($working) === $lastLen && $pass > 0) break;
-            $lastLen = strlen($working);
+
+            if (!$passChanged && $pass > 0) break;
+            if ($passChanged) $encodingDepth++;
         }
+
+        // 检测双重编码：URL编码和HTML实体在同一输入中共存
+        if ($urlChanged && $htmlChanged) {
+            self::$double_encoding_detected = true;
+        }
+
+        for ($l = 6; $l <= 14; $l++) {
+            $method = $layerDefs[$l]['method'];
+            $before = $working;
+            $working = self::$method($working);
+            $changed = $before !== $working;
+            if ($changed) {
+                $encodingTypes[] = "L{$l}";
+                $totalTransforms++;
+            }
+            $layers[$l] = [
+                'name' => $layerDefs[$l]['name'],
+                'changed' => $changed,
+                'input_len' => strlen($before),
+                'output_len' => strlen($working),
+            ];
+        }
+
+        $complexity = self::calcEncodingComplexity($encodingDepth, $totalTransforms, $encodingTypes);
+        $semanticScore = self::calcSemanticScore($working, $encodingTypes, $encodingDepth);
+
+        return [
+            'output' => trim($working),
+            'layers' => $layers,
+            'encoding_depth' => $encodingDepth,
+            'encoding_complexity' => $complexity,
+            'transform_count' => $totalTransforms,
+            'encoding_types' => array_unique($encodingTypes),
+            'semantic_score' => $semanticScore,
+            'double_encoding_detected' => self::$double_encoding_detected,
+        ];
+    }
+
+    private static function calcEncodingComplexity($depth, $transforms, $types) {
+        $score = 0;
+        $score += $depth * 8;
+        $score += $transforms * 2;
+        $uniqueTypes = count(array_unique($types));
+        $score += $uniqueTypes * 5;
+        $highRiskTypes = ['L5', 'L4', 'L3'];
+        foreach ($highRiskTypes as $t) {
+            if (in_array($t, $types)) $score += 10;
+        }
+        return min($score, 100);
+    }
+
+    private static function calcSemanticScore($text, $encodingTypes, $depth) {
+        $score = 0;
+        if ($depth >= 4) $score += 25;
+        elseif ($depth >= 2) $score += 10;
+        $mixedScripts = self::countMixedScripts($text);
+        if ($mixedScripts >= 3) $score += 20;
+        elseif ($mixedScripts >= 2) $score += 8;
+        $printableRatio = self::printableRatio($text);
+        if ($printableRatio < 0.5) $score += 15;
+        elseif ($printableRatio < 0.7) $score += 5;
+        if (preg_match('/[a-zA-Z].*[\x{0400}-\x{04FF}].*[a-zA-Z]/u', $text)) $score += 15;
+        if (preg_match('/[a-zA-Z].*[\x{0370}-\x{03FF}].*[a-zA-Z]/u', $text)) $score += 12;
+        return min($score, 100);
+    }
+
+    private static function countMixedScripts($text) {
+        $scripts = 0;
+        if (preg_match('/[a-zA-Z]/', $text)) $scripts++;
+        if (preg_match('/[\x{0400}-\x{04FF}]/u', $text)) $scripts++;
+        if (preg_match('/[\x{0370}-\x{03FF}]/u', $text)) $scripts++;
+        if (preg_match('/[\x{0530}-\x{058F}]/u', $text)) $scripts++;
+        if (preg_match('/[\x{0600}-\x{06FF}]/u', $text)) $scripts++;
+        if (preg_match('/[\x{0E00}-\x{0E7F}]/u', $text)) $scripts++;
+        if (preg_match('/[\x{0E80}-\x{0EFF}]/u', $text)) $scripts++;
+        if (preg_match('/[\x{1000}-\x{109F}]/u', $text)) $scripts++;
+        return $scripts;
+    }
+
+    private static function printableRatio($str) {
+        $len = strlen($str);
+        if ($len === 0) return 1;
+        $printable = 0;
+        for ($i = 0; $i < $len; $i++) {
+            $ord = ord($str[$i]);
+            if (($ord >= 32 && $ord <= 126) || $ord === 9 || $ord === 10 || $ord === 13 || $ord > 127) {
+                $printable++;
+            }
+        }
+        return $printable / $len;
+    }
+
+    private static function layerUrlDecode($s) {
+        return self::recursiveUrlDecode($s);
+    }
+
+    private static function layerHtmlEntity($s) {
+        return html_entity_decode($s, ENT_QUOTES, 'UTF-8');
+    }
+
+    private static function layerUnicode($s) {
+        return self::unescapeUnicode($s);
+    }
+
+    private static function layerUtf7($s) {
+        return self::utf7Decode($s);
+    }
+
+    private static function layerBase64($s) {
+        // 跳过Hex编码字符串（0x前缀），交给L14处理
+        if (preg_match('/^0x[0-9a-f]+$/i', $s)) return $s;
+        if (strlen($s) <= self::$base64_max_len && strlen($s) > 8 && preg_match('/^[A-Za-z0-9+\/]+={0,2}$/', $s)) {
+            $decoded = base64_decode($s, true);
+            if ($decoded !== false && self::isLikelyText($decoded)) {
+                return $decoded;
+            }
+        }
+        return $s;
+    }
+
+    private static function layerNfkc($s) {
         if (class_exists('Normalizer')) {
-            $working = \Normalizer::normalize($working, \Normalizer::NFKC);
+            return \Normalizer::normalize($s, \Normalizer::NFKC);
         }
-        $working = strtr($working, self::$fullwidth_map);
-        if (function_exists('mb_strtolower')) {
-            $working = mb_strtolower($working, 'UTF-8');
-        } else {
-            $working = strtolower($working);
-        }
-        $working = strtr($working, self::$homoglyph_map);
-        $working = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x{200B}-\x{200F}\x{202A}-\x{202E}\x{FEFF}\x{2060}-\x{2064}]/u', '', $working);
+        return $s;
+    }
+
+    private static function layerFullwidth($s) {
+        return strtr($s, self::$fullwidth_map);
+    }
+
+    private static function layerHomoglyph($s) {
+        return strtr($s, self::$homoglyph_map);
+    }
+
+    private static function layerZeroWidth($s) {
+        return preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x{200B}-\x{200F}\x{202A}-\x{202E}\x{FEFF}\x{2060}-\x{2064}]/u', '', $s);
+    }
+
+    private static function layerSqlComments($s) {
         if (defined('WAF_NORMALIZE_SQL_COMMENTS') && WAF_NORMALIZE_SQL_COMMENTS) {
-            $working = preg_replace('/\/\*.*?\*\/|--[^\n]*|#.*/i', ' ', $working);
+            return preg_replace('/\/\*.*?\*\/|--[^\n]*|#.*/i', ' ', $s);
         }
-        $working = preg_replace('/\s+/u', ' ', $working);
-        return trim($working);
+        return $s;
+    }
+
+    private static function layerWhitespace($s) {
+        return preg_replace('/\s+/u', ' ', $s);
+    }
+
+    private static function layerLowercase($s) {
+        if (function_exists('mb_strtolower')) {
+            return mb_strtolower($s, 'UTF-8');
+        }
+        return strtolower($s);
+    }
+
+    private static function layerSemantic($s) {
+        $s = preg_replace_callback('/\b0x([0-9a-f]+)\b/i', function($m) {
+            $hex = $m[1];
+            if (strlen($hex) % 2 !== 0) $hex = '0' . $hex;
+            $decoded = @hex2bin($hex);
+            return ($decoded !== false && self::isLikelyText($decoded)) ? $decoded : $m[0];
+        }, $s);
+        $s = preg_replace('/\b(?:unhex|hex|char|ascii|ord)\s*\(/i', '', $s);
+        $s = preg_replace('/\bconcat\s*\(/i', 'concat(', $s);
+        return $s;
+    }
+
+    /**
+     * L14: 双重编码检测与深度解码
+     * 检测并解码混合编码载荷（如URL编码嵌套HTML实体、Hex编码+Base64叠加等）
+     * 同时标记双重编码绕过行为，为评分系统提供额外信号
+     */
+    private static function layerDoubleEncoding($s) {
+        // 检测Hex字符串编码（如 0x73656c656374 → select）
+        $s = preg_replace_callback('/0x([0-9a-f]{6,})/i', function($m) {
+            $hex = $m[1];
+            $decoded = @hex2bin($hex);
+            if ($decoded !== false && self::isLikelyText($decoded)) {
+                return $decoded;
+            }
+            return $m[0];
+        }, $s);
+
+        // 检测连续转义序列（如 \x27\x3c\x73 ）
+        // 注意：正则中需要匹配字面的反斜杠+x，需用 \\\\ 在PHP单引号字符串中
+        $s = preg_replace_callback('/((?:\\\\x[0-9a-fA-F]{2}){3,})/', function($m) {
+            $hexStr = $m[1];
+            $decoded = '';
+            if (preg_match_all('/\\\\x([0-9a-fA-F]{2})/', $hexStr, $hexMatches)) {
+                foreach ($hexMatches[1] as $hex) {
+                    $decoded .= chr(hexdec($hex));
+                }
+            }
+            return ($decoded !== '' && self::isLikelyText($decoded)) ? $decoded : $m[0];
+        }, $s);
+
+        // 检测八进制编码（如 \104\105\114）
+        $s = preg_replace_callback('/((?:\\\\[0-7]{3}){3,})/', function($m) {
+            $octStr = $m[1];
+            $decoded = '';
+            if (preg_match_all('/\\\\([0-7]{3})/', $octStr, $octMatches)) {
+                foreach ($octMatches[1] as $oct) {
+                    $decoded .= chr(octdec($oct));
+                }
+            }
+            return ($decoded !== '' && self::isLikelyText($decoded)) ? $decoded : $m[0];
+        }, $s);
+
+        return $s;
     }
 
     private static function recursiveUrlDecode($s) {
@@ -189,14 +443,10 @@ class WafNormalizer {
         return $data;
     }
 
-    /**
-     * 对 XML 字符串进行上下文归一化（已修复 XXE 漏洞）
-     */
     public static function normalizeXml($rawXml) {
         if (!class_exists('DOMDocument')) return self::normalize($rawXml);
         $dom = new \DOMDocument();
         libxml_use_internal_errors(true);
-        // 禁用外部实体加载，防止 XXE
         libxml_disable_entity_loader(true);
         if (!$dom->loadXML($rawXml, LIBXML_NOENT | LIBXML_NONET)) {
             libxml_disable_entity_loader(false);

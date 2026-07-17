@@ -62,6 +62,46 @@ function waf_clean_ban_file() {
     }
 }
 
+function waf_unban($ip) {
+    $file = WAF_LOG_PATH . 'ban.txt';
+    if (!is_file($file)) return;
+    $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    $new   = [];
+    foreach ($lines as $line) {
+        $d = explode('|', $line);
+        if (count($d) !== 2) continue;
+        if ($d[0] !== $ip) {
+            $new[] = $line;
+        }
+    }
+    if (count($new) !== count($lines)) {
+        @file_put_contents($file, implode("\n", $new) . "\n", LOCK_EX);
+    }
+}
+
+function waf_get_banned_ips() {
+    $file = WAF_LOG_PATH . 'ban.txt';
+    if (!is_file($file)) return [];
+    $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    $now   = time();
+    $result = [];
+    foreach ($lines as $line) {
+        $d = explode('|', $line);
+        if (count($d) !== 2) continue;
+        $expire = (int)$d[1];
+        $status = $expire > $now ? 'active' : 'expired';
+        $duration = $expire === PHP_INT_MAX ? '永久' : ($expire > $now ? date('Y-m-d H:i:s', $expire) : '已过期');
+        $result[] = [
+            'ip'       => $d[0],
+            'expire'   => $expire,
+            'expire_str' => $duration,
+            'status'   => $status,
+            'history_count' => waf_get_ban_history_count($d[0])
+        ];
+    }
+    return $result;
+}
+
 // ====================== 管理员 IP 白名单 ======================
 
 function waf_is_admin_ip($ip = null) {
@@ -127,6 +167,42 @@ function waf_clean_admin_ips() {
     if (count($new) !== count($lines)) {
         @file_put_contents($file, implode("\n", $new) . "\n", LOCK_EX);
     }
+}
+
+function waf_remove_admin_ip($ip) {
+    $file = WAF_ADMIN_IP_FILE;
+    if (!is_file($file)) return;
+    $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    $new   = [];
+    foreach ($lines as $line) {
+        $parts = explode('|', $line);
+        if ($parts[0] !== $ip) {
+            $new[] = $line;
+        }
+    }
+    if (count($new) !== count($lines)) {
+        @file_put_contents($file, implode("\n", $new) . "\n", LOCK_EX);
+    }
+}
+
+function waf_get_admin_ips() {
+    $file = WAF_ADMIN_IP_FILE;
+    if (!is_file($file)) return [];
+    $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    $now   = time();
+    $result = [];
+    foreach ($lines as $line) {
+        $parts  = explode('|', $line);
+        $expire = isset($parts[1]) ? (int)$parts[1] : 0;
+        $status = ($expire === 0 || $expire > $now) ? 'active' : 'expired';
+        $result[] = [
+            'ip'      => $parts[0],
+            'expire'  => $expire,
+            'expire_str' => $expire === 0 ? '永久' : ($expire > $now ? date('Y-m-d H:i:s', $expire) : '已过期'),
+            'status'  => $status
+        ];
+    }
+    return $result;
 }
 
 // ====================== 暴力尝试计数器 ======================
@@ -233,4 +309,34 @@ function waf_smart_ban($ip) {
     $history  = waf_get_ban_history_count($ip);
     $duration = waf_get_ban_duration($history);
     waf_ban($ip, $duration);
+}
+
+// ====================== IP 段支持 ======================
+
+function waf_ip_in_range($ip, $range) {
+    if (strpos($range, '/') === false) {
+        return $ip === $range;
+    }
+    list($network, $prefix) = explode('/', $range, 2);
+    $network = ip2long($network);
+    $ip = ip2long($ip);
+    $mask = -1 << (32 - (int)$prefix);
+    $network &= $mask;
+    return ($ip & $mask) === $network;
+}
+
+function waf_is_admin_ip_range($ip = null) {
+    if ($ip === null) $ip = waf_get_real_ip();
+    $file = WAF_ADMIN_IP_FILE;
+    if (!is_file($file)) return false;
+    $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    $now   = time();
+    foreach ($lines as $line) {
+        $parts  = explode('|', $line);
+        $entry_ip = $parts[0];
+        $expire   = isset($parts[1]) ? (int)$parts[1] : 0;
+        if ($expire > 0 && $expire <= $now) continue;
+        if (waf_ip_in_range($ip, $entry_ip)) return true;
+    }
+    return false;
 }

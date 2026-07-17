@@ -8,6 +8,9 @@
  */
 defined('ABSPATH') || exit;
 
+// ======================== 版本号 ========================
+define('SHIELD_WAF_VERSION', '3.0.0');
+
 // ======================== 简易 .env 加载 ========================
 function waf_load_env($dir) {
     $file = $dir . '/.env';
@@ -46,6 +49,12 @@ define('WAF_ADMIN_IP_TTL',    86400);
 define('WAF_NORMALIZE_SQL_COMMENTS', true);
 define('WAF_403_TEMPLATE',    __DIR__ . '/waf_403_template.php');
 
+// ======================== 机器人检测 ========================
+// 是否通过 DNS 反向解析验证搜索引擎蜘蛛真实性（最可靠，但每次请求增加一次DNS查询）
+// false = 仅通过 UA + 头特征验证（默认，零延迟）
+// true  = 启用 DNS 反查（forward+reverse 双向验证，推荐高安全需求站点开启）
+define('WAF_BOT_VERIFY_DNS', false);
+
 // ======================== CC 攻击防护 ========================
 define('WAF_CC_LIMIT',  60);
 define('WAF_CC_WINDOW', 60);
@@ -60,3 +69,81 @@ define('WAF_STATS_CACHE_SEC', 10);
 
 // ======================== CDN 配置 ========================
 define('WAF_TRUST_CF_IP', false);
+
+// ======================== 沙箱配置 ========================
+// 自动扫描间隔（秒），默认 300 = 5 分钟
+define('WAF_SANDBOX_SCAN_INTERVAL', 300);
+// 监控目录（数组），默认为 ABSPATH（站点根目录）
+if (!defined('WAF_SANDBOX_MONITOR_DIRS')) {
+    define('WAF_SANDBOX_MONITOR_DIRS', serialize([ABSPATH]));
+}
+// 隔离区目录
+define('WAF_SANDBOX_QUARANTINE_DIR', WAF_LOG_PATH . 'quarantine/');
+// 新落地的恶意文件是否秒删除（true=直接删除，false=移入隔离区）
+define('WAF_SANDBOX_INSTANT_DELETE_NEW', true);
+// 修改的现有文件含恶意代码时是否自动隔离（true=自动隔离待审核，false=仅告警）
+define('WAF_SANDBOX_AUTO_QUARANTINE', true);
+// 沙箱扫描排除目录（序列化数组）
+if (!defined('WAF_SANDBOX_EXCLUDE_DIRS')) {
+    define('WAF_SANDBOX_EXCLUDE_DIRS', serialize([
+        WAF_LOG_PATH,               // 日志目录
+        '/wp-content/cache/',      // 缓存目录
+        '/wp-content/uploads/',    // 上传目录（由 upload.php 单独防护）
+    ]));
+}
+// 恶意代码判定阈值（评分 >= 此值即判定为恶意）
+define('WAF_SANDBOX_MALWARE_THRESHOLD', 50);
+
+// ======================== 上传检测配置 ========================
+// 是否启用文件上传检测
+define('WAF_UPLOAD_DETECTION', true);
+// 允许上传的文件扩展名白名单
+define('WAF_UPLOAD_ALLOWED_EXT', serialize(['jpg','jpeg','png','gif','webp','bmp','ico','svg']));
+// 允许的 MIME 类型
+define('WAF_UPLOAD_ALLOWED_MIME', serialize([
+    'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+    'image/bmp', 'image/x-icon', 'image/svg+xml',
+]));
+// 是否使用 GD 库验证图像真实性（比 finfo 更严格，能识别图像马）
+define('WAF_UPLOAD_GD_VERIFY', true);
+// 是否允许 SVG 上传（SVG 可携带脚本和 XXE，风险较高）
+define('WAF_UPLOAD_ALLOW_SVG', false);
+// 上传文件内容恶意评分阈值（>= 此值直接拦截）
+define('WAF_UPLOAD_BLOCK_THRESHOLD', 60);
+// 上传文件内容可疑阈值（>= 此值记录日志，< 此值放行）
+define('WAF_UPLOAD_LOG_THRESHOLD', 30);
+// 上传文件扫描最大大小（字节），超过此大小只扫描头部和尾部
+define('WAF_UPLOAD_SCAN_MAX_SIZE', 5 * 1024 * 1024); // 5MB
+// 上传检测是否启用累进封禁
+define('WAF_UPLOAD_BAN_ON_BLOCK', true);
+
+// ======================== 语义引擎配置 ========================
+// 语义分析是否启用（关闭后仅使用归一化+评分，防御能力降低）
+define('WAF_SEMANTIC_ENGINE', true);
+// 语义记忆池是否启用（记录每个IP的语义指纹，跨请求对比分析）
+define('WAF_SEMANTIC_MEMORY', true);
+// 语义记忆池保留时间（小时）
+define('WAF_SEMANTIC_MEMORY_TTL', 48);
+// 攻击链分析是否启用（关联同一IP多步攻击行为）
+define('WAF_ATTACK_CHAIN', true);
+// 攻击链保留时间（小时）
+define('WAF_ATTACK_CHAIN_TTL', 24);
+
+// ======================== 主动防御配置 ========================
+// 主动防御是否启用（蜜罐+预判拦截+攻击链封堵）
+define('WAF_ACTIVE_DEFENSE', true);
+// 蜜罐是否启用（部署虚假管理后台/phpMyAdmin/Git仓库等）
+define('WAF_HONEYTRAP', true);
+// 攻击路径预判是否启用
+define('WAF_PATH_PREDICTION', true);
+// 误报控制是否启用（7层确认机制，确保不误杀正常请求）
+define('WAF_FALSE_POSITIVE_GUARD', true);
+
+// ======================== 评分系统配置 ========================
+// 拦截阈值（总分>=此值拦截）
+define('WAF_SCORE_BLOCK', 70);
+// 监控阈值（总分>=此值记录日志但不拦截）
+define('WAF_SCORE_MONITOR', 40);
+// 语义分析权重（四维评分中语义占比，范围0-100，其余三维度均分剩余）
+define('WAF_SEMANTIC_WEIGHT', 30);
+// 机器人检测配置

@@ -51,6 +51,7 @@ class WafStats {
         ksort($daily);
         arsort($ips);
         return [
+            'version' => defined('SHIELD_WAF_VERSION') ? SHIELD_WAF_VERSION : '3.0.0',
             'total'   => $total,
             'top_ips' => array_slice($ips, 0, 10, true),
             'types'   => $types,

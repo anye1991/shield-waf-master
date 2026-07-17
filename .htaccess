@@ -1,0 +1,37 @@
+# 盾甲 WAF - Apache/Nginx 安全规则
+# 防止敏感文件被外部访问
+
+# 禁止访问 .env 文件
+<Files ".env">
+    Require all denied
+</Files>
+
+# 禁止访问 JSON 配置文件
+<Files "homoglyph_map.json">
+    Require all denied
+</Files>
+
+# 禁止访问日志目录
+<Directory "waf_logs">
+    Require all denied
+</Directory>
+
+# 禁止访问 PHP 内部文件（通过直接URL访问）
+<FilesMatch "^(config|functions|normalizer|detector|Scorer|auto_learning|upload|sandbox|malware_scanner|ip_manager|rate_limit|api_rate_limit|darkgate|output_filter|chunked|security_headers|cors_policy|csrf_protect|graphql_injection|session_security|websocket_block|stats|scanner_api|waf_403_template)\.php$">
+    Require all denied
+</FilesMatch>
+
+# 禁止访问语义引擎文件
+<Directory "semantic">
+    Require all denied
+</Directory>
+
+# 禁止访问 Bot 检测文件
+<Directory "bot">
+    Require all denied
+</Directory>
+
+# 禁止访问编译引擎文件
+<Directory "compiler">
+    Require all denied
+</Directory>

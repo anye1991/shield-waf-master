@@ -72,7 +72,25 @@ if (!in_array($_SERVER['REQUEST_METHOD'], $allowed_methods)) {
 require_once __DIR__ . '/csrf_protect.php';
 CsrfProtect::check();
 
+// ====================== 机器人检测 ======================
+require_once __DIR__ . '/bot/BotManager.php';
+$botResult = BotManager::check([
+    'uri'     => $_SERVER['REQUEST_URI'] ?? '/',
+    'ua'      => $_SERVER['HTTP_USER_AGENT'] ?? '',
+    'headers' => $_SERVER,
+    'ip'      => waf_get_real_ip(),
+]);
+if ($botResult['action'] === 'block') {
+    waf_block('Malicious bot detected - ' . ($botResult['reason'] ?? ''));
+}
+
 // ====================== 虚拟沙箱初始化 ======================
+// 沙箱依赖：归一化引擎、检测器、语义引擎、编译引擎
+require_once __DIR__ . '/normalizer.php';
+WafNormalizer::init();
+require_once __DIR__ . '/detector.php';
+require_once __DIR__ . '/semantic/SemanticEngine.php';
+require_once __DIR__ . '/compiler/CompilerEngine.php';
 require_once __DIR__ . '/sandbox.php';
 WafSandbox::init();
 
@@ -97,7 +115,6 @@ if (!empty($body) && !empty($contentType)) {
         waf_block('不允许的 Content-Type: ' . $type_clean);
     }
 
-    require_once __DIR__ . '/normalizer.php';
     if ($type_clean === 'application/json') {
         $body = WafNormalizer::normalizeJson($body);
     } elseif ($type_clean === 'application/xml' || $type_clean === 'text/xml') {
@@ -134,14 +151,42 @@ foreach (['HTTP_USER_AGENT','HTTP_REFERER','HTTP_X_FORWARDED_FOR','HTTP_ACCEPT_L
 $cookie = !empty($_COOKIE) ? http_build_query($_COOKIE) : '';
 
 require_once __DIR__ . '/normalizer.php';
-$all = WafNormalizer::normalize("$uri $body $post $headers $cookie");
+$normResult = WafNormalizer::normalizeWithContext("$uri $body $post $headers $cookie");
+$all = $normResult['output'];
 
-// ====================== 攻击检测 ======================
-require_once __DIR__ . '/detector.php';   // ← 添加这一行
-if (waf_is_attack($all)) {
+// ====================== 攻击检测（L14语义上下文评分系统 + 自动学习 + 智能评分） ======================
+require_once __DIR__ . '/detector.php';
+$attackResult = waf_analyze_attack($all, $normResult);
+
+// 智能评分系统（四维：熵值+语义+编译偏差+偏离分析）
+require_once __DIR__ . '/Scorer.php';
+$scorerResult = WafScorer::score($all, $uri, $_GET, $normResult);
+
+// 综合判断：规则检测或智能评分任一达到拦截阈值即拦截
+if ($attackResult['is_attack'] || $scorerResult['is_attack']) {
+    // 记录攻击到自动学习系统
+    AutoLearn::recordAttack($all, $attackResult);
+
     waf_smart_ban(waf_get_real_ip());
-    waf_block('Attack detected');
+    $riskInfo = sprintf(
+        'Risk: %s (%.1f%%, depth=%d, hits=%d, learned=%d%s | Scorer: %.1f [E=%.0f S=%.0f C=%.0f D=%.0f])',
+        $attackResult['risk_level'],
+        $attackResult['total_score'],
+        $attackResult['encoding_depth'],
+        $attackResult['hit_count'],
+        $attackResult['learned_hits'],
+        !empty($attackResult['double_encoding']) ? ', dbl_enc=1' : '',
+        $scorerResult['total_score'],
+        $scorerResult['entropy_score'],
+        $scorerResult['semantic_score'],
+        $scorerResult['compiler_score'],
+        $scorerResult['deviation_score']
+    );
+    waf_block('Attack detected - ' . $riskInfo);
 }
+
+// 记录正常请求模式到自适应学习系统
+AutoLearn::recordNormal($uri, array_keys($_GET + $_POST));
 
 // ====================== 文件上传检测 ======================
 require_once __DIR__ . '/upload.php';
@@ -160,6 +205,14 @@ if ($requestPath === '/waf-dashboard') {
 }
 if ($requestPath === '/waf-scanner-api') {
     require_once __DIR__ . '/scanner_api.php';
+    exit;
+}
+if ($requestPath === '/waf-dashboard-bot') {
+    require_once __DIR__ . '/dashboard_bot.php';
+    exit;
+}
+if ($requestPath === '/waf-sandbox-api') {
+    require_once __DIR__ . '/waf-sandbox-api.php';
     exit;
 }
 
