@@ -13,14 +13,14 @@ defined('ABSPATH') || exit;
 class BotSemantic {
     private static $tracker_dir   = null;
     private static $history_window = 300; // 5 分钟窗口
-    private static $max_history    = 50;  // 最多保留 50 条
+    private static $max_history    = 100; // 最多保留 100 条
 
     /**
      * 语义行为分析
      * @param string $uri     请求 URI
      * @param array  $headers 请求头
      * @param string $ua      User-Agent（用于识别搜索引擎蜘蛛，降权处理）
-     * @return array ['score'=>0-100, 'indicators'=>[...], 'path_diversity'=>..., 'interval_uniformity'=>..., 'resource_bias'=>..., 'probe_score'=>...]
+     * @return array ['score'=>0-100, 'indicators'=>[...], 'path_diversity'=>..., 'interval_uniformity'=>..., 'resource_bias'=>..., 'probe_score'=>..., 'ua_rotation_score'=>..., 'crawl_depth'=>...]
      */
     public static function analyze(string $uri, array $headers, string $ua = ''): array {
         self::initDir();
@@ -28,12 +28,10 @@ class BotSemantic {
         $ip   = self::getClientIp();
         $now  = microtime(true);
 
-        // 记录本次访问并获取窗口内历史
-        $history = self::recordAndGetHistory($ip, $uri, $now);
+        $history = self::recordAndGetHistory($ip, $uri, $now, $ua);
 
         $indicators = [];
 
-        // 检测是否为已知搜索引擎蜘蛛
         $is_search_spider = self::isSearchEngineUa($ua);
 
         // ---------- 1. 路径多样性 ----------
@@ -70,16 +68,35 @@ class BotSemantic {
             ];
         }
 
-        // ---------- 综合评分 ----------
-        $score = self::computeScore($path_diversity, $interval_uniformity, $resource_bias, $probe_score, count($history));
+        // ---------- 5. UA 随机化检测（代理池/爬虫集群特征） ----------
+        $ua_rotation_score = self::computeUaRotationScore($history);
+        if ($ua_rotation_score > 0) {
+            $indicators[] = [
+                'code'  => 'ua_rotation',
+                'value' => $ua_rotation_score,
+                'desc'  => 'UA随机化（疑似代理池）',
+            ];
+        }
 
-        // 搜索引擎蜘蛛降权：路径多样性和间隔均匀是蜘蛛的正常行为，不应计为风险
+        // ---------- 6. 爬取深度分析 ----------
+        $crawl_depth = self::computeCrawlDepth($history);
+        if ($crawl_depth > 0) {
+            $indicators[] = [
+                'code'  => 'crawl_depth',
+                'value' => $crawl_depth,
+                'desc'  => '爬取深度',
+            ];
+        }
+
+        // ---------- 综合评分 ----------
+        $score = self::computeScore($path_diversity, $interval_uniformity, $resource_bias, $probe_score, $ua_rotation_score, $crawl_depth, count($history));
+
         if ($is_search_spider) {
-            $score = (int)round($score * 0.2); // 降权 80%
+            $score = (int)round($score * 0.15);
             $indicators[] = [
                 'code'  => 'search_spider_discount',
-                'value' => 0.2,
-                'desc'  => '搜索引擎蜘蛛行为分析降权',
+                'value' => 0.15,
+                'desc'  => '搜索引擎蜘蛛行为分析降权(15%)',
             ];
         }
 
@@ -90,22 +107,35 @@ class BotSemantic {
             'interval_uniformity' => $interval_uniformity,
             'resource_bias'       => $resource_bias,
             'probe_score'         => $probe_score,
+            'ua_rotation_score'   => $ua_rotation_score,
+            'crawl_depth'         => $crawl_depth,
             'sample_size'         => count($history),
             'is_search_spider'    => $is_search_spider,
         ];
     }
 
     /**
-     * 检测 UA 是否为已知搜索引擎蜘蛛
+     * 检测 UA 是否为已知搜索引擎蜘蛛（与 BotFingerprint 保持一致的核心列表）
      */
     private static function isSearchEngineUa(string $ua): bool {
         if (empty($ua)) return false;
         $patterns = [
-            '/Googlebot/i', '/Bingbot/i', '/Baiduspider/i', '/YandexBot/i',
-            '/DuckDuckBot/i', '/Sogou\s+web\s+spider/i', '/Sosospider/i',
-            '/Exabot/i', '/facebot|facebookexternalhit/i', '/Twitterbot/i',
-            '/Applebot/i', '/AhrefsBot/i', '/SemrushBot/i', '/MJ12bot/i',
-            '/Bytespider/i', '/360Spider/i',
+            // 全球主流
+            '/Googlebot/i', '/Bingbot|msnbot/i', '/Baiduspider/i', '/YandexBot/i',
+            '/DuckDuckBot/i', '/Exabot/i',
+            // 中国搜索
+            '/Sogou\s+web\s+spider|Sogou\s+spider/i', '/360Spider|360spider|HaoSouSpider/i',
+            '/Sosospider/i', '/Bytespider/i', '/ShenmaBot/i', '/YisouSpider/i',
+            '/YoudaoBot/i', '/JikeSpider/i',
+            // 科技公司
+            '/Applebot/i', '/facebookexternalhit|Facebot/i', '/Twitterbot/i',
+            // SEO工具（合规爬虫）
+            '/AhrefsBot/i', '/SemrushBot/i', '/MJ12bot/i', '/DotBot/i', '/rogerbot/i',
+            // 其他
+            '/NaverBot|Yeti/i', '/SeznamBot/i',
+            // 社交平台（也算合规爬虫）
+            '/LinkedInBot/i', '/Pinterest/i', '/Slackbot/i', '/Discordbot/i',
+            '/TelegramBot/i', '/WhatsApp/i', '/SkypeUriPreview/i',
         ];
         foreach ($patterns as $p) {
             if (preg_match($p, $ua)) return true;
@@ -210,16 +240,74 @@ class BotSemantic {
     /**
      * 综合评分
      */
-    private static function computeScore(float $diversity, float $uniformity, float $bias, int $probe, int $sample): int {
+    private static function computeScore(float $diversity, float $uniformity, float $bias, int $probe, float $ua_rotation, float $crawl_depth, int $sample): int {
         $score = 0;
-        $score += (int)min(35, $diversity * 0.35);  // 路径多样性 0-35
-        $score += (int)min(25, $uniformity * 0.25); // 间隔均匀度 0-25
-        $score += (int)min(20, $bias * 0.20);       // 资源偏好 0-20
-        $score += (int)min(30, $probe * 0.30);      // 探测特征 0-30
+        $score += (int)min(25, $diversity * 0.25);    // 路径多样性 0-25
+        $score += (int)min(20, $uniformity * 0.20);   // 间隔均匀度 0-20
+        $score += (int)min(15, $bias * 0.15);         // 资源偏好 0-15
+        $score += (int)min(20, $probe * 0.20);        // 探测特征 0-20
+        $score += (int)min(25, $ua_rotation * 0.25);  // UA随机化 0-25
+        $score += (int)min(15, $crawl_depth * 0.15);  // 爬取深度 0-15
         if ($sample < 3) {
-            $score = (int)($score * 0.3); // 样本过少时降权
+            $score = (int)($score * 0.3);
         }
         return (int)min(100, $score);
+    }
+
+    /**
+     * UA随机化检测：同一IP短时间内出现多个不同UA → 代理池/爬虫集群
+     */
+    private static function computeUaRotationScore(array $history): float {
+        if (count($history) < 5) return 0.0;
+        $uas = [];
+        foreach ($history as $item) {
+            if (!empty($item['ua'])) {
+                $uas[md5($item['ua'])] = true;
+            }
+        }
+        $ua_count = count($uas);
+        if ($ua_count <= 1) return 0.0;
+        // 5分钟内出现3个以上不同UA → 高度可疑
+        $ratio = $ua_count / count($history);
+        $score = 0.0;
+        if ($ua_count >= 5) {
+            $score = 100;
+        } elseif ($ua_count >= 3) {
+            $score = 70;
+        } elseif ($ua_count >= 2) {
+            $score = 30;
+        }
+        return $score;
+    }
+
+    /**
+     * 爬取深度分析：爬虫通常会爬很多层目录，人类通常在1-3层
+     */
+    private static function computeCrawlDepth(array $history): float {
+        if (count($history) < 5) return 0.0;
+        $total_depth = 0;
+        $deep_pages = 0;
+        foreach ($history as $item) {
+            $path = $item['path'];
+            $depth = substr_count(trim($path, '/'), '/');
+            $total_depth += $depth;
+            if ($depth >= 4) $deep_pages++;
+        }
+        $avg_depth = $total_depth / count($history);
+        $deep_ratio = $deep_pages / count($history);
+        // 平均深度超过4层 或 深度页占比超过40% → 爬虫特征
+        $score = 0.0;
+        if ($avg_depth >= 6) {
+            $score = 100;
+        } elseif ($avg_depth >= 4) {
+            $score = 70;
+        } elseif ($avg_depth >= 3) {
+            $score = 40;
+        }
+        if ($deep_ratio >= 0.5) {
+            $score = min(100, $score + 20);
+        }
+        return $score;
     }
 
     // ====================== 行为追踪存储 ======================
@@ -242,7 +330,7 @@ class BotSemantic {
     /**
      * 记录访问并返回该 IP 窗口内历史
      */
-    private static function recordAndGetHistory(string $ip, string $uri, float $now): array {
+    private static function recordAndGetHistory(string $ip, string $uri, float $now, string $ua = ''): array {
         $file    = self::$tracker_dir . md5($ip) . '.json';
         $history = [];
         if (is_file($file)) {
@@ -253,16 +341,13 @@ class BotSemantic {
             }
         }
 
-        // 追加本次
-        $history[] = ['ts' => $now, 'path' => self::normalizePath($uri)];
+        $history[] = ['ts' => $now, 'path' => self::normalizePath($uri), 'ua' => $ua];
 
-        // 清理过期
         $cutoff = $now - self::$history_window;
         $history = array_values(array_filter($history, function ($item) use ($cutoff) {
             return $item['ts'] >= $cutoff;
         }));
 
-        // 限制条数
         if (count($history) > self::$max_history) {
             $history = array_slice($history, -self::$max_history);
         }

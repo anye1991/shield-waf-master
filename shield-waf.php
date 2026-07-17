@@ -81,6 +81,13 @@ $botResult = BotManager::check([
     'headers' => $_SERVER,
     'ip'      => waf_get_real_ip(),
 ]);
+
+// 已验证的搜索引擎蜘蛛：bot层面直接放行，攻击检测层面提升阈值（防误拦）
+$isVerifiedSearchEngine = false;
+if (($botResult['category'] ?? '') === 'search_engine' && ($botResult['confidence'] ?? 0) >= 90) {
+    $isVerifiedSearchEngine = true;
+}
+
 if ($botResult['action'] === 'block') {
     waf_block('Malicious bot detected - ' . ($botResult['reason'] ?? ''));
 }
@@ -186,13 +193,24 @@ require_once __DIR__ . '/src/Core/Scorer.php';
 $scorerResult = WafScorer::score($all, $uri, $_GET, $normResult);
 
 // 综合判断：规则检测或智能评分任一达到拦截阈值即拦截
-if ($attackResult['is_attack'] || $scorerResult['is_attack']) {
+// 已验证搜索引擎：提升阈值到95，确保正常爬取不误拦（但真带攻击载荷仍会拦）
+$blockThreshold = 60;
+$scorerIsAttack = $scorerResult['is_attack'];
+$detectorIsAttack = $attackResult['is_attack'];
+
+if ($isVerifiedSearchEngine) {
+    $blockThreshold = 95;
+    $scorerIsAttack = ($scorerResult['total_score'] >= $blockThreshold);
+    $detectorIsAttack = ($attackResult['total_score'] >= $blockThreshold);
+}
+
+if ($detectorIsAttack || $scorerIsAttack) {
     // 记录攻击到自动学习系统
     AutoLearn::recordAttack($all, $attackResult);
 
     waf_smart_ban(waf_get_real_ip());
     $riskInfo = sprintf(
-        'Risk: %s (%.1f%%, depth=%d, hits=%d, learned=%d%s | Scorer: %.1f [E=%.0f S=%.0f C=%.0f D=%.0f])',
+        'Risk: %s (%.1f%%, depth=%d, hits=%d, learned=%d%s | Scorer: %.1f [E=%.0f S=%.0f C=%.0f D=%.0f])%s',
         $attackResult['risk_level'],
         $attackResult['total_score'],
         $attackResult['encoding_depth'],
@@ -203,7 +221,8 @@ if ($attackResult['is_attack'] || $scorerResult['is_attack']) {
         $scorerResult['entropy_score'],
         $scorerResult['semantic_score'],
         $scorerResult['compiler_score'],
-        $scorerResult['deviation_score']
+        $scorerResult['deviation_score'],
+        $isVerifiedSearchEngine ? ' | SE_THRESHOLD=' . $blockThreshold : ''
     );
     waf_block('Attack detected - ' . $riskInfo);
 }

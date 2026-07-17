@@ -12,24 +12,67 @@
 defined('ABSPATH') || exit;
 
 class BotFingerprint {
-    // ====================== 主流搜索引擎指纹库 ======================
+    // ====================== 主流搜索引擎指纹库（32种） ======================
     private static $search_engines = [
-        ['pattern' => '/Googlebot/i',            'name' => 'Google',     'hint' => 'googlebot'],
-        ['pattern' => '/Bingbot/i',              'name' => 'Bing',       'hint' => 'bingbot'],
-        ['pattern' => '/Baiduspider/i',          'name' => 'Baidu',      'hint' => 'baidu'],
-        ['pattern' => '/YandexBot/i',            'name' => 'Yandex',     'hint' => 'yandex'],
-        ['pattern' => '/DuckDuckBot/i',          'name' => 'DuckDuckGo', 'hint' => 'duckduck'],
-        ['pattern' => '/Sogou\s+web\s+spider/i', 'name' => 'Sogou',      'hint' => 'sogou'],
-        ['pattern' => '/Sosospider/i',           'name' => 'Soso',       'hint' => 'soso'],
-        ['pattern' => '/Exabot/i',               'name' => 'Exalead',    'hint' => 'exabot'],
-        ['pattern' => '/facebot|facebookexternalhit/i', 'name' => 'Facebook', 'hint' => 'facebook'],
-        ['pattern' => '/Twitterbot/i',           'name' => 'Twitter',    'hint' => 'twitter'],
-        ['pattern' => '/Applebot/i',             'name' => 'Apple',      'hint' => 'apple'],
-        ['pattern' => '/AhrefsBot/i',            'name' => 'Ahrefs',     'hint' => 'ahrefs'],
-        ['pattern' => '/SemrushBot/i',           'name' => 'Semrush',    'hint' => 'semrush'],
-        ['pattern' => '/MJ12bot/i',              'name' => 'Majestic',   'hint' => 'mj12'],
-        ['pattern' => '/Bytespider/i',           'name' => 'ByteDance',  'hint' => 'bytespider'],
-        ['pattern' => '/360Spider/i',            'name' => '360',        'hint' => '360'],
+        // ===== 全球主流搜索引擎 =====
+        ['pattern' => '/Googlebot/i',            'name' => 'Google',     'hint' => 'googlebot',     'tier' => 'tier1'],
+        ['pattern' => '/Bingbot|msnbot/i',       'name' => 'Bing',       'hint' => 'bingbot',       'tier' => 'tier1'],
+        ['pattern' => '/DuckDuckBot/i',          'name' => 'DuckDuckGo', 'hint' => 'duckduck',      'tier' => 'tier2'],
+        ['pattern' => '/YandexBot/i',            'name' => 'Yandex',     'hint' => 'yandex',        'tier' => 'tier1'],
+        ['pattern' => '/Exabot/i',               'name' => 'Exalead',    'hint' => 'exabot',        'tier' => 'tier3'],
+        // ===== 中国搜索引擎 =====
+        ['pattern' => '/Baiduspider/i',          'name' => 'Baidu',      'hint' => 'baidu',         'tier' => 'tier1'],
+        ['pattern' => '/Sogou\s+web\s+spider|Sogou\s+spider/i', 'name' => 'Sogou', 'hint' => 'sogou', 'tier' => 'tier2'],
+        ['pattern' => '/360Spider|360spider|HaoSouSpider/i', 'name' => '360', 'hint' => '360', 'tier' => 'tier2'],
+        ['pattern' => '/Sosospider/i',           'name' => 'Tencent_Soso', 'hint' => 'soso',        'tier' => 'tier3'],
+        ['pattern' => '/Bytespider/i',           'name' => 'ByteDance_Toutiao', 'hint' => 'bytespider', 'tier' => 'tier2'],
+        ['pattern' => '/ShenmaBot/i',            'name' => 'Shenma_UC',  'hint' => 'shenma',        'tier' => 'tier2'],
+        ['pattern' => '/YisouSpider/i',          'name' => 'Yisou',      'hint' => 'yisou',         'tier' => 'tier3'],
+        ['pattern' => '/YoudaoBot/i',            'name' => 'Youdao',     'hint' => 'youdao',        'tier' => 'tier3'],
+        ['pattern' => '/JikeSpider/i',           'name' => 'Jike',       'hint' => 'jike',          'tier' => 'tier3'],
+        // ===== 科技公司蜘蛛 =====
+        ['pattern' => '/Applebot/i',             'name' => 'Apple_Siri', 'hint' => 'apple',         'tier' => 'tier2'],
+        ['pattern' => '/facebookexternalhit|Facebot/i', 'name' => 'Facebook', 'hint' => 'facebook', 'tier' => 'tier2'],
+        ['pattern' => '/Twitterbot/i',           'name' => 'Twitter_X',  'hint' => 'twitter',       'tier' => 'tier2'],
+        // ===== SEO工具蜘蛛（合规，放行） =====
+        ['pattern' => '/AhrefsBot/i',            'name' => 'Ahrefs',     'hint' => 'ahrefs',        'tier' => 'seo'],
+        ['pattern' => '/SemrushBot/i',           'name' => 'Semrush',    'hint' => 'semrush',       'tier' => 'seo'],
+        ['pattern' => '/MJ12bot/i',              'name' => 'Majestic',   'hint' => 'mj12',          'tier' => 'seo'],
+        ['pattern' => '/DotBot/i',               'name' => 'Moz',        'hint' => 'dotbot',        'tier' => 'seo'],
+        ['pattern' => '/rogerbot/i',             'name' => 'Moz_Roger',  'hint' => 'rogerbot',      'tier' => 'seo'],
+        ['pattern' => '/SearchmetricsBot/i',     'name' => 'Searchmetrics', 'hint' => 'searchmetrics', 'tier' => 'seo'],
+        ['pattern' => '/SEOkicks|Seobility/i',   'name' => 'SEO_Tools',  'hint' => 'seotools',      'tier' => 'seo'],
+        // ===== 内容平台蜘蛛 =====
+        ['pattern' => '/LinkedInBot/i',          'name' => 'LinkedIn',   'hint' => 'linkedin',      'tier' => 'social'],
+        ['pattern' => '/Pinterest/i',            'name' => 'Pinterest',  'hint' => 'pinterest',     'tier' => 'social'],
+        ['pattern' => '/Slackbot/i',             'name' => 'Slack',      'hint' => 'slack',         'tier' => 'social'],
+        ['pattern' => '/Discordbot/i',           'name' => 'Discord',    'hint' => 'discord',       'tier' => 'social'],
+        ['pattern' => '/TelegramBot/i',          'name' => 'Telegram',   'hint' => 'telegram',      'tier' => 'social'],
+        ['pattern' => '/WhatsApp/i',             'name' => 'WhatsApp',   'hint' => 'whatsapp',      'tier' => 'social'],
+        ['pattern' => '/SkypeUriPreview/i',      'name' => 'Skype',      'hint' => 'skype',         'tier' => 'social'],
+        ['pattern' => '/NaverBot|Yeti/i',        'name' => 'Naver',      'hint' => 'naver',         'tier' => 'tier2'],
+        ['pattern' => '/SeznamBot/i',            'name' => 'Seznam',     'hint' => 'seznam',        'tier' => 'tier3'],
+    ];
+
+    // ====================== 无头浏览器 / 自动化工具指纹 ======================
+    private static $headless_patterns = [
+        '/HeadlessChrome/i',
+        '/Puppeteer/i',
+        '/Playwright/i',
+        '/PhantomJS/i',
+        '/Selenium/i',
+        '/WebDriver/i',
+        '/\bphantom\b/i',
+        '/\bchromedriver\b/i',
+        '/\bgeckodriver\b/i',
+        '/\bsafaridriver\b/i',
+        '/\bedgedriver\b/i',
+        '/\bwebdriver\b/i',
+        '/Lighthouse/i',
+        '/PageSpeed/i',
+        '/Pingdom/i',
+        '/GTmetrix/i',
+        '/WebPageTest/i',
     ];
 
     // ====================== 自动化工具 / 恶意爬虫指纹 ======================
@@ -51,6 +94,32 @@ class BotFingerprint {
         '/\bGPTBot\b/i', '/\bClaudeBot\b/i', '/\bCCBot\b/i',
         '/\banthropic-ai\b/i', '/\bPerplexityBot\b/i', '/\bGoogle-Extended\b/i',
         '/\bDiffbot\b/i', '/\bOAI-SearchBot\b/i', '/\bAI2Bot\b/i',
+        '/\bAmazonbot\b/i', '/\bApplebot\b/i',
+    ];
+
+    // DNS验证后缀映射（扩展版）
+    private static $dns_suffix_map = [
+        'Google'             => ['.googlebot.com', '.google.com'],
+        'Bing'               => ['.search.msn.com', '.bing.com', '.microsoft.com'],
+        'Baidu'              => ['.baidu.com', '.baidu.jp', '.baidu.cn'],
+        'Yandex'             => ['.yandex.com', '.yandex.ru', '.yandex.net'],
+        'DuckDuckGo'         => ['.duckduckgo.com'],
+        'Sogou'              => ['.sogou.com'],
+        '360'                => ['.360.cn', '.360.com', '.haosou.com'],
+        'Shenma_UC'          => ['.sm.cn', '.uc.cn', '.alibaba.com'],
+        'ByteDance_Toutiao'  => ['.bytedance.com', '.toutiao.com'],
+        'Apple_Siri'         => ['.apple.com'],
+        'Facebook'           => ['.facebook.com', '.fb.com'],
+        'Twitter_X'          => ['.twitter.com', '.x.com'],
+        'LinkedIn'           => ['.linkedin.com'],
+        'Pinterest'          => ['.pinterest.com'],
+        'Ahrefs'             => ['.ahrefs.com'],
+        'Semrush'            => ['.semrush.com'],
+        'Majestic'           => ['.majestic12.co.uk', '.majestic.com'],
+        'Moz'                => ['.moz.com'],
+        'Moz_Roger'          => ['.moz.com'],
+        'Naver'              => ['.naver.com'],
+        'Seznam'             => ['.seznam.cz'],
     ];
 
     // 正常浏览器必备的请求头
@@ -189,8 +258,34 @@ class BotFingerprint {
             }
         }
 
-        // ---------- 5. 浏览器伪装检测 ----------
-        if (!$ua_empty && stripos($ua, 'Mozilla') === false && $matched_engine === null) {
+        // ---------- 5. 无头浏览器检测 ----------
+        $headless_detected = false;
+        foreach (self::$headless_patterns as $pattern) {
+            if (preg_match($pattern, $ua)) {
+                $headless_detected = true;
+                $is_bot = true;
+                $type   = 'malicious';
+                $score += 55;
+                $signals[] = [
+                    'code'   => 'headless_browser',
+                    'weight' => 55,
+                    'desc'   => '无头浏览器/自动化框架: ' . trim(preg_replace('/[^a-z0-9\-_\/\s]/i', '', $ua)),
+                ];
+                if ($matched_engine !== null) {
+                    $is_verified_search_engine = false;
+                    $signals[] = [
+                        'code'   => 'fake_search_engine_headless',
+                        'weight' => 60,
+                        'desc'   => '伪造搜索引擎UA（含无头浏览器特征）',
+                    ];
+                    $score += 60;
+                }
+                break;
+            }
+        }
+
+        // ---------- 6. 浏览器伪装检测 ----------
+        if (!$ua_empty && !$headless_detected && stripos($ua, 'Mozilla') === false && $matched_engine === null) {
             $score += 20;
             $signals[] = ['code' => 'non_mozilla_ua', 'weight' => 20, 'desc' => 'UA 非 Mozilla 开头'];
         }
@@ -199,7 +294,7 @@ class BotFingerprint {
             $signals[] = ['code' => 'oversized_ua', 'weight' => 15, 'desc' => 'UA 长度异常'];
         }
 
-        // ---------- 6. 请求头指纹分析 ----------
+        // ---------- 7. 请求头指纹分析 ----------
         // 已验证的搜索引擎跳过头异常检测（蜘蛛天然不发送某些浏览器头）
         if (!$is_verified_search_engine) {
             $header_signals = self::analyzeHeaders($h, $ua_empty, $matched_engine !== null);
@@ -258,36 +353,18 @@ class BotFingerprint {
      * @return bool
      */
     private static function verifyByDns(string $ip, string $engine): bool {
-        // 搜索引擎官方反向 DNS 后缀映射
-        $dns_suffixes = [
-            'Google'      => ['.googlebot.com', '.google.com'],
-            'Bing'        => ['.search.msn.com', '.bing.com'],
-            'Baidu'       => ['.baidu.com', '.baidu.jp'],
-            'Yandex'      => ['.yandex.com', '.yandex.ru'],
-            'DuckDuckGo'  => ['.duckduckgo.com'],
-            'Sogou'       => ['.sogou.com'],
-            'Apple'       => ['.apple.com'],
-            'Facebook'    => ['.facebook.com'],
-            'ByteDance'   => ['.bytedance.com'],
-            'Ahrefs'      => ['.ahrefs.com'],
-            'Semrush'     => ['.semrush.com'],
-            'Majestic'    => ['.majestic12.co.uk'],
-        ];
-
-        $suffixes = $dns_suffixes[$engine] ?? [];
+        $suffixes = self::$dns_suffix_map[$engine] ?? [];
         if (empty($suffixes)) return false;
 
-        // 反向解析
         $hostname = @gethostbyaddr($ip);
         if ($hostname === false || $hostname === $ip) return false;
 
-        // 正向验证（防止反向解析被伪造）
         $forward_ip = @gethostbyname($hostname);
         if ($forward_ip !== $ip) return false;
 
-        // 检查域名后缀
+        $host_lower = strtolower($hostname);
         foreach ($suffixes as $suffix) {
-            if (str_ends_with(strtolower($hostname), $suffix)) {
+            if (str_ends_with($host_lower, $suffix)) {
                 return true;
             }
         }

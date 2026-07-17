@@ -15,6 +15,7 @@ require_once __DIR__ . '/BotSemantic.php';
 require_once __DIR__ . '/BotScorer.php';
 require_once __DIR__ . '/BotClassifier.php';
 require_once __DIR__ . '/CaptchaHandler.php';
+require_once __DIR__ . '/HoneypotLinks.php';
 
 class BotManager {
     // 动作阈值
@@ -41,14 +42,45 @@ class BotManager {
         $ip      = $request['ip']      ?? '';
         $extra   = $request['behavior'] ?? [];
 
+        // ========== 最高优先级：蜜罐触发 → 立即标记恶意 ==========
+        if (HoneypotLinks::checkRequest()) {
+            return [
+                'action'   => 'block',
+                'category' => 'malicious_bot',
+                'score'    => 100,
+                'reason'   => '命中蜜罐链接（爬虫/扫描器特征）',
+                'confidence' => 99,
+                'detail'   => ['honeypot' => true],
+            ];
+        }
+
         // ---------- 1. 指纹分析 ----------
         $fingerprint = BotFingerprint::analyze($headers, $ua, $ip);
+
+        // ========== 已验证搜索引擎 → bot检测层面100%放行 ==========
+        // 注意：这只跳过机器人拦截，攻击载荷仍会被 Detector/Scorer 独立检测
+        if (!empty($fingerprint['verified_search_engine'])) {
+            return [
+                'action'   => 'allow',
+                'category' => 'search_engine',
+                'score'    => 0,
+                'reason'   => '已验证搜索引擎: ' . ($fingerprint['engine_name'] ?? 'unknown') . '（DNS/头特征验证通过）',
+                'confidence' => 95,
+                'detail'   => ['fingerprint' => $fingerprint],
+            ];
+        }
 
         // ---------- 2. 语义 / 行为分析 ----------
         $semantic = BotSemantic::analyze($uri, $headers, $ua);
 
-        // ---------- 3. 合并行为数据（语义结果 + UA + 外部行为指标） ----------
-        $behavior = array_merge($semantic, ['ua' => $ua], $extra);
+        // ---------- 3. 合并行为数据 ----------
+        $honey_count = HoneypotLinks::getTriggerCount($ip);
+        $behavior = array_merge($semantic, ['ua' => $ua, 'honeypot_triggered' => $honey_count], $extra);
+
+        // 蜜罐历史触发 → 行为加成
+        if ($honey_count > 0) {
+            $behavior['attack_chain'] = ($behavior['attack_chain'] ?? 0) + 50;
+        }
 
         // ---------- 4. 综合评分 ----------
         $scoring = BotScorer::score($fingerprint, $behavior, $semantic);
@@ -97,16 +129,11 @@ class BotManager {
      * 决策动作
      */
     private static function decideAction(string $category, int $score, array $fingerprint, array $classification): array {
-        // 最高优先级：已验证的搜索引擎（DNS或头特征验证通过）→ 强制放行
-        // 注意：这不会跳过后续的攻击检测（SQLi/XSS等），只跳过机器人拦截
-        // 攻击载荷会被 detector.php 和 Scorer.php 独立检测
-        if (!empty($fingerprint['verified_search_engine'])) {
-            return ['allow', '已验证搜索引擎: ' . ($fingerprint['engine_name'] ?? 'unknown')];
-        }
+        // 注意：已验证的搜索引擎在 check() 开头就已提前返回，不会走到这里
 
         // 受信任分类（合法搜索引擎 / AI / 社交）默认放行，但分数极高仍挑战
         if (in_array($category, self::$trusted_categories, true)) {
-            if ($score >= 80) {
+            if ($score >= 85) {
                 return ['challenge', '受信任爬虫但风险评分过高，发起挑战'];
             }
             return ['allow', '受信任分类: ' . $category];
@@ -114,10 +141,10 @@ class BotManager {
 
         // 恶意机器人
         if ($category === 'malicious_bot') {
-            if ($score >= self::LIMIT_THRESHOLD) {
+            if ($score >= 75) {
                 return ['block', '恶意机器人且风险评分超阈值'];
             }
-            if ($score >= self::CHALLENGE_THRESHOLD) {
+            if ($score >= 50) {
                 return ['limit', '恶意机器人，限速访问'];
             }
             return ['challenge', '疑似恶意机器人，发起挑战'];
@@ -125,10 +152,10 @@ class BotManager {
 
         // 通用爬虫
         if ($category === 'crawler') {
-            if ($score >= self::LIMIT_THRESHOLD) {
+            if ($score >= 75) {
                 return ['limit', '爬虫访问过频，限速'];
             }
-            if ($score >= self::CHALLENGE_THRESHOLD) {
+            if ($score >= 50) {
                 return ['challenge', '爬虫特征明显，发起挑战'];
             }
             return ['allow', '爬虫但风险较低'];
@@ -136,20 +163,20 @@ class BotManager {
 
         // 人类
         if ($category === 'human') {
-            if ($score >= self::LIMIT_THRESHOLD) {
+            if ($score >= 75) {
                 return ['limit', '行为异常，限速观察'];
             }
-            if ($score >= self::CHALLENGE_THRESHOLD) {
+            if ($score >= 50) {
                 return ['challenge', '人类但风险偏高，发起挑战'];
             }
             return ['allow', '正常人类访问'];
         }
 
         // 默认兜底
-        if ($score >= self::LIMIT_THRESHOLD) {
+        if ($score >= 75) {
             return ['block', '风险评分过高'];
         }
-        if ($score >= self::CHALLENGE_THRESHOLD) {
+        if ($score >= 50) {
             return ['challenge', '风险评分偏高，发起挑战'];
         }
         return ['allow', '默认放行'];
