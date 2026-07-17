@@ -1,0 +1,75 @@
+# ============================================
+# 盾甲 WAF v3.0.0 Docker Compose 部署
+# ============================================
+# 启动：docker compose up -d
+# 停止：docker compose down
+# 查看日志：docker compose logs -f
+# ============================================
+
+services:
+  shield-waf:
+    build: .
+    image: ghcr.io/anye1991/shield-waf:3.0.0
+    container_name: shield-waf
+    restart: unless-stopped
+
+    ports:
+      - "8080:80"
+
+    environment:
+      # === 密钥配置（生产环境务必修改！）===
+      - WAF_MAGIC_KEY=${WAF_MAGIC_KEY:-change-me-magic-key-32-chars-min}
+      - WAF_2FA_PASS=${WAF_2FA_PASS:-change-me-2fa-password}
+
+      # === 告警配置 ===
+      - WAF_WEBHOOK_URL=${WAF_WEBHOOK_URL:-}
+
+      # === CDN 配置 ===
+      - WAF_TRUST_CF_IP=${WAF_TRUST_CF_IP:-false}
+
+      # === 机器人检测 ===
+      - WAF_BOT_VERIFY_DNS=${WAF_BOT_VERIFY_DNS:-false}
+
+      # === PHP 时区 ===
+      - TZ=Asia/Shanghai
+
+    volumes:
+      # 日志持久化
+      - waf_logs:/var/www/html/logs
+      # 数据持久化（学习规则、白名单等）
+      - waf_data:/var/www/html/data
+      # 自定义 .env（可选）
+      - ./.env:/var/www/html/.env:ro
+
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/waf-dashboard"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # 安全选项
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=50m
+      - /var/run
+      - /var/cache/nginx
+
+volumes:
+  waf_logs:
+    driver: local
+  waf_data:
+    driver: local
