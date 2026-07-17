@@ -268,6 +268,27 @@ function waf_attempt_inc($type, $window = 900) {
     @file_put_contents($file, implode("\n", $new) . "\n", LOCK_EX);
 }
 
+/**
+ * 重置某个类型的错误尝试计数器
+ */
+function waf_attempt_reset($type) {
+    $file = waf_attempt_file($type);
+    if (!is_file($file)) return;
+    $ip   = waf_get_real_ip();
+    $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    $new   = [];
+    foreach ($lines as $line) {
+        $d = explode('|', $line);
+        if (count($d) !== 2) continue;
+        if (strpos($d[0], $ip . ':') === 0) {
+            // 跳过当前IP的记录（删除）
+            continue;
+        }
+        $new[] = $line;
+    }
+    @file_put_contents($file, implode("\n", $new) . "\n", LOCK_EX);
+}
+
 // ====================== 累进惩罚（4 阶段） ======================
 
 /**

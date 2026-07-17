@@ -30,8 +30,11 @@ WafNormalizer::init();
 
 header('Content-Type: application/json; charset=utf-8');
 
-// 验证管理员权限
-if (!waf_is_admin()) {
+// 验证管理员权限（双重验证）
+if (session_status() !== PHP_SESSION_ACTIVE) session_start();
+$ok1 = isset($_SESSION['waf_ok1']) && $_SESSION['waf_ok1'] > time();
+$ok2 = isset($_SESSION['waf_ok2']) && $_SESSION['waf_ok2'] > time();
+if (!$ok1 || !$ok2) {
     http_response_code(403);
     echo json_encode(['error' => 'Unauthorized'], JSON_UNESCAPED_UNICODE);
     exit;

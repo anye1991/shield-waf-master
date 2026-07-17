@@ -5,13 +5,33 @@
 defined('ABSPATH') || exit;
 
 function waf_2fa() {
+    // 生成 CSRF token
+    if (empty($_SESSION['waf_csrf'])) {
+        $_SESSION['waf_csrf'] = bin2hex(random_bytes(32));
+    }
+
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-        if (trim($_POST['w2f'] ?? '') === WAF_2FA_PASS) {
-            $_SESSION['waf_ok2'] = 1;
-            // 不再自动加入 IP 白名单，仅依赖会话
-            $redirect = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://');
-            $redirect .= $_SERVER['HTTP_HOST'] . '/wp-admin/';
-            header('Location: ' . $redirect);
+        // CSRF 验证
+        $token = $_POST['csrf_token'] ?? '';
+        if (!hash_equals($_SESSION['waf_csrf'], $token)) {
+            waf_block('CSRF token invalid');
+        }
+        // 时序安全比较密码
+        $input = trim($_POST['w2f'] ?? '');
+        if (hash_equals(WAF_2FA_PASS, $input)) {
+            $_SESSION['waf_ok2'] = time() + WAF_MAGIC_EXPIRE;
+            // 成功后重置错误计数器
+            waf_attempt_reset('2fa');
+            // 刷新 CSRF token
+            $_SESSION['waf_csrf'] = bin2hex(random_bytes(32));
+            // 安全重定向：用 SERVER_NAME 而非 HTTP_HOST 防止开放重定向
+            $scheme = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? 'https://' : 'http://';
+            $host = $_SERVER['SERVER_NAME'] ?? $_SERVER['HTTP_HOST'];
+            // 验证 host 合法性（只允许字母数字点减号）
+            if (!preg_match('/^[a-zA-Z0-9.\-]+$/', $host)) {
+                $host = 'localhost';
+            }
+            header('Location: ' . $scheme . $host . '/wp-admin/');
             exit;
         } else {
             waf_attempt_inc('2fa');
@@ -210,6 +230,7 @@ function waf_2fa() {
         <p class="sub">请输入二次验证密码以继续</p>
         ' . $error_html . '
         <form method="post">
+            <input type="hidden" name="csrf_token" value="' . htmlspecialchars($_SESSION['waf_csrf']) . '">
             <div class="form-group">
                 <label>验证密码</label>
                 <div class="input-wrapper">

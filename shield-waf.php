@@ -313,12 +313,16 @@ if ($is_admin) {
     // 未登录 → 暗门验证
     $magic = $_GET['magic'] ?? '';
     if (!empty($magic)) {
-        if ($magic === WAF_MAGIC_KEY) {
+        if (hash_equals(WAF_MAGIC_KEY, $magic)) {
             $_SESSION['waf_ok1'] = time() + WAF_MAGIC_EXPIRE;
             $_SESSION['waf_ip']  = waf_get_real_ip();
-            $redirect = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://');
-            $redirect .= $_SERVER['HTTP_HOST'] . '/wp-admin/?w=1';
-            header('Location: ' . $redirect);
+            // 安全重定向：用 SERVER_NAME 而非 HTTP_HOST 防止开放重定向
+            $scheme = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? 'https://' : 'http://';
+            $host = $_SERVER['SERVER_NAME'] ?? $_SERVER['HTTP_HOST'];
+            if (!preg_match('/^[a-zA-Z0-9.\-]+$/', $host)) {
+                $host = 'localhost';
+            }
+            header('Location: ' . $scheme . $host . '/wp-admin/?w=1');
             exit;
         } else {
             waf_attempt_inc('magic');
@@ -335,14 +339,15 @@ if ($is_admin) {
         if (!$ok1) {
             waf_block('1st factor expired or IP mismatch');
         }
-        if (empty($_SESSION['waf_ok2'])) {
+        $ok2_valid = isset($_SESSION['waf_ok2']) && $_SESSION['waf_ok2'] > time();
+        if (!$ok2_valid) {
             waf_2fa();
         }
     }
 
     $final = isset($_SESSION['waf_ok1']) && $_SESSION['waf_ok1'] > time()
              && $_SESSION['waf_ip'] === waf_get_real_ip()
-             && isset($_SESSION['waf_ok2']);
+             && isset($_SESSION['waf_ok2']) && $_SESSION['waf_ok2'] > time();
     if (!$final) {
         waf_block('Access denied');
     }

@@ -3,7 +3,7 @@ defined('ABSPATH') || exit;
 
 if (session_status() !== PHP_SESSION_ACTIVE) session_start();
 $ok1 = isset($_SESSION['waf_ok1']) && $_SESSION['waf_ok1'] > time();
-$ok2 = isset($_SESSION['waf_ok2']);
+$ok2 = isset($_SESSION['waf_ok2']) && $_SESSION['waf_ok2'] > time();
 if (!$ok1 || !$ok2) { http_response_code(403); exit; }
 $version = defined('SHIELD_WAF_VERSION') ? SHIELD_WAF_VERSION : '3.0.0';
 ?>
