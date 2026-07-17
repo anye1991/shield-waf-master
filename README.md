@@ -11,38 +11,60 @@
 
 ---
 
-## v3.1.0 极致优化版
+## v3.1.0 全面优化版
 
-> 攻击检测率从 **20% → 93.3%**，误报率 **0%**
+> **统一归一化引擎 · 沙箱上传双引擎重优化 · 学习闭环 · 全配置 .env 化**
 
-### 14层编码归一化全量解锁
+### 统一归一化引擎（双引擎冗余消除）
 
-- **同形字映射 699 字符**（原 33 字符）：数学符号 5 种字体 × 62 字符、全角字符 94、西里尔/希腊/亚美尼亚字母 192 个
-- **动态数学符号映射**：连续字体块映射 + 空缺位置修正（如数学斜体h空缺）
-- **UTF-8 超集解码修复**：二进制字节序列级别的过长编码正确还原
-- **零宽字符移除**：20+ 不可见字符完整清理
-- **14 层统一调度**：URL / HTML实体 / Base64 / 十六进制 / 八进制 / 0x字面量 / %u编码 / UTF-8超集 / 零宽 / 全角 / 同形字 / Unicode转义 / HTML命名实体 / 大小写归一
+- **淘汰旧版 WafNormalizer**：10层解码 / ~200同形字 → 全面采用 **AdversarialDefense 14层解码 / 699同形字**
+- **兼容层设计**：新增 `normalizeWithContext()` / `normalize()` / `normalizeJson()` / `normalizeXml()` 四个兼容方法，平滑迁移
+- **全链路替换**：主入口、沙箱、上传模块全部统一使用 AdversarialDefense，检测一致性大幅提升
+- **性能提升**：消除双引擎重复解码，单请求减少一次完整归一化
 
-### 智能评分系统重构
+### 沙箱系统全面升级（第4层兜底防御）
 
-- **权重重分配**：语义 30%→**40%**、编译 25%→20%、偏离 30%→**15%**
-- **新增编码绕过专项加成（+0~50分）**：解码深度 + 12种混淆技术 + 对抗样本 + 组合加成 + 多混淆交叉加成
-- **双因子确认机制**：语义分 < 20 不加码，避免正常 Base64/JWT 误报
-- **拦截阈值**：从 80 降至 70，编码绕过型攻击更容易被拦截
+- **5引擎权重重分配**：特征码(0-40) → 规则检测(0-35) → 语义分析(0-30) → 结构分析(0-15) → 启发式(0-15)
+- **多引擎交叉验证**：命中引擎越多，判定阈值越低（最多降15分），单一引擎高分不轻易误判
+- **分级处置策略**：≥80分秒删除 / 50-79分自动隔离 / 30-49分记录告警 / <30分放行
+- **AutoLearn 联动闭环**：≥60分 + ≥3引擎命中的恶意样本自动投喂学习，形成"沙箱发现→学习→WAF前置拦截"正循环
+- **代码质量提升**：JSON读写全部替换为公共工具函数，目录创建统一使用 `waf_ensure_dir`
+- **Bug修复**：修复 `structuralAnalysis` 调用时 `$uri` 未定义的问题
 
-### 误报控制全面升级（8层防御）
+### 上传检测全面升级（第2层专项防御）
 
-- **接入 FalsePositiveGuard**：7层误报防御全面接入评分流程
-- **冷启动保护**：偏离分析 / 行为基线无数据时不加分（旧版凭空加60分）
-- **误报判定阈值 50→70**：宁可不降分也不误降
-- **降分梯度控制**：高置信度 -30 分，低置信度仅 -5 分
+- **6引擎权重重分配**：归一化(降权) → 规则检测(0-40) → 语义分析(0-30) → 编译引擎(0-20) → 图像马(0-35) → 启发式(0-12)
+- **多引擎交叉验证**：命中引擎越多，拦截阈值越低（最多降20分）
+- **AutoLearn 联动**：高风险(≥60分+≥3引擎)直接投喂学习，中风险标记待审核避免误报污染
+- **GD库图像验证**：比 finfo 更严格，有效识别图像马
+- **SVG专用检测**：XXE / 脚本注入 / 内联事件 全方位覆盖
 
-### 自动学习系统全链路打通
+### 自动学习系统强化
 
-- **SemanticMemoryPool 接入**：每次请求自动记录，5次后建立行为基线，攻击偏离最高 +25 分
-- **6大行为分析能力**：多维偏差 / 行为漂移 / 异常累积 / 攻击者识别 / 群体对比 / 行为画像
-- **AutoLearn 接入**：正常请求自动学习白名单，攻击载荷频率统计，高频自动提取新规则
-- **权重自适应**：近7天攻击趋势动态调整 10 种攻击类型权重
+- **沙箱联动**：沙箱发现的高置信度恶意样本自动投喂
+- **上传联动**：上传检测拦截的恶意文件自动投喂
+- **三层学习闭环**：WAF主入口 → 上传检测 → 沙箱兜底 → 学习 → 反哺WAF规则
+- **进程内静态缓存**：AutoLearn 数据 30秒 TTL 缓存，减少磁盘IO
+
+### 配置全面 .env 化
+
+- **沙箱配置**：`WAF_SANDBOX_MALWARE_THRESHOLD` / `WAF_SANDBOX_INSTANT_DELETE_NEW` / `WAF_SANDBOX_AUTO_QUARANTINE`
+- **上传配置**：`WAF_UPLOAD_DETECTION` / `WAF_UPLOAD_GD_VERIFY` / `WAF_UPLOAD_ALLOW_SVG` / `WAF_UPLOAD_BLOCK_THRESHOLD` / `WAF_UPLOAD_LOG_THRESHOLD` / `WAF_UPLOAD_SCAN_MAX_SIZE` / `WAF_UPLOAD_BAN_ON_BLOCK`
+- **配置优先级**：服务器环境变量 > `.env` 文件 > `config.php` 默认值
+
+### Docker 自动构建
+
+- **GitHub Actions 自动构建**：push 到 main 分支 / 打 tag 自动构建镜像
+- **多架构支持**：linux/amd64 + linux/arm64
+- **自动标签**：latest / 分支名 / 版本号
+- **GHA 构建缓存**：重复构建更快
+- **SLSA 制品证明**：可验证镜像来源
+
+### 代码质量优化
+
+- **公共工具函数**：抽取 `waf_ensure_dir()` / `waf_safe_read_json()` / `waf_safe_write_json()`
+- **重复IO消除**：Scorer 中 `php://input` 重复读取改为使用 `WAF_RAW_BODY` 常量
+- **命名统一**：错误处理、目录创建、JSON读写模式统一
 
 ### 性能数据
 
@@ -52,6 +74,10 @@
 | 正常用例误报率 | 未测试 | **0% (0/37)** |
 | 同形字映射 | 33 | **699** |
 | 编码归一化层 | 10+ | **14全量** |
+| 沙箱引擎数 | 3 | **5 + 多引擎交叉验证** |
+| 上传引擎数 | 4 | **6 + 多引擎交叉验证** |
+| 学习闭环 | 单层 | **三层联动闭环** |
+| 配置方式 | 硬编码为主 | **全面 .env 化** |
 
 ---
 
@@ -102,46 +128,40 @@
 请求输入
   ↓
 ┌─────────────────────────────────────────────────────┐
+│  第1层：WAF 主入口（请求层拦截）                       │
 │  14 层编码归一化引擎 (src/Semantic/AdversarialDefense.php) │
 │  URL递归 → HTML数字实体 → Base64 → 十六进制转义 →  │
 │  八进制转义 → 0x十六进制字面量 → Unicode %u →       │
 │  UTF-8超集 → 零宽字符移除 → 全角半角 → 同形字(699) →│
 │  Unicode转义 → HTML命名实体 → 大小写归一             │
+│  + 10 维语义分析 + 智能评分 + 8 维高级防护           │
 └──────────────────────┬──────────────────────────────┘
-                       ↓
+                       ↓ 漏掉的 10%（0day/变种/绕过）
 ┌─────────────────────────────────────────────────────┐
-│  10 维语义分析引擎 (src/Semantic/)                    │
-│  L1 字符语义 → L2 词汇语义 → L3 结构语义 →          │
-│  L4 参数语义 → L5 业务语义 → L6 逻辑推理 →          │
-│  L7 意图推理 → L8 攻击链关联 → L9 语义记忆池 →      │
-│  L10 对抗样本防御                                    │
-│  + 11大深度解析器（SQL/HTML/PHP/路径遍历/命令注入等）  │
-│  + 多向量语义融合 (URL/Body/Header/Cookie/UA/Referer)│
+│  第2层：上传专项防护 (src/Defense/Upload.php)         │
+│  扩展名白名单 → MIME检测 → GD库图像验证 →           │
+│  SVG专用检测 → 6引擎深度分析 → 多引擎交叉验证 →     │
+│  累进封禁 + AutoLearn 联动学习                       │
 └──────────────────────┬──────────────────────────────┘
-                       ↓
+                       ↓ 绕过上传检测的 webshell
 ┌─────────────────────────────────────────────────────┐
-│  智能评分引擎 (src/Core/Scorer.php)                   │
-│  基础四维：熵值(15%) + 语义(40%) + 编译(20%) + 偏离(15%)│
-│  专项加成：编码绕过(+0~50分) + 行为偏离(+0~25分)     │
-│  误报控制：FalsePositiveGuard 8层防御 (-5~-30分)     │
-│  自动学习：SemanticMemoryPool + AutoLearn            │
-└──────────────────────┬──────────────────────────────┘
-                       ↓
-┌─────────────────────────────────────────────────────┐
-│  8 维高级防护 (src/Defense/)                          │
-│  SSRF → NoSQL → 请求走私 → JWT → 模板注入 →        │
-│  API安全 → CRLF注入 → 缓存投毒                       │
-└──────────────────────┬──────────────────────────────┘
-                       ↓
-┌─────────────────────────────────────────────────────┐
-│  路径预判 + 主动防御                                 │
+│  第3层：主动防御 (src/Semantic/ActiveDefense.php)    │
 │  攻击者画像 → 路径预判 → 蜜罐部署 →                │
 │  预判拦截 → 攻击链提前封堵 → 阶段进阶拦截 →         │
 │  累进惩罚                                             │
 └──────────────────────┬──────────────────────────────┘
+                       ↓ 真正厉害的攻击者
+┌─────────────────────────────────────────────────────┐
+│  第4层：沙箱兜底 (src/Admin/Sandbox.php) ⭐ 最后防线  │
+│  实时文件监控 + 5引擎深度分析 + 多引擎交叉验证 →     │
+│  秒删/隔离 + 精确定位 + AutoLearn 联动学习           │
+│  定时全量扫描 + 文件隔离/恢复 + 人工审核             │
+└──────────────────────┬──────────────────────────────┘
                        ↓
               allow / log / observe / block
 ```
+
+**三层学习闭环**：WAF 主入口 → 上传检测 → 沙箱兜底 → AutoLearn 学习 → 反哺 WAF 规则
 
 ---
 
@@ -300,9 +320,9 @@ shield-waf-master/
 
 | 分类 | 模块 | 说明 |
 |------|------|------|
-| **虚拟沙箱** | `src/Admin/Sandbox.php` | 实时文件监控、自动定时扫描、精确恶意代码定位(行号+字符范围)、文件隔离与恢复、新恶意文件秒删除 |
+| **虚拟沙箱（第4层兜底）** | `src/Admin/Sandbox.php` | 实时文件监控、自动定时扫描、**5引擎深度分析**、**多引擎交叉验证**、精确恶意代码定位(行号+字符范围)、文件隔离与恢复、新恶意文件秒删除、分级处置策略、**AutoLearn联动学习** |
 | **后门扫描** | `src/Defense/MalwareScanner.php` | 集成沙箱多引擎分析，特征码+启发式扫描全站PHP文件 |
-| **7层上传检测** | `src/Defense/Upload.php` | 扩展名白名单→MIME检测→GD库图像验证→SVG专用检测→编码归一化→语义分析→智能评分，防御图像马/SVG恶意文件 |
+| **7层上传检测（第2层专项）** | `src/Defense/Upload.php` | 扩展名白名单→MIME检测→**GD库图像验证**→SVG专用检测→**14层编码归一化**→**6引擎深度分析**→**多引擎交叉验证**→智能评分，防御图像马/SVG恶意文件、**AutoLearn联动学习** |
 
 ### 六、爬虫防护与机器人检测（⭐ 5星）
 
@@ -406,16 +426,67 @@ require_once '/path/to/shield-waf-master/shield-waf.php';
 复制 `.env.example` 为 `.env` 并填入配置：
 
 ```env
-# 暗门安全
+# ======================== 密钥配置（必须修改！） ========================
 WAF_MAGIC_KEY=your_magic_key_here
 WAF_2FA_PASS=your_2fa_password_here
 
-# 日志路径
-WAF_LOG_PATH=/var/www/html/waf_logs/
-
-# Webhook 告警
+# ======================== 告警配置 ========================
 WAF_WEBHOOK_URL=https://your-webhook.com/alert
+
+# ======================== 评分阈值 ========================
+WAF_SCORE_BLOCK=60
+WAF_SCORE_MONITOR=40
+
+# ======================== CC 攻击防护 ========================
+WAF_CC_LIMIT=60
+WAF_CC_WINDOW=60
+
+# ======================== 核心性能配置 ========================
+WAF_MAX_BODY_SIZE=1048576
+WAF_MAX_ENCODING_DEPTH=8
+WAF_MAX_PAYLOAD_SIZE=100000
+WAF_LOG_MAX_FILESIZE=10485760
+
+# ======================== 功能开关 ========================
+WAF_SEMANTIC_ENGINE=true
+WAF_SEMANTIC_ENABLED=true
+WAF_SCORER_ENABLED=true
+WAF_AUTOLEARN_ENABLED=true
+WAF_SEMANTIC_MEMORY=true
+WAF_ATTACK_CHAIN=true
+WAF_ACTIVE_DEFENSE=true
+WAF_HONEYTRAP=true
+WAF_PATH_PREDICTION=true
+WAF_FALSE_POSITIVE_GUARD=true
+
+# ======================== 沙箱配置 ========================
+WAF_SANDBOX_SCAN_INTERVAL=300
+WAF_SANDBOX_MALWARE_THRESHOLD=50
+WAF_SANDBOX_INSTANT_DELETE_NEW=true
+WAF_SANDBOX_AUTO_QUARANTINE=true
+
+# ======================== 上传检测配置 ========================
+WAF_UPLOAD_DETECTION=true
+WAF_UPLOAD_GD_VERIFY=true
+WAF_UPLOAD_ALLOW_SVG=false
+WAF_UPLOAD_BLOCK_THRESHOLD=60
+WAF_UPLOAD_LOG_THRESHOLD=30
+WAF_UPLOAD_SCAN_MAX_SIZE=5242880
+WAF_UPLOAD_BAN_ON_BLOCK=true
+
+# ======================== 爬虫防护 ========================
+WAF_BOT_VERIFY_DNS=false
+WAF_TRUST_CF_IP=false
+
+# ======================== CORS 配置 ========================
+WAF_ALLOWED_ORIGINS=
+
+# ======================== 安全响应头 ========================
+SHIELD_WAF_CSP=
+SHIELD_WAF_PERMISSIONS_POLICY=
 ```
+
+**配置优先级**：服务器环境变量 > `.env` 文件 > `config.php` 默认值
 
 ### config.php 核心参数
 
@@ -429,6 +500,9 @@ WAF_WEBHOOK_URL=https://your-webhook.com/alert
 | `WAF_CC_WINDOW` | CC攻击时间窗口（秒） | 60 |
 | `WAF_NORMALIZE_SQL_COMMENTS` | 是否移除SQL注释 | true |
 | `WAF_SANDBOX_SCAN_INTERVAL` | 沙箱自动扫描间隔（秒） | 300 |
+| `WAF_SANDBOX_MALWARE_THRESHOLD` | 沙箱恶意判定阈值 | 50 |
+| `WAF_UPLOAD_BLOCK_THRESHOLD` | 上传拦截阈值 | 60 |
+| `WAF_UPLOAD_LOG_THRESHOLD` | 上传日志阈值 | 30 |
 | `WAF_WEBHOOK_URL` | 告警Webhook地址 | 空 |
 | `WAF_MAX_ENCODING_DEPTH` | 最大编码递归深度 | 15 |
 | `WAF_MAX_PAYLOAD_SIZE` | 最大载荷长度 | 1048576 |
