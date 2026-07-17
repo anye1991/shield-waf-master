@@ -16,9 +16,8 @@
  */
 defined('ABSPATH') || exit;
 
-require_once __DIR__ . '/semantic/SemanticEngine.php';
-require_once __DIR__ . '/compiler/CompilerEngine.php';
-require_once __DIR__ . '/learn/AutoLearn.php';
+require_once __DIR__ . '/../Semantic/SemanticEngine.php';
+require_once __DIR__ . '/../Learn/AutoLearn.php';
 
 class WafScorer {
     private static $weights = [
@@ -134,11 +133,41 @@ class WafScorer {
     // ====================== 编译偏差分析 (25%) ======================
 
     /**
-     * 调用编译引擎分析
+     * 内置结构分析（原 CompilerEngine 整合）
+     * 通过 URI 路径、参数键值对的结构特征评分。
      */
     private static function calcCompiler($text, $uri, $params) {
-        $result = CompilerEngine::compileRequest($uri, $params);
-        return $result['score'] ?? 0;
+        $score = 0;
+
+        // 1. URI 异常结构
+        $uri = (string)$uri;
+        if (strlen($uri) > 200)                       $score += 15;
+        if (substr_count($uri, '/') > 8)              $score += 10;
+        if (preg_match('/\.\.\//', $uri))             $score += 20;
+        if (preg_match('/\.(php|asp|jsp|cgi|env|sql)$/i', $uri)) $score += 10;
+        if (preg_match('/(?:union|select|concat|script|onerror|javascript:)/i', $uri)) $score += 25;
+
+        // 2. 参数键名异常
+        $suspiciousKeys = ['cmd', 'exec', 'command', 'shell', 'eval', 'code', 'file', 'path', 'url', 'redirect', 'return', 'jump', 'include', 'require'];
+        foreach ($params as $k => $v) {
+            $lk = strtolower((string)$k);
+            foreach ($suspiciousKeys as $s) {
+                if (strpos($lk, $s) !== false) { $score += 8; break; }
+            }
+        }
+
+        // 3. 参数值结构异常
+        $val = is_array($params) ? implode(' ', array_map('strval', $params)) : (string)$params;
+        $len = strlen($val);
+        if ($len > 0) {
+            $upperRatio = strlen(preg_replace('/[^A-Z]/', '', $val)) / max($len, 1);
+            $digitRatio = strlen(preg_replace('/[^0-9]/', '', $val)) / max($len, 1);
+            $symRatio   = strlen(preg_replace('/[a-zA-Z0-9\s]/', '', $val)) / max($len, 1);
+            if ($upperRatio > 0.5 && $digitRatio > 0.3) $score += 15;
+            if ($symRatio > 0.4)                          $score += 15;
+        }
+
+        return min(round($score, 1), 100);
     }
 
     // ====================== 偏离分析 (30%) ======================

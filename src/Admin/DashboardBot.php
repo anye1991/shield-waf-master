@@ -5,7 +5,7 @@
  */
 defined('ABSPATH') || exit;
 
-require_once __DIR__ . '/bot/BotManager.php';
+require_once __DIR__ . '/../Bot/BotManager.php';
 
 // 获取机器人统计数据
 $reportFile = WAF_LOG_PATH . 'bot_stats.json';

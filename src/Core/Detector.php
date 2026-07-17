@@ -1,7 +1,7 @@
 <?php
 defined('ABSPATH') || exit;
 
-require_once __DIR__ . '/learn/AutoLearn.php';
+require_once __DIR__ . '/../Learn/AutoLearn.php';
 
 class WafRiskScore {
     private static $attack_signatures = [

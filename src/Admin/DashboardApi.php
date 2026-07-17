@@ -16,8 +16,8 @@ if ($prev && $prev['ip'] === $ip && ($now - $prev['time']) < 1.0) {
 }
 @file_put_contents($cache_file, json_encode(['ip' => $ip, 'time' => $now]));
 
-require_once __DIR__ . '/stats.php';
-require_once __DIR__ . '/ip_manager.php';
+require_once __DIR__ . '/../../stats.php';
+require_once __DIR__ . '/IpManager.php';
 
 header('Content-Type: application/json');
 

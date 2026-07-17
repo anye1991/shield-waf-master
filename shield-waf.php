@@ -8,23 +8,24 @@
  *  - 重定向改为绝对路径
  *  - 新增 wp-login.php POST 频率限制（防暴力破解，固定文件）
  *  - 常量重命名为 WAF_SKIP_RATELIMIT
+ *  - v3.0.0 架构重组：所有模块归入 src/{Core,Semantic,Bot,Learn,Defense,Admin,Support}
  */
 defined('ABSPATH') || exit;
 
 // ====================== 配置与函数 ======================
 require_once __DIR__ . '/config.php';
-require_once __DIR__ . '/functions.php';
+require_once __DIR__ . '/src/Support/Functions.php';
 
 // ====================== 安全响应头 ======================
-require_once __DIR__ . '/security_headers.php';
+require_once __DIR__ . '/src/Defense/SecurityHeaders.php';
 SecurityHeaders::apply();
 
 // ====================== 会话安全（必须在 session_start 前） ======================
-require_once __DIR__ . '/session_security.php';
+require_once __DIR__ . '/src/Defense/SessionSecurity.php';
 SessionSecurity::enforce();
 
 // ====================== WebSocket 阻断 ======================
-require_once __DIR__ . '/websocket_block.php';
+require_once __DIR__ . '/src/Defense/WebSocketBlock.php';
 WebSocketBlock::deny();
 
 // ====================== 启动会话 ======================
@@ -33,12 +34,12 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
 }
 
 // ====================== CORS 策略 ======================
-require_once __DIR__ . '/cors_policy.php';
+require_once __DIR__ . '/src/Defense/CorsPolicy.php';
 CorsPolicy::init();
 CorsPolicy::check();
 
 // ====================== IP 白名单处理 ======================
-require_once __DIR__ . '/ip_manager.php';
+require_once __DIR__ . '/src/Admin/IpManager.php';
 if (waf_is_admin_ip()) {
     if (rand(1, 100) === 1) waf_clean_admin_ips();
     define('WAF_SKIP_RATELIMIT', true);
@@ -49,12 +50,12 @@ if (waf_is_admin_ip()) {
 if (rand(1, 100) === 1) waf_clean_ban_file();
 
 // ====================== 速率限制 ======================
-require_once __DIR__ . '/rate_limit.php';
+require_once __DIR__ . '/src/Defense/RateLimit.php';
 if (!waf_cc_check()) {
     waf_block('请求过于频繁，请稍后再试');
 }
 
-require_once __DIR__ . '/api_rate_limit.php';
+require_once __DIR__ . '/src/Defense/ApiRateLimit.php';
 ApiRateLimit::check();
 
 // ====================== IP 封禁检查 ======================
@@ -69,11 +70,11 @@ if (!in_array($_SERVER['REQUEST_METHOD'], $allowed_methods)) {
 }
 
 // ====================== CSRF 防护 ======================
-require_once __DIR__ . '/csrf_protect.php';
+require_once __DIR__ . '/src/Defense/CsrfProtect.php';
 CsrfProtect::check();
 
 // ====================== 机器人检测 ======================
-require_once __DIR__ . '/bot/BotManager.php';
+require_once __DIR__ . '/src/Bot/BotManager.php';
 $botResult = BotManager::check([
     'uri'     => $_SERVER['REQUEST_URI'] ?? '/',
     'ua'      => $_SERVER['HTTP_USER_AGENT'] ?? '',
@@ -85,17 +86,16 @@ if ($botResult['action'] === 'block') {
 }
 
 // ====================== 虚拟沙箱初始化 ======================
-// 沙箱依赖：归一化引擎、检测器、语义引擎、编译引擎
-require_once __DIR__ . '/normalizer.php';
+// 沙箱依赖：归一化引擎、检测器、语义引擎
+require_once __DIR__ . '/src/Core/Normalizer.php';
 WafNormalizer::init();
-require_once __DIR__ . '/detector.php';
-require_once __DIR__ . '/semantic/SemanticEngine.php';
-require_once __DIR__ . '/compiler/CompilerEngine.php';
-require_once __DIR__ . '/sandbox.php';
+require_once __DIR__ . '/src/Core/Detector.php';
+require_once __DIR__ . '/src/Semantic/SemanticEngine.php';
+require_once __DIR__ . '/src/Admin/Sandbox.php';
 WafSandbox::init();
 
 // ====================== 输入采集与分块解码 ======================
-require_once __DIR__ . '/chunked.php';
+require_once __DIR__ . '/src/Defense/Chunked.php';
 $uri  = $_SERVER['REQUEST_URI'] ?? '/';
 $body = waf_decode_chunked_body();
 
@@ -137,7 +137,7 @@ if (!empty($_SERVER['QUERY_STRING'])) {
 }
 
 // ====================== GraphQL 注入检测 ======================
-require_once __DIR__ . '/graphql_injection.php';
+require_once __DIR__ . '/src/Defense/GraphQLDefender.php';
 GraphQLDefender::check();
 
 // ====================== 收集其他输入源并全局归一化 ======================
@@ -150,16 +150,14 @@ foreach (['HTTP_USER_AGENT','HTTP_REFERER','HTTP_X_FORWARDED_FOR','HTTP_ACCEPT_L
 }
 $cookie = !empty($_COOKIE) ? http_build_query($_COOKIE) : '';
 
-require_once __DIR__ . '/normalizer.php';
 $normResult = WafNormalizer::normalizeWithContext("$uri $body $post $headers $cookie");
 $all = $normResult['output'];
 
 // ====================== 攻击检测（L14语义上下文评分系统 + 自动学习 + 智能评分） ======================
-require_once __DIR__ . '/detector.php';
 $attackResult = waf_analyze_attack($all, $normResult);
 
-// 智能评分系统（四维：熵值+语义+编译偏差+偏离分析）
-require_once __DIR__ . '/Scorer.php';
+// 智能评分系统（四维：熵值+语义+结构偏差+偏离分析）
+require_once __DIR__ . '/src/Core/Scorer.php';
 $scorerResult = WafScorer::score($all, $uri, $_GET, $normResult);
 
 // 综合判断：规则检测或智能评分任一达到拦截阈值即拦截
@@ -189,30 +187,30 @@ if ($attackResult['is_attack'] || $scorerResult['is_attack']) {
 AutoLearn::recordNormal($uri, array_keys($_GET + $_POST));
 
 // ====================== 文件上传检测 ======================
-require_once __DIR__ . '/upload.php';
+require_once __DIR__ . '/src/Defense/Upload.php';
 waf_check_upload();
 
 // ====================== 路由处理（仪表盘、扫描 API） ======================
 $requestPath = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 
 if ($requestPath === '/waf-dashboard-api') {
-    require_once __DIR__ . '/dashboard_api.php';
+    require_once __DIR__ . '/src/Admin/DashboardApi.php';
     exit;
 }
 if ($requestPath === '/waf-dashboard') {
-    require_once __DIR__ . '/dashboard.php';
+    require_once __DIR__ . '/src/Admin/Dashboard.php';
     exit;
 }
 if ($requestPath === '/waf-scanner-api') {
-    require_once __DIR__ . '/scanner_api.php';
+    require_once __DIR__ . '/src/Admin/ScannerApi.php';
     exit;
 }
 if ($requestPath === '/waf-dashboard-bot') {
-    require_once __DIR__ . '/dashboard_bot.php';
+    require_once __DIR__ . '/src/Admin/DashboardBot.php';
     exit;
 }
 if ($requestPath === '/waf-sandbox-api') {
-    require_once __DIR__ . '/waf-sandbox-api.php';
+    require_once __DIR__ . '/src/Admin/SandboxApi.php';
     exit;
 }
 
@@ -245,11 +243,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && strpos($requestPath, 'wp-login.php'
 }
 
 // ====================== 输出过滤 ======================
-require_once __DIR__ . '/output_filter.php';
+require_once __DIR__ . '/src/Defense/OutputFilter.php';
 waf_output_filter_start();
 
 // ====================== 后台暗门 ======================
-require_once __DIR__ . '/darkgate.php';
+require_once __DIR__ . '/src/Admin/DarkGate.php';
 
 $is_admin = (strpos($requestPath, 'wp-admin') !== false);
 

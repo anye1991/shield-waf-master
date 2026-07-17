@@ -141,7 +141,7 @@ cmd_scan() {
     echo "  curl -X POST 'https://your-domain.com/waf-sandbox-api.php?action=scan'"
     echo ""
     echo "方式2 - 通过 PHP CLI:"
-    echo "  php -r \"require '$SCRIPT_DIR/sandbox.php'; WafSandbox::init(); print_r(WafSandbox::scanAll());\""
+    echo "  php -r \"require '$SCRIPT_DIR/../Admin/Sandbox.php'; WafSandbox::init(); print_r(WafSandbox::scanAll());\""
     echo ""
     echo "扫描结果将保存到: $STATS_FILE"
 }
@@ -160,12 +160,11 @@ cmd_analyze() {
         define('ABSPATH', '$SCRIPT_DIR');
         define('WAF_LOG_PATH', '$WAF_LOGS/');
         require '$SCRIPT_DIR/config.php';
-        require '$SCRIPT_DIR/functions.php';
-        require '$SCRIPT_DIR/normalizer.php';
-        require '$SCRIPT_DIR/detector.php';
-        require '$SCRIPT_DIR/semantic/SemanticEngine.php';
-        require '$SCRIPT_DIR/compiler/CompilerEngine.php';
-        require '$SCRIPT_DIR/sandbox.php';
+        require '$SCRIPT_DIR/../Support/Functions.php';
+        require '$SCRIPT_DIR/../Core/Normalizer.php';
+        require '$SCRIPT_DIR/../Core/Detector.php';
+        require '$SCRIPT_DIR/../Semantic/SemanticEngine.php';
+        require '$SCRIPT_DIR/../Admin/Sandbox.php';
         WafNormalizer::init();
         \$result = WafSandbox::analyzeFile('$path');
         echo json_encode(\$result, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) . PHP_EOL;
@@ -185,12 +184,11 @@ cmd_locate() {
         define('ABSPATH', '$SCRIPT_DIR');
         define('WAF_LOG_PATH', '$WAF_LOGS/');
         require '$SCRIPT_DIR/config.php';
-        require '$SCRIPT_DIR/functions.php';
-        require '$SCRIPT_DIR/normalizer.php';
-        require '$SCRIPT_DIR/detector.php';
-        require '$SCRIPT_DIR/semantic/SemanticEngine.php';
-        require '$SCRIPT_DIR/compiler/CompilerEngine.php';
-        require '$SCRIPT_DIR/sandbox.php';
+        require '$SCRIPT_DIR/../Support/Functions.php';
+        require '$SCRIPT_DIR/../Core/Normalizer.php';
+        require '$SCRIPT_DIR/../Core/Detector.php';
+        require '$SCRIPT_DIR/../Semantic/SemanticEngine.php';
+        require '$SCRIPT_DIR/../Admin/Sandbox.php';
         WafNormalizer::init();
         \$locations = WafSandbox::locateMaliciousCode('$path');
         if (empty(\$locations)) {
@@ -224,8 +222,8 @@ cmd_restore() {
         define('ABSPATH', '$SCRIPT_DIR');
         define('WAF_LOG_PATH', '$WAF_LOGS/');
         require '$SCRIPT_DIR/config.php';
-        require '$SCRIPT_DIR/functions.php';
-        require '$SCRIPT_DIR/sandbox.php';
+        require '$SCRIPT_DIR/../Support/Functions.php';
+        require '$SCRIPT_DIR/../Admin/Sandbox.php';
         WafSandbox::init();
         \$result = WafSandbox::restoreFile('$id');
         echo \$result ? '  恢复成功' : '  恢复失败' . PHP_EOL;
@@ -238,8 +236,8 @@ cmd_restore_all() {
         define('ABSPATH', '$SCRIPT_DIR');
         define('WAF_LOG_PATH', '$WAF_LOGS/');
         require '$SCRIPT_DIR/config.php';
-        require '$SCRIPT_DIR/functions.php';
-        require '$SCRIPT_DIR/sandbox.php';
+        require '$SCRIPT_DIR/../Support/Functions.php';
+        require '$SCRIPT_DIR/../Admin/Sandbox.php';
         WafSandbox::init();
         \$count = WafSandbox::restoreAllFiles();
         echo \"  恢复了 {\$count} 个文件\" . PHP_EOL;
@@ -267,8 +265,8 @@ cmd_review() {
         define('ABSPATH', '$SCRIPT_DIR');
         define('WAF_LOG_PATH', '$WAF_LOGS/');
         require '$SCRIPT_DIR/config.php';
-        require '$SCRIPT_DIR/functions.php';
-        require '$SCRIPT_DIR/sandbox.php';
+        require '$SCRIPT_DIR/../Support/Functions.php';
+        require '$SCRIPT_DIR/../Admin/Sandbox.php';
         WafSandbox::init();
         \$result = WafSandbox::reviewFile('$id', '$action');
         echo \$result ? '  审核完成' : '  审核失败' . PHP_EOL;

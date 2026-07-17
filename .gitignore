@@ -1,4 +1,8 @@
 .env
 waf_logs/
+logs/*
+!logs/.gitkeep
+data/*
+!data/.gitkeep
 *.log
 *.cache

@@ -350,22 +350,16 @@ class WafSandbox {
             }
         }
 
-        // ---------- 4. 编译引擎 ----------
-        if (class_exists('CompilerEngine')) {
-            $compResult = CompilerEngine::compile($content);
-            $compScore = $compResult['score'] ?? 0;
-            if ($compScore > 40) {
-                $adjScore = min($compScore * 0.2, 20);
-                $score += $adjScore;
-                $indicators[] = [
-                    'engine' => 'compiler',
-                    'score' => round($adjScore, 1),
-                    'desc' => "编译引擎: score=$compScore" . (!empty($compResult['attack_type']) ? ", type={$compResult['attack_type']}" : ''),
-                ];
-                if (!empty($compResult['attack_type']) && $compResult['attack_type'] !== 'clean') {
-                    $malwareType = $compResult['attack_type'];
-                }
-            }
+        // ---------- 4. 结构分析（原编译引擎整合） ----------
+        $structScore = self::structuralAnalysis($content, $uri, $_GET ?? []);
+        if ($structScore > 40) {
+            $adjScore = min($structScore * 0.2, 20);
+            $score += $adjScore;
+            $indicators[] = [
+                'engine' => 'structure',
+                'score'  => round($adjScore, 1),
+                'desc'   => "结构分析: score=$structScore",
+            ];
         }
 
         // ---------- 5. 启发式特征 ----------
@@ -388,6 +382,44 @@ class WafSandbox {
             'file_md5'     => md5($content),
             'analyzed_at'  => time(),
         ];
+    }
+
+    // ====================== 结构分析（v3.0 整合自原 CompilerEngine） ======================
+
+    /**
+     * URI/参数的结构特征评分（替代原 CompilerEngine 维度）
+     */
+    private static function structuralAnalysis($text, $uri = '', $params = []) {
+        $score = 0;
+        $uri = (string)$uri;
+
+        // URI 异常
+        if (strlen($uri) > 200)                              $score += 15;
+        if (substr_count($uri, '/') > 8)                     $score += 10;
+        if (preg_match('/\.\.\//', $uri))                    $score += 20;
+        if (preg_match('/\.(php|asp|jsp|cgi|env|sql)$/i', $uri)) $score += 10;
+        if (preg_match('/(?:union|select|concat|script|onerror|javascript:)/i', $uri)) $score += 25;
+
+        // 参数键名
+        $suspiciousKeys = ['cmd', 'exec', 'command', 'shell', 'eval', 'code', 'file', 'path', 'url', 'redirect', 'return', 'jump', 'include', 'require'];
+        foreach ($params as $k => $v) {
+            $lk = strtolower((string)$k);
+            foreach ($suspiciousKeys as $s) {
+                if (strpos($lk, $s) !== false) { $score += 8; break; }
+            }
+        }
+
+        // 文本结构
+        $len = strlen($text);
+        if ($len > 0) {
+            $upperRatio = strlen(preg_replace('/[^A-Z]/', '', $text)) / $len;
+            $digitRatio = strlen(preg_replace('/[^0-9]/', '', $text)) / $len;
+            $symRatio   = strlen(preg_replace('/[a-zA-Z0-9\s]/', '', $text)) / $len;
+            if ($upperRatio > 0.5 && $digitRatio > 0.3) $score += 15;
+            if ($symRatio > 0.4)                          $score += 15;
+        }
+
+        return min(round($score, 1), 100);
     }
 
     // ====================== 精确恶意代码定位 ======================

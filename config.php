@@ -41,13 +41,13 @@ define('WAF_MAGIC_EXPIRE',    3600);
 define('WAF_MAGIC_MAX_RETRY', 3);
 
 // ======================== 日志与存储路径 ========================
-define('WAF_LOG_PATH',        __DIR__ . '/waf_logs/');
+define('WAF_LOG_PATH',        __DIR__ . '/logs/');
 define('WAF_ADMIN_IP_FILE',   WAF_LOG_PATH . 'admin_ips.txt');
 define('WAF_ADMIN_IP_TTL',    86400);
 
 // ======================== 安全功能开关 ========================
 define('WAF_NORMALIZE_SQL_COMMENTS', true);
-define('WAF_403_TEMPLATE',    __DIR__ . '/waf_403_template.php');
+define('WAF_403_TEMPLATE',    __DIR__ . '/src/Admin/Waf403Template.php');
 
 // ======================== 机器人检测 ========================
 // 是否通过 DNS 反向解析验证搜索引擎蜘蛛真实性（最可靠，但每次请求增加一次DNS查询）

@@ -18,14 +18,13 @@
  */
 defined('ABSPATH') || exit;
 
-require_once __DIR__ . '/config.php';
-require_once __DIR__ . '/functions.php';
-require_once __DIR__ . '/normalizer.php';
-require_once __DIR__ . '/detector.php';
-require_once __DIR__ . '/semantic/SemanticEngine.php';
-require_once __DIR__ . '/compiler/CompilerEngine.php';
-require_once __DIR__ . '/sandbox.php';
-require_once __DIR__ . '/malware_scanner.php';
+require_once __DIR__ . '/../../config.php';
+require_once __DIR__ . '/../Support/Functions.php';
+require_once __DIR__ . '/../Core/Normalizer.php';
+require_once __DIR__ . '/../Core/Detector.php';
+require_once __DIR__ . '/../Semantic/SemanticEngine.php';
+require_once __DIR__ . '/Sandbox.php';
+require_once __DIR__ . '/../Defense/MalwareScanner.php';
 
 WafNormalizer::init();
 
