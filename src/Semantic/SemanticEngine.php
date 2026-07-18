@@ -359,11 +359,35 @@ class SemanticEngine {
         }
 
         // 编码绕过意图加成（核心思想：编码越深+解码后攻击得分越高=刻意绕过意图越强）
+        $effectiveAttackScore = max(
+            $total,
+            $sqlParserScore * 0.8,
+            $htmlParserScore * 0.8,
+            $commandParserScore * 0.8,
+            $phpParserScore * 0.7,
+            $pathParserScore * 0.7
+        );
         $encodeBypassScore = self::calcEncodeBypassScore(
-            $decodeDepth, $adversarialScore, $total, $adversarialResult
+            $decodeDepth, $adversarialScore, $total, $adversarialResult, $effectiveAttackScore
         );
         if ($encodeBypassScore > 0) {
             $total += $encodeBypassScore;
+        }
+
+        // 高置信度明文攻击保底加成（专项解析器≥50分且无编码时的基础提升）
+        if ($decodeDepth === 0) {
+            $maxParserScore = max(
+                $sqlParserScore,
+                $htmlParserScore,
+                $commandParserScore,
+                $phpParserScore,
+                $pathParserScore
+            );
+            if ($maxParserScore >= 60) {
+                $total += 15;
+            } elseif ($maxParserScore >= 45) {
+                $total += 8;
+            }
         }
 
         $total = max(0, min(100, (int)round($total)));
@@ -648,9 +672,11 @@ class SemanticEngine {
         int $decodeDepth,
         int $adversarialScore,
         float $currentTotal,
-        array $adversarialResult
+        array $adversarialResult,
+        float $effectiveAttackScore = 0
     ): int {
-        if ($decodeDepth <= 0 || $currentTotal < 20) {
+        $attackScore = max($currentTotal, $effectiveAttackScore);
+        if ($decodeDepth <= 0 || $attackScore < 15) {
             return 0;
         }
 
@@ -666,29 +692,68 @@ class SemanticEngine {
         elseif ($adversarialScore >= 50) { $score += 6; }
         elseif ($adversarialScore >= 30) { $score += 3; }
 
-        if ($currentTotal >= 60 && $decodeDepth >= 2) {
+        if ($attackScore >= 60 && $decodeDepth >= 2) {
             $score += 12;
             $indicators[] = 'encoded_high_severity_combo';
-        } elseif ($currentTotal >= 40 && $decodeDepth >= 1) {
+        } elseif ($attackScore >= 40 && $decodeDepth >= 1) {
             $score += 5;
             $indicators[] = 'encoded_medium_severity_combo';
         }
 
         $decodePath = $adversarialResult['decode_path'] ?? [];
-        if (in_array('base64', $decodePath) && $currentTotal >= 30) {
+        if (in_array('base64', $decodePath) && $attackScore >= 30) {
             $score += 8;
             $indicators[] = 'base64_plus_payload';
         }
-        if (in_array('utf8_overlong', $decodePath) && $currentTotal >= 20) {
+        if (in_array('utf8_overlong', $decodePath) && $attackScore >= 20) {
             $score += 10;
             $indicators[] = 'overlong_utf8_bypass';
         }
-        if (in_array('unicode_percent_u', $decodePath) && $currentTotal >= 20) {
+        if (in_array('unicode_percent_u', $decodePath) && $attackScore >= 20) {
             $score += 8;
             $indicators[] = 'unicode_percent_u_bypass';
         }
+        if ((in_array('html_numeric_entity', $decodePath) || in_array('html_named_entity', $decodePath)) && $attackScore >= 20) {
+            $score += 7;
+            $indicators[] = 'html_entity_bypass';
+        }
+        if ((in_array('html_numeric_entity', $decodePath) || in_array('html_named_entity', $decodePath)) && $attackScore >= 30) {
+            $score += 5;
+            $indicators[] = 'html_entity_keyword_obfuscation';
+        }
+        // 高置信攻击 + 编码隐藏 = 强绕过意图
+        if ($attackScore >= 35 && $decodeDepth >= 1) {
+            $score += 10;
+            $indicators[] = 'high_confidence_encoded_attack';
+        }
+        // SQL/HTML/命令关键字被编码 = 明确的绕过意图（追加专项加成）
+        if ($attackScore >= 30 && $decodeDepth >= 1) {
+            $hasKeywordEncode = false;
+            foreach (['html_numeric_entity', 'html_named_entity', 'homoglyph_normalize', 'fullwidth_normalize', 'zero_width_remove', 'unicode_percent_u', 'utf8_overlong'] as $tech) {
+                if (in_array($tech, $decodePath)) {
+                    $hasKeywordEncode = true;
+                    break;
+                }
+            }
+            if ($hasKeywordEncode) {
+                $score += 5;
+                $indicators[] = 'keyword_obfuscation_technique';
+            }
+        }
+        if (in_array('homoglyph_normalize', $decodePath) && $attackScore >= 20) {
+            $score += 6;
+            $indicators[] = 'homoglyph_bypass';
+        }
+        if (in_array('zero_width_remove', $decodePath) && $attackScore >= 20) {
+            $score += 6;
+            $indicators[] = 'zero_width_bypass';
+        }
+        if (in_array('fullwidth_normalize', $decodePath) && $attackScore >= 20) {
+            $score += 5;
+            $indicators[] = 'fullwidth_bypass';
+        }
 
-        return min(25, $score);
+        return min(30, $score);
     }
 
     private static function calcChainScore(array $prediction): int {
