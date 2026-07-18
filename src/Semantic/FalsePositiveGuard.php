@@ -128,29 +128,32 @@ class FalsePositiveGuard {
         $recommendations = [];
         $totalScore = $semanticResult['total_score'] ?? 0;
 
-        // ---- 第1层：业务模式匹配 ----
+        // ---- 高分保护：攻击评分极高时不轻易判定为误报 ----
+        $highScoreProtection = $totalScore >= 80;
+
+        // ---- 第1层：业务模式匹配（权重降低，防止业务页面放行真实攻击） ----
         $matchedPattern = self::matchTrustedPattern($uri, $method, $params, $headers);
-        if ($matchedPattern) {
-            $confidence += 20;
+        if ($matchedPattern && !$highScoreProtection) {
+            $confidence += 10;
             $reason = "匹配可信业务模式: {$matchedPattern}";
             $recommendations[] = '业务模式匹配';
         }
 
-        // ---- 第2层：参数名白名单 ----
+        // ---- 第2层：参数名白名单（权重降低） ----
         $trustedParamRatio = self::checkTrustedParams($params);
-        if ($trustedParamRatio >= 0.8) {
-            $confidence += 25;
+        if ($trustedParamRatio >= 0.8 && !$highScoreProtection) {
+            $confidence += 10;
             $reason .= ($reason ? '; ' : '') . '参数名全为可信';
             $recommendations[] = '参数名白名单';
         } elseif ($trustedParamRatio >= 0.5) {
-            $confidence += 10;
+            $confidence += 5;
             $recommendations[] = '部分参数可信';
         }
 
         // ---- 第3层：语义指标质量检查 ----
         $indicatorQuality = self::checkIndicatorQuality($semanticResult);
         if ($indicatorQuality === 'weak') {
-            $confidence += 20;
+            $confidence += 15;
             $reason .= ($reason ? '; ' : '') . '语义指标质量弱';
             $recommendations[] = '弱指标';
         }
@@ -165,10 +168,10 @@ class FalsePositiveGuard {
             }
         }
 
-        // ---- 第5层：语义维度一致性检查 ----
+        // ---- 第5层：语义维度一致性检查（含L1-L10及11个深度解析器） ----
         $dimensionConsistency = self::checkDimensionConsistency($semanticResult);
         if ($dimensionConsistency === 'inconsistent') {
-            $confidence += 15;
+            $confidence += 10;
             $reason .= ($reason ? '; ' : '') . '语义维度不一致';
             $recommendations[] = '维度不一致';
         }
@@ -176,7 +179,7 @@ class FalsePositiveGuard {
         // ---- 第6层：危险特征缺失检查 ----
         $hasDangerousFeatures = self::hasDangerousFeatures($semanticResult);
         if (!$hasDangerousFeatures) {
-            $confidence += 20;
+            $confidence += 15;
             $reason .= ($reason ? '; ' : '') . '无高危特征';
             $recommendations[] = '无高危特征';
         }
@@ -186,6 +189,13 @@ class FalsePositiveGuard {
         if ($normalizationCheck === 'clean') {
             $confidence += 10;
             $recommendations[] = '归一化后干净';
+        }
+
+        // ---- 高分保护强制覆盖 ----
+        if ($highScoreProtection) {
+            // 攻击评分 >=80 时，要求极高置信度才能判定为误报
+            $confidence = min($confidence, 40);
+            $reason .= ($reason ? '; ' : '') . '高分保护生效，置信度受限';
         }
 
         // ---- 最终判定 ----
@@ -198,13 +208,13 @@ class FalsePositiveGuard {
             $reason = '分数极低，明确为正常请求';
         }
 
-        // 高置信度误报直接放行
-        if ($confidence >= 85) {
+        // 高置信度误报直接放行（但高分保护时不放行）
+        if ($confidence >= 85 && !$highScoreProtection) {
             $isFalsePositive = true;
         }
 
-        // 高分数但高置信度误报 => 需要二次确认
-        $needsVerification = $totalScore >= 60 && $confidence >= 50 && $confidence < 80;
+        // 需要二次确认：中高分数 + 中等置信度 => 不放行，要求多引擎交叉验证
+        $needsVerification = $totalScore >= 50 && $confidence >= 40 && $confidence < 70;
 
         return [
             'is_false_positive' => $isFalsePositive,
@@ -215,6 +225,7 @@ class FalsePositiveGuard {
             'trusted_pattern' => $matchedPattern,
             'trusted_param_ratio' => $trustedParamRatio,
             'indicator_quality' => $indicatorQuality,
+            'high_score_protection' => $highScoreProtection,
         ];
     }
 
@@ -364,7 +375,7 @@ class FalsePositiveGuard {
     }
 
     /**
-     * 检查维度一致性
+     * 检查维度一致性（含L1-L10及11个深度解析器）
      */
     private static function checkDimensionConsistency(array $result): string {
         $lScores = [
@@ -376,6 +387,20 @@ class FalsePositiveGuard {
             $result['l6_logic_score'] ?? 0,
             $result['l7_intent_score'] ?? 0,
             $result['l8_chain_score'] ?? 0,
+            $result['l9_memory_score'] ?? 0,
+            $result['l10_adversarial_score'] ?? 0,
+            // 11个深度解析器
+            $result['sql_parser_score'] ?? 0,
+            $result['html_parser_score'] ?? 0,
+            $result['php_parser_score'] ?? 0,
+            $result['path_parser_score'] ?? 0,
+            $result['command_parser_score'] ?? 0,
+            $result['xxe_parser_score'] ?? 0,
+            $result['ssrf_parser_score'] ?? 0,
+            $result['ssti_parser_score'] ?? 0,
+            $result['deser_parser_score'] ?? 0,
+            $result['crlf_parser_score'] ?? 0,
+            $result['expr_parser_score'] ?? 0,
         ];
 
         $highCount = count(array_filter($lScores, fn($s) => $s >= 40));
@@ -402,7 +427,25 @@ class FalsePositiveGuard {
 
         if (in_array($logicType, $dangerousLogic)) return true;
         if (in_array($attackPhase, $dangerousPhase)) return true;
-        if ($chainDetected !== null) return true;
+        if ($chainDetected === true) return true;
+
+        // 深度解析器命中视为高危特征
+        $parserScores = [
+            $result['sql_parser_score'] ?? 0,
+            $result['html_parser_score'] ?? 0,
+            $result['php_parser_score'] ?? 0,
+            $result['path_parser_score'] ?? 0,
+            $result['command_parser_score'] ?? 0,
+            $result['xxe_parser_score'] ?? 0,
+            $result['ssrf_parser_score'] ?? 0,
+            $result['ssti_parser_score'] ?? 0,
+            $result['deser_parser_score'] ?? 0,
+            $result['crlf_parser_score'] ?? 0,
+            $result['expr_parser_score'] ?? 0,
+        ];
+        foreach ($parserScores as $ps) {
+            if ($ps >= 40) return true;
+        }
 
         return false;
     }
