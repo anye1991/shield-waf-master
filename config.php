@@ -101,6 +101,10 @@ if (!defined('WAF_SANDBOX_EXCLUDE_DIRS')) {
 }
 // 恶意代码判定阈值（评分 >= 此值即判定为恶意）
 define('WAF_SANDBOX_MALWARE_THRESHOLD', getenv('WAF_SANDBOX_MALWARE_THRESHOLD') !== false ? (int)getenv('WAF_SANDBOX_MALWARE_THRESHOLD') : 50);
+// 沙箱白名单路径（这些路径下的文件永不删除/隔离）
+if (!defined('WAF_SANDBOX_WHITELIST_PATHS')) {
+    define('WAF_SANDBOX_WHITELIST_PATHS', serialize([]));
+}
 
 // ======================== 上传检测配置 ========================
 // 是否启用文件上传检测

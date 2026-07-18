@@ -31,10 +31,27 @@ if (!function_exists('waf_safe_read_json')) {
 }
 
 class WafSandbox {
+    // WAF 自身根目录（基于 __DIR__ 动态计算，不可被篡改）
+    private static $waf_root_dir;
+
     // 可执行脚本扩展名
     private static $protected_ext = [
         'php', 'phtml', 'php5', 'php7', 'phps', 'inc', 'shtml',
         'cgi', 'pl', 'py', 'asp', 'aspx', 'jsp', 'js', 'htaccess',
+    ];
+
+    // 永不删除/隔离的文件名（WAF 自身核心文件）
+    private static $protected_filenames = [
+        'shield-waf.php', 'config.php', '.env', '.env.example',
+        'Dockerfile', 'docker-compose.yml',
+        'test_e2e.php', 'test_full_decode.php', 'test_fp_stress.php',
+        'test_learning.php',
+    ];
+
+    // 永不删除/隔离的目录名（WAF 自身代码目录）
+    private static $protected_dirnames = [
+        'shield-waf-master', 'src', 'Semantic', 'Core', 'Defense',
+        'Support', 'Admin', 'Learn', 'Bot', 'logs',
     ];
 
     // 恶意特征库（用于快速预筛）
@@ -85,6 +102,9 @@ class WafSandbox {
         if (self::$initialized) return;
         self::$initialized = true;
 
+        // 计算 WAF 自身根目录（src/Admin/ 往上两级）
+        self::$waf_root_dir = realpath(dirname(__DIR__, 2));
+
         $sandboxDir = WAF_LOG_PATH . 'sandbox/';
         waf_ensure_dir($sandboxDir);
 
@@ -111,6 +131,54 @@ class WafSandbox {
     // ====================== 实时监控（请求结束时触发） ======================
 
     /**
+     * 判断文件是否受保护（WAF 自身文件、入口文件、配置文件）
+     * 受保护文件永不删除、永不隔离
+     */
+    private static function isProtectedFile(string $path): bool {
+        $realPath = realpath($path);
+        if ($realPath === false) {
+            $realPath = $path;
+        }
+        $realPath = str_replace('\\', '/', $realPath);
+
+        // 1. WAF 自身根目录下的所有文件都保护
+        if (self::$waf_root_dir) {
+            $wafRoot = str_replace('\\', '/', self::$waf_root_dir);
+            if (strpos($realPath, $wafRoot) === 0) {
+                return true;
+            }
+        }
+
+        // 2. 文件名在保护列表中（即使在其他目录也保护）
+        $basename = basename($realPath);
+        if (in_array($basename, self::$protected_filenames)) {
+            return true;
+        }
+
+        // 3. 路径中包含 WAF 核心目录名
+        foreach (self::$protected_dirnames as $dir) {
+            if (preg_match('#/' . preg_quote($dir, '#') . '/#', $realPath)) {
+                return true;
+            }
+        }
+
+        // 4. 用户自定义白名单路径
+        $customWhitelist = defined('WAF_SANDBOX_WHITELIST_PATHS')
+            ? unserialize(WAF_SANDBOX_WHITELIST_PATHS) : [];
+        if (is_array($customWhitelist)) {
+            foreach ($customWhitelist as $wPath) {
+                if (strpos($realPath, $wPath) !== false) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    // ====================== 实时监控（请求结束时触发） ======================
+
+    /**
      * 实时文件监控 — 对比请求开始和结束时的文件快照
      * 新落地的恶意文件秒删除，修改的现有文件触发分析
      */
@@ -130,6 +198,11 @@ class WafSandbox {
 
         // 处理新文件 — 秒删除恶意文件
         foreach ($newFiles as $path => $info) {
+            // ⚠️ 保护检查：WAF 自身文件永不删除
+            if (self::isProtectedFile($path)) {
+                self::log("SKIP_PROTECTED 跳过受保护文件: $path");
+                continue;
+            }
             $analysis = self::analyzeFile($path);
             if ($analysis['is_malicious']) {
                 if (defined('WAF_SANDBOX_INSTANT_DELETE_NEW') && WAF_SANDBOX_INSTANT_DELETE_NEW) {
@@ -146,6 +219,11 @@ class WafSandbox {
 
         // 处理修改的文件 — 分析是否被注入恶意代码
         foreach ($modifiedFiles as $path) {
+            // ⚠️ 保护检查：WAF 自身文件永不隔离
+            if (self::isProtectedFile($path)) {
+                self::log("SKIP_PROTECTED 跳过受保护文件(已修改): $path");
+                continue;
+            }
             $analysis = self::analyzeFile($path);
             if ($analysis['is_malicious']) {
                 $locations = self::locateMaliciousCode($path);
@@ -230,6 +308,9 @@ class WafSandbox {
                 }
                 if ($skip) continue;
 
+                // ⚠️ 排除 WAF 自身文件（不在快照中记录，永不扫描）
+                if (self::isProtectedFile($path)) continue;
+
                 $ext = strtolower($file->getExtension());
                 if (!in_array($ext, self::$protected_ext)) continue;
 
@@ -252,7 +333,14 @@ class WafSandbox {
 
     private static function getExcludeDirs() {
         $dirs = defined('WAF_SANDBOX_EXCLUDE_DIRS') ? unserialize(WAF_SANDBOX_EXCLUDE_DIRS) : [WAF_LOG_PATH];
-        return is_array($dirs) ? $dirs : [WAF_LOG_PATH];
+        $dirs = is_array($dirs) ? $dirs : [WAF_LOG_PATH];
+
+        // 自动加入 WAF 自身根目录
+        if (self::$waf_root_dir) {
+            $dirs[] = self::$waf_root_dir;
+        }
+
+        return $dirs;
     }
 
     // ====================== 单文件深度分析（核心） ======================
@@ -267,6 +355,11 @@ class WafSandbox {
     public static function analyzeFile($path) {
         if (!is_file($path)) {
             return ['is_malicious' => false, 'score' => 0, 'error' => 'file not found'];
+        }
+
+        // ⚠️ WAF 自身文件永不分析（防止自我误杀）
+        if (self::isProtectedFile($path)) {
+            return ['is_malicious' => false, 'score' => 0, 'error' => 'protected file', 'protected' => true];
         }
 
         $content = @file_get_contents($path);
@@ -751,6 +844,12 @@ class WafSandbox {
 
         foreach ($snapshot as $path => $info) {
             $scanned++;
+
+            // ⚠️ 保护检查：WAF 自身文件永不删除/隔离
+            if (self::isProtectedFile($path)) {
+                continue;
+            }
+
             $analysis = self::analyzeFile($path);
 
             if ($analysis['is_malicious']) {
@@ -769,14 +868,20 @@ class WafSandbox {
                 // 新文件（不在之前的快照中）→ 秒删除或隔离
                 $isNew = !isset($beforeSnapshot[$path]);
                 if ($isNew && defined('WAF_SANDBOX_INSTANT_DELETE_NEW') && WAF_SANDBOX_INSTANT_DELETE_NEW) {
-                    @unlink($path);
-                    self::log("SECS_DELETE 新落地恶意文件秒删: $path (score={$analysis['score']})");
-                    self::alertWebhook("秒删恶意文件", $path, $analysis);
+                    // ⚠️ 二次保护检查
+                    if (!self::isProtectedFile($path)) {
+                        @unlink($path);
+                        self::log("SECS_DELETE 新落地恶意文件秒删: $path (score={$analysis['score']})");
+                        self::alertWebhook("秒删恶意文件", $path, $analysis);
+                    }
                 } elseif (defined('WAF_SANDBOX_AUTO_QUARANTINE') && WAF_SANDBOX_AUTO_QUARANTINE) {
-                    self::quarantineFile($path, "全量扫描发现恶意代码 (score={$analysis['score']})", $analysis);
-                    $quarantinedCount++;
-                    self::log("AUTO_QUARANTINE 文件已隔离: $path (score={$analysis['score']})");
-                    self::alertWebhook("文件隔离", $path, $analysis);
+                    // ⚠️ 二次保护检查
+                    if (!self::isProtectedFile($path)) {
+                        self::quarantineFile($path, "全量扫描发现恶意代码 (score={$analysis['score']})", $analysis);
+                        $quarantinedCount++;
+                        self::log("AUTO_QUARANTINE 文件已隔离: $path (score={$analysis['score']})");
+                        self::alertWebhook("文件隔离", $path, $analysis);
+                    }
                 } else {
                     self::log("ALERT 恶意文件: $path (score={$analysis['score']})");
                     self::alertWebhook("恶意代码告警", $path, $analysis);
@@ -811,6 +916,12 @@ class WafSandbox {
      */
     public static function quarantineFile($path, $reason, $analysis = []) {
         if (!is_file($path)) return false;
+
+        // ⚠️ 最终保护屏障：WAF 自身文件永不被隔离
+        if (self::isProtectedFile($path)) {
+            self::log("BLOCK_QUARANTINE 拦截隔离受保护文件: $path");
+            return false;
+        }
 
         $manifest = self::loadManifest();
         $id = 'Q' . date('YmdHis') . '_' . substr(md5($path . time()), 0, 8);
