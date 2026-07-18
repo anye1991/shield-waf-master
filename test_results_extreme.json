@@ -1,0 +1,162 @@
+{
+    "summary": {
+        "total": 31,
+        "passed": 31,
+        "failed": 0,
+        "pass_rate": 100
+    },
+    "benchmarks": [
+        {
+            "name": "hash生成 (10次)",
+            "iterations": 10,
+            "total_ms": 3037.73,
+            "per_op_us": 303772.52
+        },
+        {
+            "name": "verify验证 (100次)",
+            "iterations": 100,
+            "total_ms": 30383.51,
+            "per_op_us": 303835.11
+        },
+        {
+            "name": "info识别 (1000次)",
+            "iterations": 1000,
+            "total_ms": 8.79,
+            "per_op_us": 8.79
+        },
+        {
+            "name": "needsRehash (1000次)",
+            "iterations": 1000,
+            "total_ms": 6.08,
+            "per_op_us": 6.08
+        }
+    ],
+    "details": [
+        {
+            "name": "空字符串密码抛出异常（预期行为）",
+            "status": "pass"
+        },
+        {
+            "name": "单字符密码",
+            "status": "pass"
+        },
+        {
+            "name": "72字节密码（bcrypt边界）",
+            "status": "pass"
+        },
+        {
+            "name": "73字节密码（超过bcrypt边界）",
+            "status": "pass"
+        },
+        {
+            "name": "1024字节长密码",
+            "status": "pass"
+        },
+        {
+            "name": "4096字节超长密码",
+            "status": "pass"
+        },
+        {
+            "name": "Unicode表情密码",
+            "status": "pass"
+        },
+        {
+            "name": "全部特殊字符",
+            "status": "pass"
+        },
+        {
+            "name": "bcrypt格式验证 + needsRehash",
+            "status": "pass"
+        },
+        {
+            "name": "MD5格式验证",
+            "status": "pass"
+        },
+        {
+            "name": "SHA1格式验证",
+            "status": "pass"
+        },
+        {
+            "name": "SHA256格式验证",
+            "status": "pass"
+        },
+        {
+            "name": "SHA512格式验证",
+            "status": "pass"
+        },
+        {
+            "name": "错误密码不通过",
+            "status": "pass"
+        },
+        {
+            "name": "双重哈希不需要rehash",
+            "status": "pass"
+        },
+        {
+            "name": "info识别dual-v1",
+            "status": "pass"
+        },
+        {
+            "name": "info识别bcrypt",
+            "status": "pass"
+        },
+        {
+            "name": "info识别md5\/sha1\/sha256\/sha512",
+            "status": "pass"
+        },
+        {
+            "name": "空字符串返回empty",
+            "status": "pass"
+        },
+        {
+            "name": "未知格式返回unknown",
+            "status": "pass"
+        },
+        {
+            "name": "超长hash字符串(10000字符)",
+            "status": "pass"
+        },
+        {
+            "name": "二进制垃圾hash",
+            "status": "pass"
+        },
+        {
+            "name": "SQL注入式密码",
+            "status": "pass"
+        },
+        {
+            "name": "XSS式密码",
+            "status": "pass"
+        },
+        {
+            "name": "路径遍历式密码",
+            "status": "pass"
+        },
+        {
+            "name": "100次随机一致性",
+            "status": "pass"
+        },
+        {
+            "name": "detectBestPrimaryAlgo返回有效值",
+            "status": "pass"
+        },
+        {
+            "name": "支持算法列表≥1",
+            "status": "pass"
+        },
+        {
+            "name": "内存占用测试",
+            "status": "pass"
+        },
+        {
+            "name": "同一密码多次hash结果不同（加盐）",
+            "status": "pass"
+        },
+        {
+            "name": "100次循环验证不崩溃",
+            "status": "pass"
+        }
+    ],
+    "date": "2026-07-18 19:47:52",
+    "php_version": "8.5.6-dev"
+}
