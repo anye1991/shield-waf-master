@@ -94,6 +94,8 @@ class WafSandbox {
     private static $locations_file = null;
     private static $quarantine_dir = null;
     private static $manifest_file = null;
+    private static $baseline_file = null;      // 基线文件哈希
+    private static $baseline_meta_file = null;  // 基线元数据（锁定时间等）
     private static $initialized = false;
 
     // ====================== 初始化 ======================
@@ -113,6 +115,8 @@ class WafSandbox {
         self::$scan_result_file   = $sandboxDir . 'scan_result.json';
         self::$scan_history_file  = $sandboxDir . 'scan_history.json';
         self::$locations_file     = $sandboxDir . 'malicious_locations.json';
+        self::$baseline_file      = $sandboxDir . 'baseline.json';
+        self::$baseline_meta_file = $sandboxDir . 'baseline_meta.json';
         self::$quarantine_dir    = defined('WAF_SANDBOX_QUARANTINE_DIR')
             ? WAF_SANDBOX_QUARANTINE_DIR : WAF_LOG_PATH . 'quarantine/';
         self::$manifest_file      = self::$quarantine_dir . 'manifest.json';
@@ -176,6 +180,349 @@ class WafSandbox {
         return false;
     }
 
+    // ====================== 沙箱工作模式 ======================
+
+    /**
+     * 获取当前工作模式
+     * learning: 学习模式（只扫描告警，不删除）
+     * baseline: 基线模式（建立干净文件哈希）
+     * protecting: 保护模式（秒删除+精准切割）
+     */
+    public static function getMode(): string {
+        return defined('WAF_SANDBOX_MODE') ? WAF_SANDBOX_MODE : 'learning';
+    }
+
+    /**
+     * 基线是否已锁定
+     */
+    public static function isBaselineLocked(): bool {
+        $meta = waf_safe_read_json(self::$baseline_meta_file, []);
+        return !empty($meta['locked']) && $meta['locked'] === true;
+    }
+
+    /**
+     * 建立并锁定基线 — 将当前所有干净文件作为"原始基线"
+     * 调用前提：用户已手动排查并清理完所有后门
+     */
+    public static function lockBaseline(): array {
+        $snapshot = self::takeSnapshot();
+        $baseline = [];
+        $protected = 0;
+        $totalFiles = 0;
+
+        foreach ($snapshot as $path => $info) {
+            // WAF 自身文件不纳入基线（已受保护）
+            if (self::isProtectedFile($path)) {
+                $protected++;
+                continue;
+            }
+            $totalFiles++;
+            $baseline[$path] = [
+                'md5'   => $info['md5'],
+                'size'  => $info['size'],
+                'mtime' => $info['mtime'],
+            ];
+        }
+
+        // 保存基线
+        waf_safe_write_json(self::$baseline_file, $baseline);
+
+        // 备份所有原始文件（用于精准切割时恢复）
+        $backedUp = self::backupBaselineFiles($baseline);
+
+        $meta = [
+            'locked'        => true,
+            'locked_at'     => time(),
+            'locked_by'     => $_SERVER['REMOTE_ADDR'] ?? 'cli',
+            'total_files'   => $totalFiles,
+            'protected_files' => $protected,
+            'backed_up_files' => $backedUp,
+            'mode_at_lock'  => self::getMode(),
+        ];
+        waf_safe_write_json(self::$baseline_meta_file, $meta);
+
+        self::log("BASELINE_LOCKED 基线已锁定: files={$totalFiles}, protected={$protected}, backed_up={$backedUp}, by=" . ($meta['locked_by']));
+
+        return [
+            'success'        => true,
+            'total_files'    => $totalFiles,
+            'protected_files' => $protected,
+            'backed_up_files' => $backedUp,
+            'locked_at'      => $meta['locked_at'],
+            'message'        => "基线已锁定，共 {$totalFiles} 个文件受保护，{$backedUp} 个已备份",
+        ];
+    }
+
+    /**
+     * 解锁基线（回到学习模式）
+     */
+    public static function unlockBaseline(): array {
+        waf_safe_write_json(self::$baseline_meta_file, ['locked' => false, 'unlocked_at' => time()]);
+        self::log("BASELINE_UNLOCKED 基线已解锁，回到学习模式");
+        return ['success' => true, 'message' => '基线已解锁，回到学习模式'];
+    }
+
+    /**
+     * 获取基线统计信息
+     */
+    public static function getBaselineInfo(): array {
+        $meta = waf_safe_read_json(self::$baseline_meta_file, []);
+        $baseline = waf_safe_read_json(self::$baseline_file, []);
+        return [
+            'locked'        => !empty($meta['locked']) && $meta['locked'] === true,
+            'locked_at'      => $meta['locked_at'] ?? null,
+            'total_files'   => $meta['total_files'] ?? 0,
+            'protected_files' => $meta['protected_files'] ?? 0,
+            'baseline_count' => count($baseline),
+            'current_mode'  => self::getMode(),
+        ];
+    }
+
+    /**
+     * 检查文件是否在基线中（已知干净文件）
+     */
+    private static function isInBaseline(string $path): bool {
+        $baseline = waf_safe_read_json(self::$baseline_file, []);
+        return isset($baseline[$path]);
+    }
+
+    /**
+     * 获取基线中文件的原始哈希
+     */
+    private static function getBaselineHash(string $path): ?string {
+        $baseline = waf_safe_read_json(self::$baseline_file, []);
+        return $baseline[$path]['md5'] ?? null;
+    }
+
+    // ====================== 精准切割（核心） ======================
+
+    /**
+     * 精准切割 — 原始文件被插入后门时，只移除恶意部分，保留原始内容
+     *
+     * 算法：
+     * 1. 从基线读取原始文件内容
+     * 2. 与当前文件做行级 diff
+     * 3. 找出新增的行（攻击者插入的代码）
+     * 4. 对新增行做恶意检测
+     * 5. 如果是恶意，只移除恶意行，保留原始内容
+     * 6. 写回文件，恢复原始内容
+     */
+    public static function surgicalCut(string $path): array {
+        if (!is_file($path)) {
+            return ['success' => false, 'error' => 'file not found'];
+        }
+
+        // WAF 自身文件不切割
+        if (self::isProtectedFile($path)) {
+            return ['success' => false, 'error' => 'protected file'];
+        }
+
+        $baselineHash = self::getBaselineHash($path);
+        if ($baselineHash === null) {
+            return ['success' => false, 'error' => 'not in baseline'];
+        }
+
+        $currentContent = @file_get_contents($path);
+        if ($currentContent === false) {
+            return ['success' => false, 'error' => 'read failed'];
+        }
+
+        // 如果当前文件哈希与基线一致，说明没被修改
+        if (md5($currentContent) === $baselineHash) {
+            return ['success' => true, 'action' => 'no_change', 'message' => '文件未被修改'];
+        }
+
+        // 没有原始文件备份无法做精准切割 → 只能整体隔离
+        // 基线只存了哈希，没有原始内容 → 需要从备份恢复
+        $backupContent = self::getBaselineBackup($path);
+        if ($backupContent === null) {
+            // 没有备份 → 隔离当前文件并告警
+            self::quarantineFile($path, "基线无备份，无法精准切割，已隔离", ['score' => 0, 'type' => 'modified']);
+            return ['success' => false, 'error' => 'no backup available', 'action' => 'quarantined'];
+        }
+
+        // 行级 diff：找出新增的行
+        $originalLines = explode("\n", $backupContent);
+        $currentLines  = explode("\n", $currentContent);
+        $diff = self::lineDiff($originalLines, $currentLines);
+
+        if (empty($diff['added'])) {
+            // 没有新增行，可能是删除或修改 → 直接恢复原始内容
+            file_put_contents($path, $backupContent);
+            self::log("SURGICAL_CUT 恢复原始文件(无新增): $path");
+            return [
+                'success'     => true,
+                'action'      => 'restored',
+                'added_lines' => 0,
+                'removed_lines' => count($diff['removed']),
+                'message'     => '文件已恢复为原始内容',
+            ];
+        }
+
+        // 对新增行做恶意检测
+        $maliciousLines = [];
+        foreach ($diff['added'] as $lineInfo) {
+            $lineNum = $lineInfo['line'];
+            $lineContent = $lineInfo['content'];
+            $analysis = self::analyzeLineForMalware($lineContent);
+            if ($analysis['is_malicious']) {
+                $maliciousLines[] = [
+                    'line'    => $lineNum,
+                    'content' => $lineContent,
+                    'score'   => $analysis['score'],
+                    'reason'  => $analysis['reason'],
+                ];
+            }
+        }
+
+        if (empty($maliciousLines)) {
+            // 新增行不是恶意 → 可能是正常更新，不处理
+            return [
+                'success'       => true,
+                'action'        => 'skip',
+                'added_lines'   => count($diff['added']),
+                'malicious_lines' => 0,
+                'message'       => '新增内容非恶意，跳过',
+            ];
+        }
+
+        // 精准切割：移除恶意行，保留其余内容
+        $cleanLines = $currentLines;
+        foreach (array_reverse($maliciousLines) as $ml) {
+            // 按行号删除（从后往前删，避免行号偏移）
+            $lineIdx = $ml['line'] - 1;
+            if (isset($cleanLines[$lineIdx])) {
+                unset($cleanLines[$lineIdx]);
+            }
+        }
+        $cleanContent = implode("\n", $cleanLines);
+
+        // 写回清理后的内容
+        file_put_contents($path, $cleanContent);
+
+        $cutCount = count($maliciousLines);
+        self::log("SURGICAL_CUT 精准切割完成: $path, 移除 {$cutCount} 行恶意代码");
+
+        return [
+            'success'         => true,
+            'action'          => 'cut',
+            'added_lines'     => count($diff['added']),
+            'malicious_lines' => $cutCount,
+            'removed_lines'   => count($diff['removed']),
+            'malicious_details' => $maliciousLines,
+            'message'         => "精准切割完成，移除 {$cutCount} 行恶意代码",
+        ];
+    }
+
+    /**
+     * 获取基线备份的原始文件内容
+     * 基线锁定时，将原始文件备份到 quarantine/baseline_backup/
+     */
+    private static function getBaselineBackup(string $path): ?string {
+        $backupDir = self::$quarantine_dir . 'baseline_backup/';
+        $backupFile = $backupDir . md5($path) . '.bak';
+        if (!is_file($backupFile)) return null;
+        $content = @file_get_contents($backupFile);
+        return $content !== false ? $content : null;
+    }
+
+    /**
+     * 建立基线时备份所有原始文件
+     */
+    private static function backupBaselineFiles(array $baseline): int {
+        $backupDir = self::$quarantine_dir . 'baseline_backup/';
+        waf_ensure_dir($backupDir);
+
+        $count = 0;
+        foreach ($baseline as $path => $info) {
+            if (!is_file($path)) continue;
+            $backupFile = $backupDir . md5($path) . '.bak';
+            if (@copy($path, $backupFile)) {
+                $count++;
+            }
+        }
+        return $count;
+    }
+
+    /**
+     * 行级 diff — 找出新增和删除的行
+     */
+    private static function lineDiff(array $original, array $current): array {
+        $added = [];
+        $removed = [];
+
+        $origSet = [];
+        foreach ($original as $idx => $line) {
+            $key = md5(trim($line));
+            $origSet[$key][] = $idx + 1;
+        }
+
+        $curSet = [];
+        foreach ($current as $idx => $line) {
+            $key = md5(trim($line));
+            $curSet[$key][] = $idx + 1;
+        }
+
+        // 找新增行（当前有，原始没有）
+        foreach ($current as $idx => $line) {
+            $key = md5(trim($line));
+            if (!isset($origSet[$key])) {
+                $added[] = ['line' => $idx + 1, 'content' => $line];
+            }
+        }
+
+        // 找删除行（原始有，当前没有）
+        foreach ($original as $idx => $line) {
+            $key = md5(trim($line));
+            if (!isset($curSet[$key])) {
+                $removed[] = ['line' => $idx + 1, 'content' => $line];
+            }
+        }
+
+        return ['added' => $added, 'removed' => $removed];
+    }
+
+    /**
+     * 对单行做恶意检测（用于精准切割）
+     */
+    private static function analyzeLineForMalware(string $line): array {
+        $score = 0;
+        $reason = '';
+
+        // 特征码检测
+        $lineLower = strtolower($line);
+        foreach (self::$malware_signatures as $sig => $weight) {
+            if (strpos($lineLower, strtolower($sig)) !== false) {
+                $score += $weight;
+                $reason .= "特征码:{$sig}; ";
+            }
+        }
+
+        // 危险函数调用
+        if (preg_match('/(eval|assert|system|exec|shell_exec|passthru|proc_open|popen)\s*\(/i', $line)) {
+            $score += 25;
+            $reason .= '危险函数; ';
+        }
+
+        // $_GET/$_POST 直接传入
+        if (preg_match('/\$_(GET|POST|REQUEST|COOKIE)\s*\[/i', $line)) {
+            $score += 20;
+            $reason .= '用户输入直接传入; ';
+        }
+
+        // base64 编码的长字符串
+        if (preg_match('/[A-Za-z0-9+\/]{60,}={0,2}/', $line)) {
+            $score += 15;
+            $reason .= '长Base64; ';
+        }
+
+        return [
+            'is_malicious' => $score >= 20,
+            'score'        => min($score, 100),
+            'reason'       => $reason ?: 'clean',
+        ];
+    }
+
     // ====================== 实时监控（请求结束时触发） ======================
 
     /**
@@ -185,6 +532,9 @@ class WafSandbox {
     public static function realtimeMonitor() {
         $before = self::loadSnapshot();
         if (empty($before)) return; // 首次运行无快照，跳过
+
+        $mode = self::getMode();
+        $baselineLocked = self::isBaselineLocked();
 
         $after = self::takeSnapshot();
         $newFiles = array_diff_key($after, $before);
@@ -196,34 +546,80 @@ class WafSandbox {
             }
         }
 
-        // 处理新文件 — 秒删除恶意文件
+        // 处理新文件
         foreach ($newFiles as $path => $info) {
             // ⚠️ 保护检查：WAF 自身文件永不删除
             if (self::isProtectedFile($path)) {
                 self::log("SKIP_PROTECTED 跳过受保护文件: $path");
                 continue;
             }
+
+            // 学习模式：只记录告警，不删除
+            if ($mode === 'learning') {
+                $analysis = self::analyzeFile($path);
+                if ($analysis['is_malicious']) {
+                    self::log("LEARNING_ALERT 新文件疑似恶意(学习模式不删除): $path (score={$analysis['score']})");
+                    self::alertWebhook("学习模式告警-新文件", $path, $analysis);
+                }
+                continue;
+            }
+
+            // 保护模式：基线锁定后，不在基线中的新文件直接秒删除
+            if ($mode === 'protecting' && $baselineLocked) {
+                if (!self::isInBaseline($path)) {
+                    // 不在基线中的新文件 → 秒删除
+                    @unlink($path);
+                    self::log("SECS_DELETE 新文件不在基线中，已秒删: $path");
+                    self::alertWebhook("秒删-未授权新文件", $path, ['score' => 100, 'type' => 'unauthorized_new']);
+                    continue;
+                }
+            }
+
+            // 保护模式但在基线中的新文件，或基线模式 → 分析
             $analysis = self::analyzeFile($path);
             if ($analysis['is_malicious']) {
                 if (defined('WAF_SANDBOX_INSTANT_DELETE_NEW') && WAF_SANDBOX_INSTANT_DELETE_NEW) {
-                    // 秒删除新落地的恶意文件
                     @unlink($path);
                     self::log("SECS_DELETE 新落地恶意文件已秒删: $path (score={$analysis['score']})");
                     self::alertWebhook("秒删恶意文件", $path, $analysis);
                 } else {
-                    // 移入隔离区
                     self::quarantineFile($path, "新落地恶意文件 (score={$analysis['score']})", $analysis);
                 }
             }
         }
 
-        // 处理修改的文件 — 分析是否被注入恶意代码
+        // 处理修改的文件
         foreach ($modifiedFiles as $path) {
             // ⚠️ 保护检查：WAF 自身文件永不隔离
             if (self::isProtectedFile($path)) {
                 self::log("SKIP_PROTECTED 跳过受保护文件(已修改): $path");
                 continue;
             }
+
+            // 学习模式：只记录告警
+            if ($mode === 'learning') {
+                $analysis = self::analyzeFile($path);
+                if ($analysis['is_malicious']) {
+                    self::log("LEARNING_ALERT 文件被修改且疑似恶意(学习模式不处理): $path (score={$analysis['score']})");
+                    self::alertWebhook("学习模式告警-文件被修改", $path, $analysis);
+                }
+                continue;
+            }
+
+            // 保护模式且基线已锁定 → 精准切割
+            if ($mode === 'protecting' && $baselineLocked && self::isInBaseline($path)) {
+                $cutResult = self::surgicalCut($path);
+                if ($cutResult['action'] === 'cut') {
+                    self::log("SURGICAL_CUT 精准切割: $path, 移除 {$cutResult['malicious_lines']} 行恶意代码");
+                    self::alertWebhook("精准切割", $path, ['score' => 100, 'type' => 'surgical_cut', 'details' => $cutResult]);
+                } elseif ($cutResult['action'] === 'restored') {
+                    self::log("SURGICAL_CUT 恢复原始文件: $path");
+                    self::alertWebhook("恢复原始文件", $path, ['score' => 80, 'type' => 'restored']);
+                }
+                continue;
+            }
+
+            // 保护模式但不在基线中，或基线模式 → 原有逻辑
             $analysis = self::analyzeFile($path);
             if ($analysis['is_malicious']) {
                 $locations = self::locateMaliciousCode($path);
@@ -250,6 +646,9 @@ class WafSandbox {
      * 检查是否需要自动扫描（基于上次扫描时间）
      */
     private static function autoScanIfNeeded() {
+        // 学习模式不自动扫描（让用户手动排查）
+        if (self::getMode() === 'learning') return;
+
         $interval = defined('WAF_SANDBOX_SCAN_INTERVAL') ? WAF_SANDBOX_SCAN_INTERVAL : 300;
         $lastScan = self::loadScanResult();
         $lastScanTime = $lastScan['scan_time'] ?? 0;
@@ -1064,6 +1463,20 @@ class WafSandbox {
     }
 
     /**
+     * 获取基线文件路径（供外部调用）
+     */
+    public static function getBaselineFile(): string {
+        return self::$baseline_file;
+    }
+
+    /**
+     * 获取隔离区目录（供外部调用）
+     */
+    public static function getQuarantineDir(): string {
+        return self::$quarantine_dir;
+    }
+
+    /**
      * 获取隔离统计
      */
     public static function getStats() {
@@ -1085,6 +1498,8 @@ class WafSandbox {
             'auto_quarantine'      => defined('WAF_SANDBOX_AUTO_QUARANTINE') ? WAF_SANDBOX_AUTO_QUARANTINE : true,
             'monitor_dirs'         => self::getMonitorDirs(),
             'exclude_dirs'         => self::getExcludeDirs(),
+            'mode'                 => self::getMode(),
+            'baseline'             => self::getBaselineInfo(),
         ];
 
         foreach ($manifest as $entry) {

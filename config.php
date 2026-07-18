@@ -79,6 +79,11 @@ define('WAF_TRUST_CF_IP', false);
 define('WAF_ALLOWED_ORIGINS', getenv('WAF_ALLOWED_ORIGINS') !== false ? getenv('WAF_ALLOWED_ORIGINS') : '');
 
 // ======================== 沙箱配置 ========================
+// 沙箱工作模式：
+//   learning  - 学习模式（首次安装默认）：只扫描告警，不删除任何文件，让用户排查后门
+//   baseline  - 基线模式：建立干净文件哈希基线
+//   protecting- 保护模式：秒删除新落地文件，精准切割被篡改的原始文件
+define('WAF_SANDBOX_MODE', getenv('WAF_SANDBOX_MODE') !== false ? getenv('WAF_SANDBOX_MODE') : 'learning');
 // 自动扫描间隔（秒），默认 300 = 5 分钟
 define('WAF_SANDBOX_SCAN_INTERVAL', getenv('WAF_SANDBOX_SCAN_INTERVAL') !== false ? (int)getenv('WAF_SANDBOX_SCAN_INTERVAL') : 300);
 // 监控目录（数组），默认为 ABSPATH（站点根目录）
