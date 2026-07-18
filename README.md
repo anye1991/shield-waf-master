@@ -471,6 +471,6 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 
 **如果觉得不错，给个 ⭐ Star 支持一下**
 
-Made with ❤️ by 盾甲安全团队
+Made with ❤️ by 暗夜铭少
 
 </div>

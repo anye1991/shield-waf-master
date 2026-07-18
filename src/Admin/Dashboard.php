@@ -691,6 +691,7 @@ tbody tr:hover{transform:translateX(2px)}
     <div class="ver-cell"><span>WAF 版本</span><span>v<?php echo $version; ?></span></div>
     <div class="ver-cell"><span>防护状态</span><span class="status-dot"><span class="dot"></span>运行中</span></div>
     <div class="ver-cell warn"><span>更新时间</span><span id="verTime">--</span></div>
+    <div class="ver-cell" style="opacity:.6;font-size:11px;margin-top:4px;border-top:1px solid var(--border);padding-top:8px"><span>© 暗夜铭少</span><span>版权所有</span></div>
   </div>
 </aside>
 
