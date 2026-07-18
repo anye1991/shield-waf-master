@@ -325,6 +325,10 @@ if ($requestPath === '/waf-sandbox-api') {
     require_once __DIR__ . '/src/Admin/SandboxApi.php';
     exit;
 }
+if ($requestPath === '/waf-password-api') {
+    require_once __DIR__ . '/src/Admin/PasswordApi.php';
+    exit;
+}
 
 // ====================== 登录页暴力破解防护（固定文件，无跨小时边界问题） ======================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && strpos($requestPath, 'wp-login.php') !== false) {
@@ -366,14 +370,30 @@ $is_admin = (strpos($requestPath, 'wp-admin') !== false);
 if ($is_admin) {
     // 如果用户已经通过 WordPress 登录，直接放行
     $logged_in = false;
-    if (!empty($_COOKIE)) {
+
+    // 优先使用 WordPress 原生函数判断（最可靠）
+    if (function_exists('is_user_logged_in')) {
+        $logged_in = is_user_logged_in();
+    } elseif (!empty($_COOKIE)) {
+        // 回退方案：手动验证 WordPress 登录 Cookie 的格式和有效性
         foreach ($_COOKIE as $name => $val) {
             if (strpos($name, 'wordpress_logged_in_') === 0) {
-                $logged_in = true;
-                break;
+                // Cookie 值格式：username|expiration|hmac_hash
+                $parts = explode('|', $val);
+                if (count($parts) === 3) {
+                    list($username, $expiration, $hash) = $parts;
+                    // 基本格式校验：用户名非空、过期时间是有效数字、哈希是 32+ 位十六进制
+                    if (!empty($username) && !empty($hash) &&
+                        is_numeric($expiration) && $expiration > time() &&
+                        preg_match('/^[a-f0-9]{32,}$/i', $hash)) {
+                        $logged_in = true;
+                        break;
+                    }
+                }
             }
         }
     }
+
     if ($logged_in) {
         return;
     }

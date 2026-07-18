@@ -168,12 +168,13 @@ class WafSandbox {
 
         // 4. 用户自定义白名单路径
         $customWhitelist = defined('WAF_SANDBOX_WHITELIST_PATHS')
-            ? unserialize(WAF_SANDBOX_WHITELIST_PATHS) : [];
-        if (is_array($customWhitelist)) {
-            foreach ($customWhitelist as $wPath) {
-                if (strpos($realPath, $wPath) !== false) {
-                    return true;
-                }
+            ? json_decode(WAF_SANDBOX_WHITELIST_PATHS, true) : [];
+        if (!is_array($customWhitelist)) {
+            $customWhitelist = [];
+        }
+        foreach ($customWhitelist as $wPath) {
+            if (strpos($realPath, $wPath) !== false) {
+                return true;
             }
         }
 
@@ -243,6 +244,10 @@ class WafSandbox {
 
         self::log("BASELINE_LOCKED 基线已锁定: files={$totalFiles}, protected={$protected}, backed_up={$backedUp}, by=" . ($meta['locked_by']));
 
+        // 集成点 3：联动 AutoLearn 冻结行为基线
+        // 防止攻击者在保护模式下慢慢"教坏" AutoLearn
+        self::notifyAutoLearnFreeze(true);
+
         return [
             'success'        => true,
             'total_files'    => $totalFiles,
@@ -259,6 +264,10 @@ class WafSandbox {
     public static function unlockBaseline(): array {
         waf_safe_write_json(self::$baseline_meta_file, ['locked' => false, 'unlocked_at' => time()]);
         self::log("BASELINE_UNLOCKED 基线已解锁，回到学习模式");
+
+        // 集成点 3：联动 AutoLearn 解冻行为基线
+        self::notifyAutoLearnFreeze(false);
+
         return ['success' => true, 'message' => '基线已解锁，回到学习模式'];
     }
 
@@ -360,11 +369,18 @@ class WafSandbox {
         }
 
         // 对新增行做恶意检测
+        // 构建上下文（所有新增行拼接），用于跨行变量函数检测
+        // 攻击者常把 $a='sys'.'tem'; 和 $a($_GET['cmd']); 分两行写
+        $context = '';
+        foreach ($diff['added'] as $lineInfo) {
+            $context .= $lineInfo['content'] . "\n";
+        }
+
         $maliciousLines = [];
         foreach ($diff['added'] as $lineInfo) {
             $lineNum = $lineInfo['line'];
             $lineContent = $lineInfo['content'];
-            $analysis = self::analyzeLineForMalware($lineContent);
+            $analysis = self::analyzeLineForMalware($lineContent, $context);
             if ($analysis['is_malicious']) {
                 $maliciousLines[] = [
                     'line'    => $lineNum,
@@ -402,6 +418,8 @@ class WafSandbox {
 
         $cutCount = count($maliciousLines);
         self::log("SURGICAL_CUT 精准切割完成: $path, 移除 {$cutCount} 行恶意代码");
+        // 集成点 1：事件回流到 AutoLearn
+        self::notifyAutoLearn('surgical_cut', $path, ['score' => 80]);
 
         return [
             'success'         => true,
@@ -484,43 +502,372 @@ class WafSandbox {
 
     /**
      * 对单行做恶意检测（用于精准切割）
+     *
+     * 抗混淆设计：攻击者常用以下手法绕过简单正则
+     *   1. 变量函数：$a='sys'.'tem'; $a($_GET['cmd']);
+     *   2. 字符串拼接：'ev'.'al'(...)
+     *   3. 注释插入：ev[xx]al(...)（注释符被插入函数名中间）
+     *   4. 可变变量：$$func(...)
+     *   5. 嵌套编码：base64_decode(base64_decode(...))
+     *   6. chr() 拼装：chr(101).chr(118).chr(97).chr(108)
+     *   7. Hex/Octal 转义："\x65\x76\x61\x6c"
+     *   8. URL/HTML 编码：%65%76%61%6c
+     *
+     * 应对策略：先脱壳归一化，再对原始行+归一化行做双层特征检测；
+     * 混淆行为本身也是可疑信号（正常代码极少混淆）。
+     *
+     * @param string $line    待检测的行
+     * @param string $context 上下文（同一文件的其他新增行拼接），用于跨行变量函数检测
      */
-    private static function analyzeLineForMalware(string $line): array {
+    private static function analyzeLineForMalware(string $line, string $context = ''): array {
         $score = 0;
         $reason = '';
+        $indicators = [];
 
-        // 特征码检测
-        $lineLower = strtolower($line);
-        foreach (self::$malware_signatures as $sig => $weight) {
-            if (strpos($lineLower, strtolower($sig)) !== false) {
-                $score += $weight;
-                $reason .= "特征码:{$sig}; ";
+        // === 1. 静态脱壳（注释剥离 + chr/hex/octal 拼装 + 字符串拼接） ===
+        $normalized = self::deobfuscateLine($line, $indicators);
+
+        // 混淆行为本身加分（合法代码极少混淆）
+        if (!empty($indicators)) {
+            $obfWeight = min(count($indicators) * 8, 25);
+            $score += $obfWeight;
+            $reason .= '混淆特征(' . implode(',', $indicators) . '); ';
+        }
+
+        // === 2. 双层特征码扫描（原始行 + 归一化行都查） ===
+        $checkedTexts = [$line];
+        if ($normalized !== $line) {
+            $checkedTexts[] = $normalized;
+        }
+        foreach ($checkedTexts as $idx => $text) {
+            $suffix = $idx === 0 ? '' : '(归一化)';
+            $textLower = strtolower($text);
+            foreach (self::$malware_signatures as $sig => $weight) {
+                if (strpos($textLower, strtolower($sig)) !== false) {
+                    $score += $weight;
+                    $reason .= "特征码{$suffix}:{$sig}; ";
+                }
             }
         }
 
-        // 危险函数调用
-        if (preg_match('/(eval|assert|system|exec|shell_exec|passthru|proc_open|popen)\s*\(/i', $line)) {
+        // === 2.5 集成点 2：AutoLearn 高频攻击特征反哺（单向只读建议） ===
+        // 安全设计：
+        //   - 仅作"加分"建议，权重上限 10
+        //   - 必须配合沙箱原有特征码命中才能加分（防反向污染误杀）
+        //   - 即使匹配也只加 5-10 分，不能单独触发判定（阈值 20）
+        $hotSigs = self::getHotSignaturesFromAutoLearn();
+        if (!empty($hotSigs) && $score > 0) {
+            foreach ($checkedTexts as $text) {
+                $textLower = strtolower($text);
+                foreach ($hotSigs as $sig => $weight) {
+                    if (strpos($textLower, strtolower($sig)) !== false) {
+                        $addScore = min($weight, 10);
+                        $score += $addScore;
+                        $reason .= "AutoLearn热点({$sig},+{$addScore}); ";
+                    }
+                }
+            }
+        }
+
+        // === 3. 危险函数调用（边界匹配，防 'eval_xxx(' 误报） ===
+        if (preg_match('/\b(eval|assert|system|exec|shell_exec|passthru|proc_open|popen)\s*\(/i', $normalized)) {
             $score += 25;
             $reason .= '危险函数; ';
         }
 
-        // $_GET/$_POST 直接传入
-        if (preg_match('/\$_(GET|POST|REQUEST|COOKIE)\s*\[/i', $line)) {
+        // === 4. 变量函数调用：$f='sys'.'tem'; $f($_GET['cmd']); ===
+        if (preg_match('/\$[a-z_]\w*\s*=\s*[\'"].*?[\'"]\s*(\.\s*[\'"].*?[\'"])*\s*;/i', $normalized)
+            && preg_match('/\$[a-z_]\w*\s*\(/i', $normalized)) {
+            $score += 25;
+            $reason .= '变量函数调用; ';
+        }
+
+        // === 5. 可变变量 $$func(...) ===
+        if (preg_match('/\$\$[a-z_]\w*\s*\(/i', $normalized)) {
+            $score += 25;
+            $reason .= '可变变量调用; ';
+        }
+
+        // === 6. $_GET/$_POST/$_REQUEST 直接传入 ===
+        if (preg_match('/\$_(GET|POST|REQUEST|COOKIE|SERVER)\s*\[/i', $normalized)) {
             $score += 20;
             $reason .= '用户输入直接传入; ';
         }
 
-        // base64 编码的长字符串
-        if (preg_match('/[A-Za-z0-9+\/]{60,}={0,2}/', $line)) {
+        // === 7. 长 Base64 字符串（疑似编码载荷） ===
+        if (preg_match('/[A-Za-z0-9+\/]{60,}={0,2}/', $normalized)) {
             $score += 15;
             $reason .= '长Base64; ';
+        }
+
+        // === 8. 嵌套编码 ===
+        if (preg_match('/(base64_decode|gzinflate|gzuncompress|str_rot13|convert_uudecode)\s*\(\s*(base64_decode|gzinflate|gzuncompress|str_rot13|convert_uudecode)\s*\(/i', $normalized)) {
+            $score += 20;
+            $reason .= '嵌套编码; ';
+        }
+
+        // === 9. chr() 拼装（≥3 个 chr 连用，行内组装字符串） ===
+        if (preg_match_all('/chr\s*\(\s*\d+\s*\)/i', $normalized, $m) >= 1
+            && count($m[0]) >= 3) {
+            $score += 20;
+            $reason .= 'chr()拼装; ';
+        }
+
+        // === 10. Hex/Octal 转义序列（≥2 个连用视为可疑） ===
+        $hexCount = preg_match_all('/\\\\x[0-9a-f]{2}/i', $normalized);
+        $octCount = preg_match_all('/\\\\[0-7]{3}/', $normalized);
+        if ($hexCount >= 2 || $octCount >= 2) {
+            $score += 12;
+            $reason .= "Hex/Octal转义(hex={$hexCount},oct={$octCount}); ";
+        }
+
+        // === 11. create_function / preg_replace /e 修饰符（旧版 PHP RCE 入口） ===
+        if (preg_match('/create_function\s*\(/i', $normalized)) {
+            $score += 25;
+            $reason .= 'create_function; ';
+        }
+        if (preg_match('#preg_replace\s*\(.+?/[imsxADSUXJu]*e[imsxADSUXJu]*["\']#i', $normalized)) {
+            $score += 30;
+            $reason .= 'preg_replace /e修饰符; ';
+        }
+
+        // === 12. 反引号执行注入 ===
+        if (preg_match('/`.*\$_(GET|POST|REQUEST)/i', $normalized)) {
+            $score += 25;
+            $reason .= '反引号执行; ';
+        }
+
+        // === 13. 文件写入 + 用户输入 ===
+        if (preg_match('/(file_put_contents|fwrite|fputs)\s*\(/i', $normalized)
+            && preg_match('/\$_(GET|POST|REQUEST)/i', $normalized)) {
+            $score += 25;
+            $reason .= '写入用户输入到文件; ';
+        }
+
+        // === 14. include/require 来自用户输入 ===
+        if (preg_match('/(include|require)(_once)?\s*\(\s*\$_(GET|POST|REQUEST)/i', $normalized)) {
+            $score += 30;
+            $reason .= '包含用户输入文件; ';
+        }
+
+        // === 15. 调用 AdversarialDefense 14 层解码（针对 URL/HTML/base64 编码混淆） ===
+        if (class_exists('AdversarialDefense', false)) {
+            $advResult = AdversarialDefense::normalizeWithContext($line);
+            $advDepth = $advResult['encoding_depth'] ?? 0;
+            if ($advDepth >= 1) {
+                $score += min($advDepth * 5, 15);
+                $reason .= "AdversarialDefense解码(depth={$advDepth}); ";
+            }
+            $decoded = $advResult['output'] ?? '';
+            if ($decoded && $decoded !== $line) {
+                $decodedLower = strtolower($decoded);
+                foreach (self::$malware_signatures as $sig => $weight) {
+                    if (strpos($decodedLower, strtolower($sig)) !== false) {
+                        $score += $weight;
+                        $reason .= "解码后特征码:{$sig}; ";
+                    }
+                }
+                // 解码后出现的危险函数
+                if (preg_match('/\b(eval|assert|system|exec|shell_exec|passthru|proc_open|popen)\s*\(/i', $decoded)) {
+                    $score += 25;
+                    $reason .= '解码后危险函数; ';
+                }
+            }
+        }
+
+        // === 16. 跨行变量函数检测 ===
+        // 当前行形如 $func(...) 调用，看上下文里是否有 $func = '...' 赋值
+        if ($context !== '' && preg_match('/^\s*\$([a-z_]\w*)\s*\(/i', $line, $m)) {
+            $varName = preg_quote('$' . $m[1], '/');
+            if (preg_match('/' . $varName . '\s*=\s*[\'"].*?[\'"]/i', $context)) {
+                $score += 20;
+                $reason .= '跨行变量函数; ';
+            }
         }
 
         return [
             'is_malicious' => $score >= 20,
             'score'        => min($score, 100),
             'reason'       => $reason ?: 'clean',
+            'obfuscation'  => $indicators,
         ];
+    }
+
+    /**
+     * PHP 代码静态脱壳 — 针对常见混淆手法做字符串归一化
+     *
+     * 安全原则：纯字符串变换，绝不执行任何代码（不用 eval/assert/create_function）。
+     * 只做：注释剥离、chr()→字符串、hex/octal→字符串、字符串字面量拼接、URL/HTML 解码。
+     *
+     * @param string $line       原始行
+     * @param array  $indicators [out] 记录命中的脱壳类型
+     */
+    private static function deobfuscateLine(string $line, array &$indicators = []): string {
+        $text = $line;
+
+        // 1. PHP-aware 注释剥离（不破坏字符串内部）
+        $stripped = self::stripPhpComments($text);
+        if ($stripped !== $text) {
+            $indicators[] = '注释插入';
+            $text = $stripped;
+        }
+
+        // 2. chr() 拼装还原：chr(101).chr(118).chr(97).chr(108) => "eval"
+        if (preg_match_all('/chr\s*\(\s*(\d+)\s*\)/i', $text, $chrMatches)) {
+            if (count($chrMatches[0]) >= 2) {
+                $assembled = '';
+                foreach ($chrMatches[1] as $code) {
+                    $c = (int)$code & 0xFF;
+                    $assembled .= chr($c);
+                }
+                $text = str_replace($chrMatches[0], '"' . $assembled . '"', $text);
+                $indicators[] = 'chr拼装';
+            }
+        }
+
+        // 3. Hex 转义还原："\x65\x76\x61\x6c" => "eval"
+        if (preg_match('/\\\\x[0-9a-f]{2}/i', $text)) {
+            $newText = preg_replace_callback('/"(?:\\\\x[0-9a-f]{2})+"/i', function($m) {
+                $decoded = '';
+                if (preg_match_all('/\\\\x([0-9a-f]{2})/i', $m[0], $hex)) {
+                    foreach ($hex[1] as $h) $decoded .= chr(hexdec($h));
+                    return '"' . $decoded . '"';
+                }
+                return $m[0];
+            }, $text);
+            if ($newText !== $text) {
+                $text = $newText;
+                $indicators[] = 'Hex转义';
+            }
+        }
+
+        // 4. Octal 转义还原："\101\102\103" => "ABC"
+        if (preg_match('/\\\\[0-7]{3}/', $text)) {
+            $newText = preg_replace_callback('/"(?:\\\\[0-7]{3})+"/', function($m) {
+                $decoded = '';
+                if (preg_match_all('/\\\\([0-7]{3})/', $m[0], $oct)) {
+                    foreach ($oct[1] as $o) $decoded .= chr(octdec($o));
+                    return '"' . $decoded . '"';
+                }
+                return $m[0];
+            }, $text);
+            if ($newText !== $text) {
+                $text = $newText;
+                $indicators[] = 'Octal转义';
+            }
+        }
+
+        // 5. 字符串字面量拼接还原：'ev'.'al' => "eval"
+        //    匹配形如 'ev'.'al' 或 "ev"."al" 的连用（≥2 段拼接）
+        if (preg_match('/([\'"][a-z0-9_]+[\'"]\s*\.\s*){1,}[\'"][a-z0-9_]+[\'\"]/i', $text)) {
+            $newText = preg_replace_callback(
+                '/(?:[\'"]([a-z0-9_]+)[\'"]\s*\.\s*){1,}[\'"]([a-z0-9_]+)[\'\"]/i',
+                function($m) {
+                    $full = $m[0];
+                    if (preg_match_all('/[\'"]([a-z0-9_]+)[\'"]/i', $full, $parts)) {
+                        return '"' . implode('', $parts[1]) . '"';
+                    }
+                    return $full;
+                },
+                $text
+            );
+            if ($newText !== $text) {
+                $text = $newText;
+                $indicators[] = '字符串拼接';
+            }
+        }
+
+        // 6. URL/HTML 解码（依赖 AdversarialDefense 14 层解码引擎）
+        if (class_exists('AdversarialDefense', false)) {
+            $decoded = AdversarialDefense::normalize($text);
+            if ($decoded !== $text && $decoded !== '') {
+                $indicators[] = '编码解码';
+                $text = $decoded;
+            }
+        }
+
+        return $text;
+    }
+
+    /**
+     * PHP-aware 注释剥离
+     * 安全移除 // 和 /* *\/ 注释，但不破坏字符串字面量内部的伪注释
+     * 状态机：单引号串 / 双引号串 / 行注释 / 块注释 四种状态互斥切换
+     */
+    private static function stripPhpComments(string $code): string {
+        $result = '';
+        $len = strlen($code);
+        $inSingleStr = false;
+        $inDoubleStr = false;
+        $inLineComment = false;
+        $inBlockComment = false;
+        $escaped = false;
+
+        for ($i = 0; $i < $len; $i++) {
+            $char = $code[$i];
+            $next = ($i + 1 < $len) ? $code[$i + 1] : '';
+
+            if ($inLineComment) {
+                if ($char === "\n") {
+                    $inLineComment = false;
+                    $result .= $char; // 保留换行，避免行号偏移
+                }
+                continue;
+            }
+            if ($inBlockComment) {
+                if ($char === '*' && $next === '/') {
+                    $inBlockComment = false;
+                    $i++; // 跳过 /
+                }
+                continue;
+            }
+            if ($inSingleStr) {
+                $result .= $char;
+                if ($escaped) {
+                    $escaped = false;
+                } elseif ($char === '\\') {
+                    $escaped = true;
+                } elseif ($char === "'") {
+                    $inSingleStr = false;
+                }
+                continue;
+            }
+            if ($inDoubleStr) {
+                $result .= $char;
+                if ($escaped) {
+                    $escaped = false;
+                } elseif ($char === '\\') {
+                    $escaped = true;
+                } elseif ($char === '"') {
+                    $inDoubleStr = false;
+                }
+                continue;
+            }
+
+            // 不在字符串或注释内
+            if ($char === '/' && $next === '/') {
+                $inLineComment = true;
+                $i++;
+                continue;
+            }
+            if ($char === '/' && $next === '*') {
+                $inBlockComment = true;
+                $i++;
+                continue;
+            }
+            if ($char === '#') {
+                $inLineComment = true;
+                continue;
+            }
+            if ($char === "'") {
+                $inSingleStr = true;
+            } elseif ($char === '"') {
+                $inDoubleStr = true;
+            }
+            $result .= $char;
+        }
+
+        return $result;
     }
 
     // ====================== 实时监控（请求结束时触发） ======================
@@ -571,6 +918,8 @@ class WafSandbox {
                     @unlink($path);
                     self::log("SECS_DELETE 新文件不在基线中，已秒删: $path");
                     self::alertWebhook("秒删-未授权新文件", $path, ['score' => 100, 'type' => 'unauthorized_new']);
+                    // 集成点 1：事件回流到 AutoLearn
+                    self::notifyAutoLearn('instant_delete_unauthorized', $path, ['score' => 100]);
                     continue;
                 }
             }
@@ -582,6 +931,8 @@ class WafSandbox {
                     @unlink($path);
                     self::log("SECS_DELETE 新落地恶意文件已秒删: $path (score={$analysis['score']})");
                     self::alertWebhook("秒删恶意文件", $path, $analysis);
+                    // 集成点 1：事件回流到 AutoLearn
+                    self::notifyAutoLearn('instant_delete', $path, $analysis);
                 } else {
                     self::quarantineFile($path, "新落地恶意文件 (score={$analysis['score']})", $analysis);
                 }
@@ -726,12 +1077,12 @@ class WafSandbox {
     }
 
     private static function getMonitorDirs() {
-        $dirs = defined('WAF_SANDBOX_MONITOR_DIRS') ? unserialize(WAF_SANDBOX_MONITOR_DIRS) : [ABSPATH];
+        $dirs = defined('WAF_SANDBOX_MONITOR_DIRS') ? json_decode(WAF_SANDBOX_MONITOR_DIRS, true) : [ABSPATH];
         return is_array($dirs) ? $dirs : [ABSPATH];
     }
 
     private static function getExcludeDirs() {
-        $dirs = defined('WAF_SANDBOX_EXCLUDE_DIRS') ? unserialize(WAF_SANDBOX_EXCLUDE_DIRS) : [WAF_LOG_PATH];
+        $dirs = defined('WAF_SANDBOX_EXCLUDE_DIRS') ? json_decode(WAF_SANDBOX_EXCLUDE_DIRS, true) : [WAF_LOG_PATH];
         $dirs = is_array($dirs) ? $dirs : [WAF_LOG_PATH];
 
         // 自动加入 WAF 自身根目录
@@ -1272,6 +1623,8 @@ class WafSandbox {
                         @unlink($path);
                         self::log("SECS_DELETE 新落地恶意文件秒删: $path (score={$analysis['score']})");
                         self::alertWebhook("秒删恶意文件", $path, $analysis);
+                        // 集成点 1：事件回流到 AutoLearn
+                        self::notifyAutoLearn('instant_delete', $path, $analysis);
                     }
                 } elseif (defined('WAF_SANDBOX_AUTO_QUARANTINE') && WAF_SANDBOX_AUTO_QUARANTINE) {
                     // ⚠️ 二次保护检查
@@ -1280,6 +1633,7 @@ class WafSandbox {
                         $quarantinedCount++;
                         self::log("AUTO_QUARANTINE 文件已隔离: $path (score={$analysis['score']})");
                         self::alertWebhook("文件隔离", $path, $analysis);
+                        // 集成点 1：事件回流到 AutoLearn（quarantineFile 内部已通知，这里跳过避免重复）
                     }
                 } else {
                     self::log("ALERT 恶意文件: $path (score={$analysis['score']})");
@@ -1351,6 +1705,8 @@ class WafSandbox {
 
         self::saveManifest($manifest);
         self::log("QUARANTINE 文件已隔离: $path → $backupFile (id=$id, reason=$reason)");
+        // 集成点 1：事件回流到 AutoLearn
+        self::notifyAutoLearn('quarantine', $path, $analysis);
         return $id;
     }
 
@@ -1589,6 +1945,73 @@ class WafSandbox {
         $message .= "时间: " . date('Y-m-d H:i:s');
 
         waf_webhook_notify($message);
+    }
+
+    /**
+     * 集成点 1：事件回流到 AutoLearn
+     *
+     * 把沙箱事件（秒删/精准切割/隔离）的来源 IP 标记为高危。
+     * AutoLearn 在 getDeviationScore 时对该 IP 加成，下次请求即可被拦截。
+     *
+     * 安全设计：
+     *   - 必须开启 WAF_SANDBOX_LEARN_COUPLING 开关（默认 true）
+     *   - CLI 扫描（无 REMOTE_ADDR）自动跳过
+     *   - Admin IP 跳过（管理员手动操作不应污染行为基线）
+     *   - 失败静默，绝不影响沙箱主流程
+     */
+    private static function notifyAutoLearn(string $reason, string $path, array $context = []): void {
+        if (!defined('WAF_SANDBOX_LEARN_COUPLING') || !WAF_SANDBOX_LEARN_COUPLING) return;
+        if (!class_exists('AutoLearn', false)) return;
+
+        try {
+            $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+            if ($ip === '' || (function_exists('waf_is_admin_ip') && waf_is_admin_ip())) {
+                return;
+            }
+            AutoLearn::markIpFromSandbox($ip, $reason, [
+                'path'  => $path,
+                'score' => $context['score'] ?? 0,
+            ]);
+        } catch (\Throwable $e) {
+            // 集成失败绝不影响沙箱主流程
+            self::log("AUTOLEARN_NOTIFY_FAILED: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * 集成点 2：查询 AutoLearn 高频攻击特征（单向只读）
+     *
+     * 用于 analyzeLineForMalware 合并查询。
+     * 安全设计：返回的特征权重上限 15，沙箱侧最多加 10 分，
+     * 必须配合原有特征才能加分，不能单独触发判定。
+     */
+    private static function getHotSignaturesFromAutoLearn(): array {
+        if (!defined('WAF_SANDBOX_LEARN_COUPLING') || !WAF_SANDBOX_LEARN_COUPLING) return [];
+        if (!class_exists('AutoLearn', false)) return [];
+
+        try {
+            return AutoLearn::getHotSignatures(10, 50);
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * 集成点 3：基线联动 — 通知 AutoLearn 冻结/解冻行为基线
+     */
+    private static function notifyAutoLearnFreeze(bool $freeze): void {
+        if (!defined('WAF_SANDBOX_LEARN_COUPLING') || !WAF_SANDBOX_LEARN_COUPLING) return;
+        if (!class_exists('AutoLearn', false)) return;
+
+        try {
+            if ($freeze) {
+                AutoLearn::freezeBaseline('sandbox_lock');
+            } else {
+                AutoLearn::unfreezeBaseline();
+            }
+        } catch (\Throwable $e) {
+            self::log("AUTOLEARN_FREEZE_FAILED: " . $e->getMessage());
+        }
     }
 
     // ====================== 兼容旧接口 ======================

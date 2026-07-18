@@ -2,7 +2,6 @@
 defined('ABSPATH') || exit;
 
 function waf_cc_check() {
-    // 白名单 IP 跳过速率限制
     if (defined('WAF_SKIP_RATELIMIT') && WAF_SKIP_RATELIMIT) {
         return true;
     }
@@ -10,7 +9,15 @@ function waf_cc_check() {
     $ip = waf_get_real_ip();
     $now = time();
     $file = WAF_CC_LOG;
-    $lines = is_file($file) ? file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) : [];
+
+    $fp = fopen($file, 'c+');
+    if (!$fp) return true;
+
+    flock($fp, LOCK_EX);
+
+    $contents = stream_get_contents($fp);
+    $lines = $contents ? explode("\n", trim($contents)) : [];
+
     $new = [];
     $count = 0;
     foreach ($lines as $line) {
@@ -22,8 +29,21 @@ function waf_cc_check() {
             $new[] = $line;
         }
     }
-    if ($count >= WAF_CC_LIMIT) return false;
+
+    if ($count >= WAF_CC_LIMIT) {
+        flock($fp, LOCK_UN);
+        fclose($fp);
+        return false;
+    }
+
     $new[] = "$now|$ip";
-    @file_put_contents($file, implode("\n", $new) . "\n", LOCK_EX);
+
+    ftruncate($fp, 0);
+    rewind($fp);
+    fwrite($fp, implode("\n", $new) . "\n");
+    fflush($fp);
+    flock($fp, LOCK_UN);
+    fclose($fp);
+
     return true;
 }

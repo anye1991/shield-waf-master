@@ -11,48 +11,207 @@ defined('ABSPATH') || exit;
 // ======================== 版本号 ========================
 define('SHIELD_WAF_VERSION', '3.1.0');
 
-// ======================== 简易 .env 加载 ========================
+// ======================== 简易 .env 加载（带白名单） ========================
 function waf_load_env($dir) {
     $file = $dir . '/.env';
     if (!is_file($file)) return;
+
+    $allowedPrefixes = ['WAF_', 'SHIELD_'];
+    $deniedPatterns = ['PHP_', 'HTTP_', 'REMOTE_', 'SERVER_', 'PATH', 'LD_', 'TEMP', 'TMP'];
+
     foreach (file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
         $line = trim($line);
-        // 跳过注释
         if (strpos($line, '#') === 0) continue;
         if (strpos($line, '=') === false) continue;
         list($key, $value) = explode('=', $line, 2);
         $key   = trim($key);
         $value = trim($value, " \t\n\r\0\x0B\"'");
-        // 仅当服务器环境变量未设置时才从 .env 加载
+
+        if (!preg_match('/^[A-Z][A-Z0-9_]*$/', $key)) continue;
+
+        $isAllowed = false;
+        foreach ($allowedPrefixes as $prefix) {
+            if (strpos($key, $prefix) === 0) {
+                $isAllowed = true;
+                break;
+            }
+        }
+        if (!$isAllowed) continue;
+
+        $isDenied = false;
+        foreach ($deniedPatterns as $pattern) {
+            if (strpos($key, $pattern) === 0) {
+                $isDenied = true;
+                break;
+            }
+        }
+        if ($isDenied) continue;
+
         if (!getenv($key)) {
-			$_ENV[$key] = $value;
+            $_ENV[$key] = $value;
             $_SERVER[$key] = $value;
         }
     }
 }
 waf_load_env(__DIR__);
 
-// ======================== 密钥（优先级：服务器环境 > .env > 默认值） ========================
-define('WAF_MAGIC_KEY',    getenv('WAF_MAGIC_KEY')    ?: 'change-me-magic-key-32-chars-min');
-define('WAF_2FA_PASS',     getenv('WAF_2FA_PASS')     ?: 'change-me-2fa-password');
+// ======================== 日志与存储路径（提前定义，供密钥自动生成使用） ========================
+define('WAF_LOG_PATH',          __DIR__ . '/logs/');
+
+// ======================== 密钥自动生成 ========================
+function waf_generate_random_key($length = 32) {
+    if (function_exists('random_bytes')) {
+        return bin2hex(random_bytes($length));
+    }
+    if (function_exists('openssl_random_pseudo_bytes')) {
+        return bin2hex(openssl_random_pseudo_bytes($length));
+    }
+    return '';
+}
+
+function waf_get_auto_key($keyName, $defaultValue, $minLength = 32) {
+    $envValue = getenv($keyName);
+    if ($envValue !== false && $envValue !== '') {
+        return $envValue;
+    }
+
+    $autoKeyFile = WAF_LOG_PATH . 'auto_key.php';
+    if (is_file($autoKeyFile)) {
+        $autoKeys = @include $autoKeyFile;
+        if (is_array($autoKeys) && isset($autoKeys[$keyName]) && !empty($autoKeys[$keyName])) {
+            return $autoKeys[$keyName];
+        }
+    }
+
+    if ($envValue === $defaultValue || $envValue === false || $envValue === '') {
+        $newKey = waf_generate_random_key($minLength);
+        if ($newKey && strlen($newKey) >= $minLength) {
+            $autoKeys = [];
+            if (is_file($autoKeyFile)) {
+                $existing = @include $autoKeyFile;
+                if (is_array($existing)) {
+                    $autoKeys = $existing;
+                }
+            }
+            $autoKeys[$keyName] = $newKey;
+            $content = '<?php return ' . var_export($autoKeys, true) . ';';
+            @file_put_contents($autoKeyFile, $content);
+            @chmod($autoKeyFile, 0600);
+
+            @file_put_contents(WAF_LOG_PATH . 'security.log',
+                '[' . date('Y-m-d H:i:s') . "] 警告：检测到 " . $keyName . " 使用默认值，已自动生成随机密钥并保存到 auto_key.php\n",
+                FILE_APPEND);
+
+            return $newKey;
+        }
+    }
+
+    return $defaultValue;
+}
+
+// ======================== 密钥（优先级：服务器环境 > .env > 自动生成 > 默认值） ========================
+define('WAF_MAGIC_KEY', waf_get_auto_key('WAF_MAGIC_KEY', 'change-me-magic-key-32-chars-min', 32));
+define('WAF_2FA_PASS',  waf_get_auto_key('WAF_2FA_PASS',  'change-me-2fa-password', 32));
+
+// ======================== 双重密码哈希（Argon2id+bcrypt，永不落明文） ========================
+// 设计：
+//   1. WAF_PASSWORD_HASH 优先：从 logs/password_hash.json 读取自动迁移后的双重哈希
+//   2. WAF_2FA_PASS 兼容：仍支持明文，但会自动迁移到 hash 文件
+//   3. 首次加载 config.php 时自动检测明文并迁移
+//
+// 推荐流程：
+//   1. 在 .env 写明文 WAF_2FA_PASS=your-password（首次安装）
+//   2. 首次访问任意页面，自动迁移为双重哈希到 logs/password_hash.json
+//   3. 安全起见：手动从 .env 删除 WAF_2FA_PASS 明文（迁移后不再需要）
+//   4. 后续修改密码：通过控制台"密码管理"页生成 hash，覆盖 password_hash.json
+require_once __DIR__ . '/src/Support/Password.php';
+$GLOBALS['waf_password_hash_file'] = WAF_LOG_PATH . 'password_hash.json';
+
+if (!function_exists('waf_migrate_password_to_hash')) {
+    function waf_migrate_password_to_hash() {
+        $file = $GLOBALS['waf_password_hash_file'] ?? null;
+        if (!$file) return;
+
+        // 已有 hash 文件：直接读
+        if (is_file($file)) {
+            $data = @json_decode(@file_get_contents($file), true);
+            if (is_array($data) && !empty($data['hash']) && strpos($data['hash'], 'dual$v1$') === 0) {
+                return;
+            }
+        }
+
+        // 检测明文密码并迁移
+        $plain = getenv('WAF_2FA_PASS');
+        if ($plain === false) return;
+
+        // 已经是 hash 格式：直接写入 hash 文件
+        if (strpos($plain, 'dual$v1$') === 0) {
+            @file_put_contents($file, json_encode([
+                'hash' => $plain,
+                'migrated_at' => time(),
+                'source' => 'env-direct-hash',
+            ]));
+            return;
+        }
+
+        // 明文密码 → 自动迁移为双重哈希
+        try {
+            $hash = WafPassword::hash($plain);
+            @file_put_contents($file, json_encode([
+                'hash' => $hash,
+                'migrated_at' => time(),
+                'source' => 'env-plaintext-migration',
+                'warning' => '请删除 .env 中的 WAF_2FA_PASS 明文，已迁移到双重哈希',
+            ], JSON_PRETTY_PRINT));
+            // 写入迁移日志
+            @file_put_contents(WAF_LOG_PATH . 'migration.log',
+                '[' . date('Y-m-d H:i:s') . "] 明文密码已自动迁移为双重哈希 (Argon2id+bcrypt)，请删除 .env 中的 WAF_2FA_PASS 明文\n",
+                FILE_APPEND);
+        } catch (\Throwable $e) {
+            // 迁移失败不阻断启动
+            @file_put_contents(WAF_LOG_PATH . 'migration.log',
+                '[' . date('Y-m-d H:i:s') . "] 密码迁移失败: " . $e->getMessage() . "\n",
+                FILE_APPEND);
+        }
+    }
+}
+waf_migrate_password_to_hash();
+
+// WAF_PASSWORD_HASH：优先从迁移文件读，否则用 .env 的值（可能是明文或 hash）
+if (!defined('WAF_PASSWORD_HASH')) {
+    $hashFile = $GLOBALS['waf_password_hash_file'] ?? null;
+    $storedHash = '';
+    if ($hashFile && is_file($hashFile)) {
+        $data = @json_decode(@file_get_contents($hashFile), true);
+        if (is_array($data) && !empty($data['hash'])) {
+            $storedHash = $data['hash'];
+        }
+    }
+    // 兜底：用 .env 的明文（不推荐，但兼容旧部署）
+    if (!$storedHash) {
+        $storedHash = getenv('WAF_2FA_PASS') ?: 'change-me-2fa-password';
+    }
+    define('WAF_PASSWORD_HASH', $storedHash);
+}
 
 // ======================== 暗门有效期与重试次数 ========================
 define('WAF_MAGIC_EXPIRE',    getenv('WAF_MAGIC_EXPIRE')    !== false ? (int)getenv('WAF_MAGIC_EXPIRE')    : 3600);
 define('WAF_MAGIC_MAX_RETRY', getenv('WAF_MAGIC_MAX_RETRY') !== false ? (int)getenv('WAF_MAGIC_MAX_RETRY') : 3);
 
 // ======================== 日志与存储路径 ========================
-define('WAF_LOG_PATH',          __DIR__ . '/logs/');
 define('WAF_ADMIN_IP_FILE',     WAF_LOG_PATH . 'admin_ips.txt');
 define('WAF_ADMIN_IP_TTL',      86400);
 define('WAF_LOG_MAX_FILESIZE',  getenv('WAF_LOG_MAX_FILESIZE') !== false ? (int)getenv('WAF_LOG_MAX_FILESIZE') : 10485760);
 
 // ======================== 安全功能开关 ========================
 define('WAF_NORMALIZE_SQL_COMMENTS', true);
+define('WAF_ERROR_MASKING', getenv('WAF_ERROR_MASKING') !== false ? (getenv('WAF_ERROR_MASKING') === 'true') : true);
 define('WAF_403_TEMPLATE',    __DIR__ . '/src/Admin/Waf403Template.php');
 define('WAF_MAX_BODY_SIZE',       getenv('WAF_MAX_BODY_SIZE')       !== false ? (int)getenv('WAF_MAX_BODY_SIZE')       : 1048576);
 define('WAF_MAX_ENCODING_DEPTH',  getenv('WAF_MAX_ENCODING_DEPTH')  !== false ? (int)getenv('WAF_MAX_ENCODING_DEPTH')  : 8);
 define('WAF_MAX_PAYLOAD_SIZE',    getenv('WAF_MAX_PAYLOAD_SIZE')    !== false ? (int)getenv('WAF_MAX_PAYLOAD_SIZE')    : 100000);
 define('WAF_SESSION_REGENERATE',  getenv('WAF_SESSION_REGENERATE')  !== false ? (getenv('WAF_SESSION_REGENERATE') === 'true')  : true);
+define('WAF_DB_DEBUG',            getenv('WAF_DB_DEBUG')            !== false ? (getenv('WAF_DB_DEBUG') === 'true')            : false);
 define('SHIELD_WAF_CSP',                getenv('SHIELD_WAF_CSP')                !== false ? getenv('SHIELD_WAF_CSP')                : '');
 define('SHIELD_WAF_PERMISSIONS_POLICY', getenv('SHIELD_WAF_PERMISSIONS_POLICY') !== false ? getenv('SHIELD_WAF_PERMISSIONS_POLICY') : '');
 
@@ -88,7 +247,7 @@ define('WAF_SANDBOX_MODE', getenv('WAF_SANDBOX_MODE') !== false ? getenv('WAF_SA
 define('WAF_SANDBOX_SCAN_INTERVAL', getenv('WAF_SANDBOX_SCAN_INTERVAL') !== false ? (int)getenv('WAF_SANDBOX_SCAN_INTERVAL') : 300);
 // 监控目录（数组），默认为 ABSPATH（站点根目录）
 if (!defined('WAF_SANDBOX_MONITOR_DIRS')) {
-    define('WAF_SANDBOX_MONITOR_DIRS', serialize([ABSPATH]));
+    define('WAF_SANDBOX_MONITOR_DIRS', json_encode([ABSPATH]));
 }
 // 隔离区目录
 define('WAF_SANDBOX_QUARANTINE_DIR', WAF_LOG_PATH . 'quarantine/');
@@ -98,7 +257,7 @@ define('WAF_SANDBOX_INSTANT_DELETE_NEW', getenv('WAF_SANDBOX_INSTANT_DELETE_NEW'
 define('WAF_SANDBOX_AUTO_QUARANTINE', getenv('WAF_SANDBOX_AUTO_QUARANTINE') !== false ? (getenv('WAF_SANDBOX_AUTO_QUARANTINE') === 'true') : true);
 // 沙箱扫描排除目录（序列化数组）
 if (!defined('WAF_SANDBOX_EXCLUDE_DIRS')) {
-    define('WAF_SANDBOX_EXCLUDE_DIRS', serialize([
+    define('WAF_SANDBOX_EXCLUDE_DIRS', json_encode([
         WAF_LOG_PATH,               // 日志目录
         '/wp-content/cache/',      // 缓存目录
         '/wp-content/uploads/',    // 上传目录（由 upload.php 单独防护）
@@ -108,16 +267,20 @@ if (!defined('WAF_SANDBOX_EXCLUDE_DIRS')) {
 define('WAF_SANDBOX_MALWARE_THRESHOLD', getenv('WAF_SANDBOX_MALWARE_THRESHOLD') !== false ? (int)getenv('WAF_SANDBOX_MALWARE_THRESHOLD') : 50);
 // 沙箱白名单路径（这些路径下的文件永不删除/隔离）
 if (!defined('WAF_SANDBOX_WHITELIST_PATHS')) {
-    define('WAF_SANDBOX_WHITELIST_PATHS', serialize([]));
+    define('WAF_SANDBOX_WHITELIST_PATHS', json_encode([]));
 }
+// 沙箱↔AutoLearn 联动开关（事件回流 + 特征反哺 + 基线冻结联动）
+// true = 启用三个集成点（推荐）
+// false = 沙箱与 AutoLearn 完全解耦，互不影响
+define('WAF_SANDBOX_LEARN_COUPLING', getenv('WAF_SANDBOX_LEARN_COUPLING') !== false ? (getenv('WAF_SANDBOX_LEARN_COUPLING') === 'true') : true);
 
 // ======================== 上传检测配置 ========================
 // 是否启用文件上传检测
 define('WAF_UPLOAD_DETECTION', getenv('WAF_UPLOAD_DETECTION') !== false ? (getenv('WAF_UPLOAD_DETECTION') === 'true') : true);
 // 允许上传的文件扩展名白名单
-define('WAF_UPLOAD_ALLOWED_EXT', serialize(['jpg','jpeg','png','gif','webp','bmp','ico','svg']));
+define('WAF_UPLOAD_ALLOWED_EXT', json_encode(['jpg','jpeg','png','gif','webp','bmp','ico','svg']));
 // 允许的 MIME 类型
-define('WAF_UPLOAD_ALLOWED_MIME', serialize([
+define('WAF_UPLOAD_ALLOWED_MIME', json_encode([
     'image/jpeg', 'image/png', 'image/gif', 'image/webp',
     'image/bmp', 'image/x-icon', 'image/svg+xml',
 ]));

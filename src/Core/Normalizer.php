@@ -287,7 +287,7 @@ class WafNormalizer {
     }
 
     private static function layerSqlComments($s) {
-        if (defined('WAF_NORMALIZE_SQL_COMMENTS') && WAF_NORMALIZE_SQL_COMMENTS) {
+        if (!defined('WAF_NORMALIZE_SQL_COMMENTS') || WAF_NORMALIZE_SQL_COMMENTS) {
             return preg_replace('/\/\*.*?\*\/|--[^\n]*|#.*/i', ' ', $s);
         }
         return $s;
@@ -448,7 +448,7 @@ class WafNormalizer {
         $dom = new \DOMDocument();
         libxml_use_internal_errors(true);
         libxml_disable_entity_loader(true);
-        if (!$dom->loadXML($rawXml, LIBXML_NOENT | LIBXML_NONET)) {
+        if (!$dom->loadXML($rawXml, LIBXML_NONET)) {
             libxml_disable_entity_loader(false);
             return self::normalize($rawXml);
         }

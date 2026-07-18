@@ -32,11 +32,38 @@ function waf_check_upload() {
         // ========== 第1层：扩展名白名单 ==========
         $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
         $allowedExt = defined('WAF_UPLOAD_ALLOWED_EXT')
-            ? unserialize(WAF_UPLOAD_ALLOWED_EXT)
+            ? json_decode(WAF_UPLOAD_ALLOWED_EXT, true)
             : ['jpg','jpeg','png','gif','webp','bmp','ico','svg'];
+        if (!is_array($allowedExt)) {
+            $allowedExt = ['jpg','jpeg','png','gif','webp','bmp','ico','svg'];
+        }
 
         if (!in_array($ext, $allowedExt)) {
             waf_upload_block($file, "禁止上传的文件类型: .$ext", 'extension_denied');
+            return;
+        }
+
+        // 双扩展名检测：防止 .php.jpg 等绕过
+        $dangerousDoubleExts = [
+            'php', 'php3', 'php4', 'php5', 'php7', 'phtml', 'phar',
+            'asp', 'aspx', 'jsp', 'jspx', 'cfm', 'cfc', 'pl', 'py',
+            'cgi', 'sh', 'bash', 'exe', 'bat', 'cmd', 'ps1', 'vbs',
+            'html', 'htm', 'svg', 'swf', 'xhtml',
+        ];
+        $filenameLower = strtolower($filename);
+        $parts = explode('.', $filenameLower);
+        if (count($parts) >= 3) {
+            for ($i = 0; $i < count($parts) - 1; $i++) {
+                if (in_array($parts[$i], $dangerousDoubleExts)) {
+                    waf_upload_block($file, "检测到危险双扩展名: {$parts[$i]}.$ext", 'double_extension');
+                    return;
+                }
+            }
+        }
+
+        // 检测文件名中的空字节注入和特殊字符
+        if (strpos($filename, "\x00") !== false || preg_match('/[\x00-\x1F\x7F]/', $filename)) {
+            waf_upload_block($file, '文件名包含非法字符', 'invalid_filename');
             return;
         }
 
@@ -48,8 +75,11 @@ function waf_check_upload() {
 
         // ========== 第2层：MIME 类型检测 ==========
         $allowedMime = defined('WAF_UPLOAD_ALLOWED_MIME')
-            ? unserialize(WAF_UPLOAD_ALLOWED_MIME)
+            ? json_decode(WAF_UPLOAD_ALLOWED_MIME, true)
             : ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/x-icon', 'image/svg+xml'];
+        if (!is_array($allowedMime)) {
+            $allowedMime = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/x-icon', 'image/svg+xml'];
+        }
 
         $actualMime = '';
         if (class_exists('finfo')) {
@@ -369,56 +399,144 @@ function waf_upload_svg_check($content) {
     $result = ['block' => false, 'reason' => '', 'score' => 0, 'details' => []];
     $score = 0;
 
+    // 先做归一化：去除注释、CDATA 等，防止混淆
+    $cleanContent = $content;
+    // 移除 XML 注释
+    $cleanContent = preg_replace('/<!--[\s\S]*?-->/', '', $cleanContent);
+    // 移除 CDATA
+    $cleanContent = preg_replace('/<!\[CDATA\[[\s\S]*?\]\]>/', '', $cleanContent);
+    // 处理 HTML 实体编码
+    $cleanContent = html_entity_decode($cleanContent, ENT_QUOTES | ENT_XML1, 'UTF-8');
+    // 处理 unicode 转义
+    $cleanContent = preg_replace_callback('/&#x([0-9a-fA-F]+);?/', function($m) {
+        return chr(hexdec($m[1]));
+    }, $cleanContent);
+    $cleanContent = preg_replace_callback('/&#(\d+);?/', function($m) {
+        return chr($m[1]);
+    }, $cleanContent);
+
     // 1. XXE 检测（外部实体引用）
     if (preg_match('/<!ENTITY[^>]*SYSTEM[^>]*>/i', $content) ||
-        preg_match('/<!DOCTYPE[^>]*\[/i', $content)) {
+        preg_match('/<!ENTITY[^>]*PUBLIC[^>]*>/i', $content) ||
+        preg_match('/<!DOCTYPE[^>]*\[/i', $content) ||
+        preg_match('/<!DOCTYPE[^>]*SYSTEM/i', $content)) {
         $score += 40;
         $result['details'][] = '检测到 XML 外部实体定义（XXE 风险）';
     }
 
-    // 2. 脚本检测
-    if (preg_match('/<script[^>]*>([\s\S]*?)<\/script>/i', $content, $m)) {
-        $scriptContent = $m[1] ?? '';
-        if (trim($scriptContent) !== '') {
-            $score += 25;
-            $result['details'][] = 'SVG 中包含脚本标签';
+    // 2. 脚本标签检测（多种混淆形式）
+    $scriptPatterns = [
+        '/<script[\s>]/i',
+        '/<xscript[\s>]/i',
+        '/<\/script>/i',
+        '/%3Cscript/i',
+        '/\0s\0c\0r\0i\0p\0t/i',
+        // 标签名中插入注释或空格混淆
+        '/<\s*s\s*c\s*r\s*i\s*p\s*t\s*>/i',
+    ];
+    foreach ($scriptPatterns as $pattern) {
+        if (preg_match($pattern, $content . $cleanContent)) {
+            $scriptFound = true;
+            break;
+        }
+    }
+    if (!empty($scriptFound)) {
+        $score += 25;
+        $result['details'][] = 'SVG 中包含脚本标签';
 
-            // 进一步检查是否是攻击脚本
-            if (preg_match('/(alert|eval|fetch|XMLHttpRequest|document\.cookie|window\.location|onload|onerror|onclick)/i', $scriptContent)) {
-                $score += 20;
-                $result['details'][] = '脚本中包含危险函数（XSS 风险）';
-            }
+        // 进一步检查是否是攻击脚本
+        if (preg_match('/(alert|eval|fetch|XMLHttpRequest|document\.cookie|window\.location|onload|onerror|onclick|top\.location|self\.location|parent\.location|iframe|cookie|localStorage|sessionStorage)/i', $cleanContent)) {
+            $score += 20;
+            $result['details'][] = '脚本中包含危险函数（XSS 风险）';
         }
     }
 
-    // 3. 内联事件处理器
-    $inlineEvents = preg_match_all('/\s+on\w+\s*=/i', $content);
-    if ($inlineEvents > 2) {
-        $score += 15;
-        $result['details'][] = "包含多个内联事件处理器 ($inlineEvents 个)";
+    // 3. 内联事件处理器（更全面的检测）
+    $eventPattern = '/\s+on[a-z]+\s*=/i';
+    $inlineEvents = preg_match_all($eventPattern, $cleanContent, $matches);
+    if ($inlineEvents > 0) {
+        $eventNames = [];
+        foreach ($matches[0] as $m) {
+            $eventNames[] = trim($m);
+        }
+        $eventCount = count(array_unique($eventNames));
+        if ($eventCount >= 3) {
+            $score += 20;
+            $result['details'][] = "包含多个内联事件处理器 ($eventCount 个)";
+        } elseif ($eventCount >= 1) {
+            $score += 10;
+            $result['details'][] = "包含内联事件处理器 ($eventCount 个)";
+        }
     }
 
-    // 4. javascript: URI
-    if (preg_match('/javascript\s*:/i', $content)) {
-        $score += 20;
-        $result['details'][] = '包含 javascript: URI';
+    // 4. javascript: URI（多种编码形式）
+    $jsUriPatterns = [
+        '/javascript\s*:/i',
+        '/j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t\s*:/i',
+        '/&#106;avascript/i',
+        '/&#x6A;avascript/i',
+        '/%6Aavascript/i',
+    ];
+    foreach ($jsUriPatterns as $pattern) {
+        if (preg_match($pattern, $cleanContent)) {
+            $score += 25;
+            $result['details'][] = '包含 javascript: URI';
+            break;
+        }
     }
 
     // 5. data: URI 中的 payload
-    if (preg_match('/data:text\/html/i', $content) || preg_match('/data:application\/x-php/i', $content)) {
+    if (preg_match('/data:text\/html/i', $content) ||
+        preg_match('/data:application\/x-php/i', $content) ||
+        preg_match('/data:image\/svg\+xml/i', $content)) {
         $score += 20;
         $result['details'][] = '包含危险的 data: URI';
     }
 
     // 6. 外部资源引用（可能用于 SSRF）
-    $externalRefs = preg_match_all('/(href|xlink:href|src)\s*=\s*["\']https?:\/\//i', $content);
+    $externalRefs = preg_match_all('/(href|xlink:href|src|style)\s*=\s*["\']https?:\/\//i', $cleanContent);
     if ($externalRefs > 3) {
         $score += 10;
         $result['details'][] = "包含多个外部资源引用 ($externalRefs 个)";
     }
 
+    // 7. HTML 标签注入（非 SVG 标准标签）
+    $htmlTags = preg_match_all('/<(iframe|frame|frameset|form|input|button|a\s+href|body|html|head|meta|link|img)\b/i', $cleanContent, $m);
+    if ($htmlTags > 0) {
+        $score += 15;
+        $result['details'][] = "包含非 SVG 标准 HTML 标签 ($htmlTags 个)";
+    }
+
+    // 8. base64 编码的 payload
+    if (preg_match('/base64\s*,[A-Za-z0-9+\/]{80,}/i', $content)) {
+        $score += 10;
+        $result['details'][] = '包含长 base64 编码数据（可能隐藏 payload）';
+    }
+
+    // 9. CSS expression 或 behavior（IE 特性）
+    if (preg_match('/expression\s*\(/i', $cleanContent) ||
+        preg_match('/behavior\s*:\s*url/i', $cleanContent) ||
+        preg_match('/-moz-binding/i', $cleanContent)) {
+        $score += 20;
+        $result['details'][] = '包含 CSS 表达式或行为（XSS 风险）';
+    }
+
+    // 10. <use> 标签引用外部资源
+    if (preg_match('/<use[^>]*href\s*=\s*["\'][^"\']*#/i', $cleanContent) &&
+        preg_match('/<use[^>]*href\s*=\s*["\']https?:\/\//i', $cleanContent)) {
+        $score += 15;
+        $result['details'][] = '<use> 标签引用外部资源（可能存在 XSS 风险）';
+    }
+
+    // 11. 实体编码混淆检测
+    $entityCount = preg_match_all('/&#(x?[0-9a-fA-F]+);?/', $content);
+    if ($entityCount > 10) {
+        $score += 10;
+        $result['details'][] = "大量 HTML 实体编码（混淆行为，$entityCount 处）";
+    }
+
     $result['score'] = $score;
-    if ($score >= 50) {
+    if ($score >= 40) {
         $result['block'] = true;
         $result['reason'] = implode('; ', $result['details']);
     }
@@ -564,18 +682,42 @@ function waf_upload_locate_malware($normalized, $original) {
 
 /**
  * 读取文件内容（处理大文件）
+ * 扫描策略：
+ *   - 小文件：完整读取
+ *   - 大文件：头部 256KB + 中间 3 处各 64KB + 尾部 128KB
  */
 function waf_upload_read_content($tmpPath, $filesize, $maxSize) {
     if ($filesize <= $maxSize) {
         return @file_get_contents($tmpPath);
     }
 
-    // 大文件：读头部 + 尾部 + 中间
-    $head = @file_get_contents($tmpPath, false, null, 0, 102400);       // 前 100KB
-    $tail = @file_get_contents($tmpPath, false, null, max(0, $filesize - 102400), 102400); // 后 100KB
-    $mid  = @file_get_contents($tmpPath, false, null, intval($filesize * 0.4), 51200);     // 中间 50KB
+    $headSize = 256 * 1024;      // 头部 256KB
+    $midChunkSize = 64 * 1024;   // 中间每块 64KB
+    $tailSize = 128 * 1024;      // 尾部 128KB
 
-    return $head . "\n---[MIDDLE]---\n" . $mid . "\n---[TAIL]---\n" . $tail;
+    // 头部
+    $head = @file_get_contents($tmpPath, false, null, 0, min($headSize, $filesize));
+
+    // 尾部
+    $tailOffset = max(0, $filesize - $tailSize);
+    $tail = @file_get_contents($tmpPath, false, null, $tailOffset, min($tailSize, $filesize - $tailOffset));
+
+    // 中间 3 处：25%、50%、75% 位置
+    $midPositions = [0.25, 0.5, 0.75];
+    $midChunks = '';
+    foreach ($midPositions as $pos) {
+        $offset = intval($filesize * $pos);
+        // 确保不与头部和尾部重叠
+        if ($offset < $headSize || $offset > max(0, $filesize - $tailSize)) {
+            continue;
+        }
+        $chunk = @file_get_contents($tmpPath, false, null, $offset, min($midChunkSize, $filesize - $offset));
+        if ($chunk !== false) {
+            $midChunks .= "\n---[MID@" . intval($pos * 100) . "%]---\n" . $chunk;
+        }
+    }
+
+    return $head . $midChunks . "\n---[TAIL]---\n" . $tail;
 }
 
 /**

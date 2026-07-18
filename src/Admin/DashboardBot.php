@@ -5,6 +5,17 @@
  */
 defined('ABSPATH') || exit;
 
+require_once __DIR__ . '/../Support/Functions.php';
+
+if (session_status() !== PHP_SESSION_ACTIVE) session_start();
+$ok1 = isset($_SESSION['waf_ok1']) && $_SESSION['waf_ok1'] > time();
+$ok2 = isset($_SESSION['waf_ok2']) && $_SESSION['waf_ok2'] > time();
+$ipOk = isset($_SESSION['waf_ip']) && $_SESSION['waf_ip'] === waf_get_real_ip();
+if (!$ok1 || !$ok2 || !$ipOk) {
+    http_response_code(403);
+    exit('Forbidden');
+}
+
 require_once __DIR__ . '/../Bot/BotManager.php';
 
 // 获取机器人统计数据

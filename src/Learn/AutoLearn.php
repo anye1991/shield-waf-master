@@ -194,6 +194,12 @@ class AutoLearn {
         self::init();
         if (!is_dir(WAF_LOG_PATH)) mkdir(WAF_LOG_PATH, 0700, true);
 
+        // 基线冻结期间不更新（防攻击者"教坏"基线）
+        // 已有正常模式继续生效，但不学习新的
+        if (self::isBaselineFrozen()) {
+            return;
+        }
+
         $normal = self::loadNormal();
         $path = parse_url($uri, PHP_URL_PATH) ?: $uri;
         $hash = md5($path);
@@ -238,15 +244,29 @@ class AutoLearn {
     public static function getDeviationScore($uri, $params = []) {
         self::init();
         $normal = self::loadNormal();
-        if (empty($normal['patterns'])) return 0.0;
+
+        // 集成点 1：沙箱高危 IP 加成（必须在早退前计算，确保未知 URI 也能叠加）
+        $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+        $sandboxRisk = ($ip !== '') ? self::getSandboxIpRisk($ip) : 0.0;
+
+        if (empty($normal['patterns'])) {
+            // 没有正常模式基线时，仅沙箱风险生效
+            return min($sandboxRisk * 0.3, 1.0);
+        }
 
         $path = parse_url($uri, PHP_URL_PATH) ?: $uri;
         $hash = md5($path);
 
-        if (!isset($normal['patterns'][$hash])) return 0.3;
+        if (!isset($normal['patterns'][$hash])) {
+            // 未知 URI：基础 0.3 + 沙箱风险加成
+            return min(0.3 + $sandboxRisk * 0.3, 1.0);
+        }
 
         $pattern = $normal['patterns'][$hash];
-        if ($pattern['count'] < 5) return 0.2;
+        if ($pattern['count'] < 5) {
+            // 已知但样本少：基础 0.2 + 沙箱风险加成
+            return min(0.2 + $sandboxRisk * 0.3, 1.0);
+        }
 
         // 检查参数键偏差
         $knownKeys = array_map('strtolower', $pattern['param_keys']);
@@ -256,7 +276,14 @@ class AutoLearn {
         }
 
         $totalParams = max(count($params), 1);
-        return min($unknownParams / $totalParams, 1.0);
+        $deviation = min($unknownParams / $totalParams, 1.0);
+
+        // 沙箱风险叠加（上限 1.0）
+        if ($sandboxRisk > 0) {
+            $deviation = min($deviation + $sandboxRisk * 0.3, 1.0);
+        }
+
+        return $deviation;
     }
 
     // ====================== 获取学习规则 ======================
@@ -365,6 +392,202 @@ class AutoLearn {
 
         $weights['last_feedback_time'] = time();
         self::saveWeights($weights);
+    }
+
+    // ====================== 沙箱联动接口 ======================
+
+    /**
+     * 集成点 1：沙箱 → AutoLearn 事件回流
+     *
+     * 沙箱在以下事件触发后调用本方法，把来源 IP 标记为高危：
+     *   - quarantineFile() 文件隔离
+     *   - surgicalCut() 精准切割
+     *   - 新落地恶意文件秒删
+     *
+     * 标记后，AutoLearn 在 getDeviationScore 时对该 IP 加分，
+     * 下一次请求即可被拦截，无需等下一次沙箱扫描。
+     *
+     * 安全设计：
+     *   - CLI 扫描（无 REMOTE_ADDR）跳过
+     *   - 高危标记带 TTL，30 天后自动失效（防误标记）
+     *   - 单 IP 事件计数上限 100，防止内存膨胀
+     *
+     * @param string $ip      触发沙箱事件的 IP（CLI 时传空串跳过）
+     * @param string $reason  事件原因（quarantine/surgical_cut/instant_delete）
+     * @param array  $context 附加上下文（文件路径、评分等）
+     */
+    public static function markIpFromSandbox(string $ip, string $reason, array $context = []): void {
+        if ($ip === '' || $ip === 'cli' || $ip === 'unknown') return;
+        // 防止 IP 格式异常（防注入）
+        if (!filter_var($ip, FILTER_VALIDATE_IP)) return;
+
+        self::init();
+        if (!is_dir(WAF_LOG_PATH)) mkdir(WAF_LOG_PATH, 0700, true);
+
+        $file = WAF_LOG_PATH . 'sandbox_blacklist.json';
+        $data = waf_safe_read_json($file, ['ips' => [], 'total_events' => 0]);
+
+        if (!isset($data['ips'][$ip])) {
+            $data['ips'][$ip] = [
+                'first_seen'    => time(),
+                'last_seen'     => time(),
+                'event_count'   => 0,
+                'events'         => [],
+                'frozen'         => false,  // 是否被基线锁定联动冻结
+            ];
+        }
+
+        $entry = &$data['ips'][$ip];
+        $entry['last_seen'] = time();
+        $entry['event_count']++;
+
+        // 事件详情（上限 100 条，超出则只保留最近 100 条）
+        if (count($entry['events']) >= 100) {
+            $entry['events'] = array_slice($entry['events'], -99);
+        }
+        $entry['events'][] = [
+            'time'   => time(),
+            'reason' => $reason,
+            'path'   => mb_substr($context['path'] ?? '', 0, 200),
+            'score'  => $context['score'] ?? 0,
+        ];
+
+        // 高危阈值：事件数 >= 3 升级为 frozen（行为基线立即冻结）
+        if ($entry['event_count'] >= 3 && !$entry['frozen']) {
+            $entry['frozen'] = true;
+            $entry['frozen_at'] = time();
+        }
+
+        $data['total_events']++;
+
+        // 全局 IP 数上限 10000（防内存膨胀）
+        if (count($data['ips']) > 10000) {
+            // 淘汰最久未触发的 10%
+            uasort($data['ips'], function($a, $b) {
+                return $a['last_seen'] <=> $b['last_seen'];
+            });
+            $data['ips'] = array_slice($data['ips'], 1000, null, true);
+        }
+
+        waf_safe_write_json($file, $data);
+    }
+
+    /**
+     * 查询某 IP 在沙箱事件中的高危分（用于 getDeviationScore 加成）
+     * 返回 0.0-1.0 的偏差加成系数
+     */
+    public static function getSandboxIpRisk(string $ip): float {
+        if ($ip === '' || !filter_var($ip, FILTER_VALIDATE_IP)) return 0.0;
+        self::init();
+
+        $file = WAF_LOG_PATH . 'sandbox_blacklist.json';
+        $data = waf_safe_read_json($file, ['ips' => []]);
+        if (!isset($data['ips'][$ip])) return 0.0;
+
+        $entry = $data['ips'][$ip];
+
+        // 30 天 TTL：超期降权
+        $ageDays = (time() - $entry['last_seen']) / 86400;
+        if ($ageDays > 30) return 0.0;
+
+        // 事件数 1-2 → 0.3，3-9 → 0.6，10+ → 1.0
+        $cnt = $entry['event_count'];
+        $risk = $cnt >= 10 ? 1.0 : ($cnt >= 3 ? 0.6 : 0.3);
+
+        // 时间衰减：7 天后衰减一半
+        if ($ageDays > 7) {
+            $risk *= 0.5;
+        }
+
+        return $risk;
+    }
+
+    /**
+     * 集成点 2：AutoLearn → Sandbox 特征反哺
+     *
+     * 返回高频攻击特征（单向只读建议）。
+     * 沙箱扫描时合并查询这些特征。
+     *
+     * 安全设计（防反向污染）：
+     *   - 只采纳 hit_count >= $minHits 的（默认 10，需被多次确认）
+     *   - 返回的 severity 上限 15（沙箱侧最多加 10 分）
+     *   - 必须配合沙箱原有特征才能加分，不能单独触发判定
+     *   - 排除常见函数名（避免污染，例如 'if(' 'count('）
+     *
+     * @param int $minHits 最小命中次数（默认 10）
+     * @param int $limit   最多返回多少条
+     * @return array ['pattern' => weight, ...]
+     */
+    public static function getHotSignatures(int $minHits = 10, int $limit = 50): array {
+        self::init();
+        $patterns = self::loadPatterns();
+        if (empty($patterns['rules'])) return [];
+
+        $result = [];
+        foreach ($patterns['rules'] as $rule) {
+            if (($rule['hit_count'] ?? 0) < $minHits) continue;
+
+            $pattern = $rule['pattern'] ?? '';
+            if ($pattern === '') continue;
+
+            // 排除常见合法函数名，防止反向污染误杀
+            if (preg_match('/^(if|for|while|echo|print|array|count|strlen|isset|empty|date|time|substr|trim|explode|implode|sprintf|printf)\(/i', $pattern)) {
+                continue;
+            }
+
+            // severity 上限 15（沙箱侧最多加 10 分，不能单独触发判定）
+            $weight = min(($rule['severity'] ?? 60) / 4, 15);
+            if ($weight < 5) continue;
+
+            $result[$pattern] = (int)$weight;
+            if (count($result) >= $limit) break;
+        }
+
+        return $result;
+    }
+
+    /**
+     * 集成点 3：基线状态联动 — 冻结 AutoLearn 行为基线
+     *
+     * 在 Sandbox::lockBaseline() 时调用。
+     * 冻结后：recordNormal() 不再更新（防攻击者"教坏"基线），
+     * 已有正常模式继续生效。
+     */
+    public static function freezeBaseline(string $reason = 'sandbox_lock'): array {
+        self::init();
+        $file = WAF_LOG_PATH . 'baseline_freeze.json';
+        $data = waf_safe_read_json($file, ['frozen' => false]);
+
+        $data = [
+            'frozen'     => true,
+            'frozen_at'  => time(),
+            'reason'     => $reason,
+            'prev_state' => $data['frozen'] ?? false,
+        ];
+        waf_safe_write_json($file, $data);
+        return $data;
+    }
+
+    /**
+     * 解冻 AutoLearn 行为基线
+     * 在 Sandbox::unlockBaseline() 时调用。
+     */
+    public static function unfreezeBaseline(): array {
+        self::init();
+        $file = WAF_LOG_PATH . 'baseline_freeze.json';
+        $data = ['frozen' => false, 'unfrozen_at' => time()];
+        waf_safe_write_json($file, $data);
+        return $data;
+    }
+
+    /**
+     * AutoLearn 行为基线是否已冻结（供 recordNormal 检查）
+     */
+    public static function isBaselineFrozen(): bool {
+        self::init();
+        $file = WAF_LOG_PATH . 'baseline_freeze.json';
+        $data = waf_safe_read_json($file, ['frozen' => false]);
+        return !empty($data['frozen']);
     }
 
     // ====================== 学习报告 ======================
