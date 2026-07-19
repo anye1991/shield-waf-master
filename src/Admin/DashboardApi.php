@@ -17,7 +17,7 @@ if (empty($_SESSION['waf_csrf_token'])) {
     }
 }
 
-$writeActions = ['add_whitelist', 'remove_whitelist', 'ban_ip', 'unban_ip', 'set_module', 'set_config', 'add_whitelist_url', 'remove_whitelist_url'];
+$writeActions = ['add_whitelist', 'remove_whitelist', 'ban_ip', 'unban_ip', 'set_module', 'set_config', 'add_whitelist_url', 'remove_whitelist_url', 'learn_feedback', 'learn_reset', 'learn_freeze', 'learn_unfreeze', 'learn_delete_rule'];
 $action = isset($_GET['action']) ? $_GET['action'] : '';
 $method = $_SERVER['REQUEST_METHOD'];
 if ($method === 'POST' && in_array($action, $writeActions)) {
@@ -449,4 +449,97 @@ switch ($action) {
             $tasks = [];
         }
         exit(json_encode(['success' => true, 'data' => $tasks], JSON_UNESCAPED_UNICODE));
+
+    // ====================== AutoLearn 自适应学习 ======================
+    case 'learn_report':
+        if (!class_exists('AutoLearn', false)) {
+            require_once __DIR__ . '/../Learn/AutoLearn.php';
+        }
+        try {
+            $report = AutoLearn::getReport();
+            $rules = AutoLearn::getLearnedRules();
+            // 只返回前 100 条规则，避免响应过大
+            $rules = array_slice($rules, 0, 100);
+            exit(json_encode(['success' => true, 'report' => $report, 'rules' => $rules], JSON_UNESCAPED_UNICODE));
+        } catch (\Throwable $e) {
+            exit(json_encode(['success' => false, 'message' => '获取学习报告失败: ' . $e->getMessage()]));
+        }
+
+    case 'learn_feedback':
+        // 误报/漏报反馈
+        if (!class_exists('AutoLearn', false)) {
+            require_once __DIR__ . '/../Learn/AutoLearn.php';
+        }
+        $payload = isset($_POST['payload']) ? trim($_POST['payload']) : '';
+        $isFp    = isset($_POST['is_false_positive']) ? (bool)$_POST['is_false_positive'] : true;
+        $type    = isset($_POST['attack_type']) ? trim($_POST['attack_type']) : '';
+        if ($payload === '') {
+            exit(json_encode(['success' => false, 'message' => 'payload 不能为空']));
+        }
+        try {
+            AutoLearn::provideFeedback($payload, $isFp, $type);
+            $action2 = $isFp ? '误报' : '漏报';
+            exit(json_encode(['success' => true, 'message' => "{$action2}反馈已记录，权重将自动调整"]));
+        } catch (\Throwable $e) {
+            exit(json_encode(['success' => false, 'message' => '反馈失败: ' . $e->getMessage()]));
+        }
+
+    case 'learn_reset':
+        // 重置所有学习数据（高危操作）
+        if (!class_exists('AutoLearn', false)) {
+            require_once __DIR__ . '/../Learn/AutoLearn.php';
+        }
+        $files = ['learned_patterns.json', 'attack_stats.json', 'weight_adjustments.json', 'feedback_log.json', 'normal_patterns.json'];
+        foreach ($files as $f) {
+            $path = WAF_LOG_PATH . $f;
+            if (is_file($path)) @unlink($path);
+        }
+        exit(json_encode(['success' => true, 'message' => '学习数据已重置']));
+
+    case 'learn_freeze':
+        if (!class_exists('AutoLearn', false)) {
+            require_once __DIR__ . '/../Learn/AutoLearn.php';
+        }
+        try {
+            $r = AutoLearn::freezeBaseline('manual_dashboard');
+            exit(json_encode(['success' => true, 'message' => '行为基线已冻结', 'data' => $r]));
+        } catch (\Throwable $e) {
+            exit(json_encode(['success' => false, 'message' => $e->getMessage()]));
+        }
+
+    case 'learn_unfreeze':
+        if (!class_exists('AutoLearn', false)) {
+            require_once __DIR__ . '/../Learn/AutoLearn.php';
+        }
+        try {
+            $r = AutoLearn::unfreezeBaseline();
+            exit(json_encode(['success' => true, 'message' => '行为基线已解冻', 'data' => $r]));
+        } catch (\Throwable $e) {
+            exit(json_encode(['success' => false, 'message' => $e->getMessage()]));
+        }
+
+    case 'learn_delete_rule':
+        // 删除单条学习规则（按规则内容）
+        if (!class_exists('AutoLearn', false)) {
+            require_once __DIR__ . '/../Learn/AutoLearn.php';
+        }
+        $pattern = isset($_POST['pattern']) ? trim($_POST['pattern']) : '';
+        if ($pattern === '') {
+            exit(json_encode(['success' => false, 'message' => 'pattern 不能为空']));
+        }
+        $file = WAF_LOG_PATH . 'learned_patterns.json';
+        $data = is_file($file) ? json_decode(file_get_contents($file), true) : null;
+        if (!is_array($data) || !isset($data['rules'])) {
+            exit(json_encode(['success' => false, 'message' => '学习规则文件不存在']));
+        }
+        $removed = 0;
+        foreach ($data['rules'] as $key => $rule) {
+            if (($rule['pattern'] ?? '') === $pattern) {
+                unset($data['rules'][$key]);
+                $removed++;
+            }
+        }
+        $data['total_learned'] = count($data['rules']);
+        @file_put_contents($file, json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
+        exit(json_encode(['success' => true, 'message' => "已删除 {$removed} 条规则"]));
 }

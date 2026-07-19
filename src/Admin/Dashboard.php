@@ -2628,6 +2628,83 @@ tbody tr:hover{transform:translateX(2px)}
           <tbody id="couplingIpsTable"><tr><td colspan="5" style="text-align:center;color:var(--text4);padding:30px">加载中...</td></tr></tbody>
         </table>
       </div>
+
+      <!-- 学习规则详情 -->
+      <div class="table-card">
+        <div class="card-head">
+          <div class="card-title"><span class="dot" style="background:var(--purple)"></span>已学习攻击规则</div>
+          <div style="display:flex;gap:8px">
+            <button class="btn" style="padding:6px 12px;font-size:12px" onclick="learnRefresh()">🔄 刷新</button>
+            <button class="btn" style="padding:6px 12px;font-size:12px" id="learnFreezeBtn" onclick="learnFreezeToggle()">❄️ 冻结基线</button>
+            <button class="btn btn-danger" style="padding:6px 12px;font-size:12px" onclick="learnReset()">🗑️ 重置全部</button>
+          </div>
+        </div>
+        <div style="padding:8px 16px;color:var(--text3);font-size:12px;border-bottom:1px solid var(--border)">
+          💡 当同一攻击载荷被记录 <b>≥3次</b> 时自动提取特征，<b>≥10次</b> 时升级严重度。点击「误报」可反馈并降低该类规则权重。
+        </div>
+        <table>
+          <thead><tr><th>特征</th><th>类型</th><th>严重度</th><th>命中次数</th><th>学习时间</th><th>操作</th></tr></thead>
+          <tbody id="learnRulesTable">
+            <tr><td colspan="6" style="text-align:center;color:var(--text4);padding:30px">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 误报/漏报反馈 -->
+      <div class="table-card">
+        <div class="card-head"><div class="card-title"><span class="dot" style="background:var(--green)"></span>误报/漏报反馈（训练WAF）</div></div>
+        <div style="padding:12px 16px">
+          <div style="color:var(--text3);font-size:12px;margin-bottom:10px">
+            📝 提交被误判为攻击的正常请求（误报），或未被识别的攻击载荷（漏报），系统将自动调整对应攻击类型的权重。
+          </div>
+          <div style="margin-bottom:10px">
+            <label style="font-size:12px;color:var(--text3)">载荷内容</label>
+            <textarea id="learnFeedbackPayload" rows="3" placeholder="粘贴请求载荷，如：1' OR 1=1-- 或正常搜索关键词" style="width:100%;padding:8px;background:var(--bg2);border:1px solid var(--border2);color:var(--text);border-radius:4px;font-family:monospace;font-size:12px;resize:vertical"></textarea>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+            <div>
+              <label style="font-size:12px;color:var(--text3)">反馈类型</label>
+              <select id="learnFeedbackType" style="width:100%;padding:8px;background:var(--bg2);border:1px solid var(--border2);color:var(--text);border-radius:4px">
+                <option value="false_positive">误报（正常被误判为攻击）</option>
+                <option value="false_negative">漏报（攻击未被识别）</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:12px;color:var(--text3)">攻击类型（可选）</label>
+              <select id="learnFeedbackAttackType" style="width:100%;padding:8px;background:var(--bg2);border:1px solid var(--border2);color:var(--text);border-radius:4px">
+                <option value="">自动识别</option>
+                <option value="sqli">SQL注入</option>
+                <option value="xss">XSS跨站脚本</option>
+                <option value="rce">远程代码执行</option>
+                <option value="path_traversal">路径遍历</option>
+                <option value="file_inclusion">文件包含</option>
+                <option value="webshell">Webshell</option>
+                <option value="xxe">XXE注入</option>
+                <option value="ssrf">SSRF</option>
+              </select>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary" onclick="learnSubmitFeedback()">📤 提交反馈</button>
+            <button class="btn" onclick="document.getElementById('learnFeedbackPayload').value=''">清空</button>
+          </div>
+          <div id="learnFeedbackResult" style="margin-top:10px"></div>
+        </div>
+      </div>
+
+      <!-- 权重调整详情 -->
+      <div class="table-card">
+        <div class="card-head"><div class="card-title"><span class="dot" style="background:var(--yellow)"></span>攻击类型权重自适应</div></div>
+        <div style="padding:8px 16px;color:var(--text3);font-size:12px;border-bottom:1px solid var(--border)">
+          📊 基于近7天攻击趋势 + 反馈数据自动调整。基准权重 1.0，范围 0.5~2.0。
+        </div>
+        <table>
+          <thead><tr><th>攻击类型</th><th>基准权重</th><th>当前权重</th><th>趋势调整</th><th>反馈调整</th></tr></thead>
+          <tbody id="learnWeightsTable">
+            <tr><td colspan="5" style="text-align:center;color:var(--text4);padding:30px">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <!-- ===== 网站密码双重加密 ===== -->
@@ -3695,6 +3772,192 @@ function loadLearn(){
     }).join('');
     tb.innerHTML = rows || '<tr><td colspan="5" style="text-align:center;color:var(--text4);padding:20px">暂无沙箱事件</td></tr>';
   }).catch(()=>{});
+
+  // 3. 加载学习规则详情
+  learnLoadRules();
+  // 4. 加载权重详情
+  learnLoadWeights();
+  // 5. 同步冻结按钮状态
+  learnSyncFreezeBtn();
+}
+
+// 加载已学习规则详情
+function learnLoadRules(){
+  api('learn_report').then(res=>{
+    if(!res || !res.success) return;
+    const tb = document.getElementById('learnRulesTable');
+    const rules = res.rules || [];
+    if(rules.length === 0){
+      tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text4);padding:20px">暂无学习规则（攻击载荷需被记录≥3次才会生成规则）</td></tr>';
+      return;
+    }
+    // 按命中次数倒序
+    rules.sort((a,b)=>(b.hit_count||0)-(a.hit_count||0));
+    const rows = rules.slice(0, 50).map(r=>{
+      const sev = r.severity || 60;
+      const sevClass = sev >= 75 ? 'red' : (sev >= 60 ? 'yellow' : 'cyan');
+      const time = r.learned_at ? new Date(r.learned_at*1000).toLocaleString('zh-CN') : '-';
+      const safePattern = (r.pattern || '').replace(/[<>&]/g, c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+      return `<tr>
+        <td style="font-family:monospace;font-size:11px;color:var(--cyan)">${safePattern}</td>
+        <td><span class="tag cyan">${r.type || 'unknown'}</span></td>
+        <td><span class="tag ${sevClass}">${sev}</span></td>
+        <td>${r.hit_count || 0}</td>
+        <td style="font-size:11px">${time}</td>
+        <td><button class="btn btn-danger" style="padding:4px 8px;font-size:11px" onclick="learnDeleteRule('${safePattern.replace(/'/g,"\\'")}')">误报</button></td>
+      </tr>`;
+    }).join('');
+    tb.innerHTML = rows;
+  }).catch(()=>{});
+}
+
+// 加载权重详情
+function learnLoadWeights(){
+  // AutoLearn::getAdjustedWeights() 返回的数据需要新接口，这里先用 report 里的
+  api('learn_report').then(res=>{
+    if(!res || !res.success) return;
+    const tb = document.getElementById('learnWeightsTable');
+    const report = res.report || {};
+    const weightAdj = report.weight_adjustments || {};
+    const baseWeights = {
+      'sqli': 1.2, 'sqli_blind': 1.3, 'xss': 1.0, 'rce': 1.4,
+      'path_traversal': 1.1, 'webshell': 1.5, 'xxe': 1.2,
+      'file_read': 0.9, 'file_inclusion': 1.3, 'obfuscation': 0.7,
+    };
+    const typeNames = {
+      'sqli':'SQL注入','sqli_blind':'盲注SQL','xss':'XSS','rce':'远程代码执行',
+      'path_traversal':'路径遍历','webshell':'Webshell','xxe':'XXE注入',
+      'file_read':'文件读取','file_inclusion':'文件包含','obfuscation':'混淆',
+    };
+    const rows = Object.entries(baseWeights).map(([type, base])=>{
+      const adj = weightAdj[type] || 0;
+      const current = Math.max(0.5, Math.min(2.0, base + adj));
+      const trendClass = adj > 0.05 ? 'red' : (adj < -0.05 ? 'green' : 'cyan');
+      const adjStr = adj === 0 ? '0' : (adj > 0 ? '+' : '') + adj.toFixed(2);
+      return `<tr>
+        <td><span class="tag cyan">${typeNames[type] || type}</span></td>
+        <td>${base.toFixed(1)}</td>
+        <td><span class="tag ${trendClass}">${current.toFixed(2)}</span></td>
+        <td>趋势+${((current-base-adj).toFixed(2))}</td>
+        <td style="color:${adj>0?'var(--red)':(adj<0?'var(--green)':'var(--text3)')}">${adjStr}</td>
+      </tr>`;
+    }).join('');
+    tb.innerHTML = rows;
+  }).catch(()=>{});
+}
+
+// 同步冻结按钮状态
+function learnSyncFreezeBtn(){
+  api('learn_coupling').then(res=>{
+    if(!res || !res.success) return;
+    const btn = document.getElementById('learnFreezeBtn');
+    if(!btn) return;
+    if(res.autolearn_frozen){
+      btn.innerHTML = '🔥 解冻基线';
+      btn.className = 'btn btn-success';
+      btn.style.padding = '6px 12px';
+      btn.style.fontSize = '12px';
+    } else {
+      btn.innerHTML = '❄️ 冻结基线';
+      btn.className = 'btn';
+      btn.style.padding = '6px 12px';
+      btn.style.fontSize = '12px';
+    }
+  }).catch(()=>{});
+}
+
+// 刷新
+function learnRefresh(){
+  learnLoadRules();
+  learnLoadWeights();
+  learnSyncFreezeBtn();
+}
+
+// 冻结/解冻切换
+function learnFreezeToggle(){
+  api('learn_coupling').then(res=>{
+    if(!res || !res.success) return;
+    if(res.autolearn_frozen){
+      if(!confirm('确认解冻行为基线？\n\n解冻后系统将重新学习新的正常请求模式。')) return;
+      api('learn_unfreeze', {}).then(r=>{
+        if(r && r.success){
+          alert(r.message);
+          learnSyncFreezeBtn();
+        } else {
+          alert(r && r.message ? r.message : '操作失败');
+        }
+      });
+    } else {
+      if(!confirm('确认冻结行为基线？\n\n冻结后：\n- 不再学习新的正常请求模式\n- 已有基线继续生效\n- 防止攻击者"教坏"基线')) return;
+      api('learn_freeze', {}).then(r=>{
+        if(r && r.success){
+          alert(r.message);
+          learnSyncFreezeBtn();
+        } else {
+          alert(r && r.message ? r.message : '操作失败');
+        }
+      });
+    }
+  });
+}
+
+// 重置全部学习数据
+function learnReset(){
+  if(!confirm('⚠️ 危险操作确认\n\n即将清空所有学习数据：\n- 已学习攻击规则\n- 正常请求基线\n- 权重调整\n- 反馈记录\n\n此操作不可撤销，确定继续？')) return;
+  if(!confirm('二次确认：真的要清空全部学习数据吗？')) return;
+  api('learn_reset', {}).then(r=>{
+    if(r && r.success){
+      alert(r.message);
+      learnRefresh();
+    } else {
+      alert(r && r.message ? r.message : '操作失败');
+    }
+  });
+}
+
+// 提交反馈
+function learnSubmitFeedback(){
+  const payload = document.getElementById('learnFeedbackPayload').value.trim();
+  const typeSel = document.getElementById('learnFeedbackType').value;
+  const attackType = document.getElementById('learnFeedbackAttackType').value;
+  const result = document.getElementById('learnFeedbackResult');
+  if(!payload){
+    result.innerHTML = '<span class="tag red">请填写载荷内容</span>';
+    return;
+  }
+  if(payload.length > 2000){
+    result.innerHTML = '<span class="tag red">载荷过长（上限2000字符）</span>';
+    return;
+  }
+  const isFp = typeSel === 'false_positive';
+  api('learn_feedback', {
+    payload: payload,
+    is_false_positive: isFp ? 1 : 0,
+    attack_type: attackType,
+  }).then(r=>{
+    if(r && r.success){
+      result.innerHTML = '<span class="tag green">✓ ' + r.message + '</span>';
+      document.getElementById('learnFeedbackPayload').value = '';
+      setTimeout(()=>{ result.innerHTML = ''; learnLoadWeights(); }, 3000);
+    } else {
+      result.innerHTML = '<span class="tag red">' + (r && r.message ? r.message : '提交失败') + '</span>';
+    }
+  }).catch(e=>{
+    result.innerHTML = '<span class="tag red">网络错误</span>';
+  });
+}
+
+// 删除单条规则（标记为误报）
+function learnDeleteRule(pattern){
+  if(!confirm(`确认将此规则标记为误报并删除？\n\n规则：${pattern}\n\n系统将同时降低该攻击类型的权重。`)) return;
+  api('learn_delete_rule', { pattern: pattern }).then(r=>{
+    if(r && r.success){
+      alert(r.message);
+      learnLoadRules();
+    } else {
+      alert(r && r.message ? r.message : '删除失败');
+    }
+  });
 }
 
 // ========== 系统设置 ==========
