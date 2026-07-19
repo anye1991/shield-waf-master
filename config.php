@@ -207,6 +207,46 @@ define('WAF_ADMIN_IP_FILE',     WAF_LOG_PATH . 'admin_ips.txt');
 define('WAF_ADMIN_IP_TTL',      86400);
 define('WAF_LOG_MAX_FILESIZE',  getenv('WAF_LOG_MAX_FILESIZE') !== false ? (int)getenv('WAF_LOG_MAX_FILESIZE') : 10485760);
 
+// ======================== 管理员 IP 白名单（直配置，方便测试） ========================
+// 在 config.php 直接配置管理员 IP（或 CIDR 网段），无需登录控制台手动添加。
+// 白名单效果：
+//   1. 跳过速率限制（waf_cc_check）
+//   2. 跳过封禁检查（waf_is_banned 不拦截白名单 IP）
+//   3. waf_smart_ban 不对白名单 IP 累进封禁（但仍会 waf_block 触发 403 页面）
+//   4. 沙箱、暗门等敏感操作只允许白名单 IP
+//
+// 配置示例：
+//   define('WAF_ADMIN_IPS', ['127.0.0.1', '192.168.1.100', '10.0.0.0/8']);
+//
+// 也可通过 .env 配置：WAF_ADMIN_IPS=127.0.0.1,192.168.1.100,10.0.0.0/8
+if (!defined('WAF_ADMIN_IPS')) {
+    $env_admin_ips = getenv('WAF_ADMIN_IPS');
+    if ($env_admin_ips !== false && $env_admin_ips !== '') {
+        $admin_ip_list = array_filter(array_map('trim', explode(',', $env_admin_ips)));
+        define('WAF_ADMIN_IPS', $admin_ip_list);
+    } else {
+        define('WAF_ADMIN_IPS', []); // 默认空数组，通过控制台或 .env 配置
+    }
+    unset($env_admin_ips, $admin_ip_list);
+}
+
+// ======================== 测试模式（只拦截不封IP） ========================
+// 测试模式效果：
+//   1. waf_smart_ban / waf_ban 不执行实际封禁（但记录到 logs/test_mode_ban.log）
+//   2. waf_block 仍触发 403 拦截页面（但不会把 IP 加入 ban.txt）
+//   3. 方便测试 WAF 拦截规则是否生效，又不影响后续访问
+//
+// 配置示例：
+//   define('WAF_TEST_MODE', true);  // 启用测试模式
+//   .env 写入：WAF_TEST_MODE=true
+//
+// 生产环境务必保持 false！
+if (!defined('WAF_TEST_MODE')) {
+    $env_test_mode = getenv('WAF_TEST_MODE');
+    define('WAF_TEST_MODE', $env_test_mode !== false ? ($env_test_mode === 'true') : false);
+    unset($env_test_mode);
+}
+
 // ======================== 安全功能开关 ========================
 define('WAF_NORMALIZE_SQL_COMMENTS', true);
 define('WAF_ERROR_MASKING', getenv('WAF_ERROR_MASKING') !== false ? (getenv('WAF_ERROR_MASKING') === 'true') : true);

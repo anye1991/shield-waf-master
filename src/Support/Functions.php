@@ -71,6 +71,10 @@ function waf_block($msg = '') {
     if (defined('WAF_WEBHOOK_URL') && WAF_WEBHOOK_URL) {
         waf_send_webhook($msg);
     }
+    // 测试模式响应头标记（方便调试和监控）
+    if (defined('WAF_TEST_MODE') && WAF_TEST_MODE) {
+        @header('X-ShieldWAF-TestMode: 1');
+    }
     if (defined('WAF_403_TEMPLATE') && is_file(WAF_403_TEMPLATE)) {
         $waf_msg = $msg;
         $waf_ip  = waf_get_real_ip();

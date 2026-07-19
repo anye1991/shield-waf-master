@@ -10,8 +10,14 @@ defined('ABSPATH') || exit;
  * 检查当前 IP 是否处于有效封禁期内
  * 注意：不删除过期记录，以保留历史用于累进惩罚
  * 兜底：WAF_LOG_PATH/ban.txt 不可读时，尝试 /tmp/shield_waf_ban.txt
+ * 测试模式（WAF_TEST_MODE=true）下：跳过封禁检查（测试时不应被历史 ban 拦住）
  */
 function waf_is_banned() {
+    // 测试模式：不执行封禁检查
+    if (defined('WAF_TEST_MODE') && WAF_TEST_MODE) return false;
+    // 管理员白名单 IP 不受封禁检查
+    if (waf_is_admin_ip()) return false;
+
     $files = [WAF_LOG_PATH . 'ban.txt'];
     // 兜底：当主 ban.txt 不存在或不可读时，尝试 /tmp 后备
     if (!is_file($files[0]) || !is_readable($files[0])) {
@@ -38,9 +44,29 @@ function waf_is_banned() {
  * 封禁一个 IP
  * @param string $ip
  * @param int    $sec 封禁秒数
+ * 测试模式（WAF_TEST_MODE=true）下：不写入 ban.txt，只记录到 test_mode_ban.log
  */
 function waf_ban($ip, $sec = 86400) {
     $line = "$ip|" . (time() + $sec) . "\n";
+    $log_line = date('Y-m-d H:i:s') . ' | IP: ' . $ip . ' | duration: ' . $sec . 's' .
+                ' | reason: ' . (function_exists('waf_get_real_ip') && waf_get_real_ip() === $ip ? 'self' : 'manual') . "\n";
+
+    // 测试模式：只记录到 test_mode_ban.log，不实际封禁
+    if (defined('WAF_TEST_MODE') && WAF_TEST_MODE) {
+        $testLogFile = WAF_LOG_PATH . 'test_mode_ban.log';
+        $testWritten = false;
+        if (is_dir(WAF_LOG_PATH) && is_writable(WAF_LOG_PATH)) {
+            $testWritten = (@file_put_contents($testLogFile, '[TEST_MODE] ' . $log_line, FILE_APPEND | LOCK_EX) !== false);
+        }
+        if (!$testWritten) {
+            error_log('[ShieldWAF][TEST_MODE][ban] ' . rtrim($log_line));
+            if (is_writable('/tmp')) {
+                @file_put_contents('/tmp/shield_waf_test_ban.log', $log_line, FILE_APPEND | LOCK_EX);
+            }
+        }
+        return; // 不执行实际封禁
+    }
+
     $written = false;
     if (defined('WAF_LOG_PATH') && WAF_LOG_PATH) {
         if (!is_dir(WAF_LOG_PATH)) {
@@ -132,24 +158,56 @@ function waf_get_banned_ips() {
 
 // ====================== 管理员 IP 白名单 ======================
 
+/**
+ * 检测 IP 是否为管理员白名单
+ * 优先级：
+ *   1. config.php 中的 WAF_ADMIN_IPS 常量（数组形式，含 IP 和 CIDR 网段）
+ *   2. logs/admin_ips.txt 文件（控制台动态添加，含 TTL）
+ */
 function waf_is_admin_ip($ip = null) {
     if ($ip === null) $ip = waf_get_real_ip();
+    if (!$ip) return false;
+
+    // 1. 优先检查 WAF_ADMIN_IPS 常量（含 CIDR 网段支持）
+    if (defined('WAF_ADMIN_IPS') && is_array(WAF_ADMIN_IPS) && !empty(WAF_ADMIN_IPS)) {
+        foreach (WAF_ADMIN_IPS as $entry) {
+            $entry = trim((string)$entry);
+            if ($entry === '') continue;
+            // 支持 CIDR 网段：如 10.0.0.0/8
+            if (strpos($entry, '/') !== false) {
+                if (waf_ip_in_range($ip, $entry)) return true;
+            } elseif ($entry === $ip) {
+                return true;
+            }
+        }
+    }
+
+    // 2. 回退到文件（控制台动态添加的，含 TTL）
     $file = WAF_ADMIN_IP_FILE;
-    if (!is_file($file)) return false;
+    if (!is_file($file) || !is_readable($file)) return false;
     $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    if (!is_array($lines)) return false;
     $now   = time();
     $valid = [];
     $found = false;
     foreach ($lines as $line) {
         $parts  = explode('|', $line);
-        $entry_ip = $parts[0];
+        $entry_ip = $parts[0] ?? '';
         $expire   = isset($parts[1]) ? (int)$parts[1] : 0;
         if ($expire > 0 && $expire <= $now) continue;
-        if ($entry_ip === $ip) $found = true;
+        // 文件中的条目也支持 CIDR
+        if (strpos($entry_ip, '/') !== false) {
+            if (waf_ip_in_range($ip, $entry_ip)) $found = true;
+        } elseif ($entry_ip === $ip) {
+            $found = true;
+        }
         $valid[] = $line;
     }
     if (count($valid) !== count($lines)) {
-        @file_put_contents($file, implode("\n", $valid) . "\n", LOCK_EX);
+        $dir = dirname($file);
+        if (is_dir($dir) && is_writable($dir)) {
+            @file_put_contents($file, implode("\n", $valid) . "\n", LOCK_EX);
+        }
     }
     return $found;
 }
@@ -352,9 +410,24 @@ function waf_get_ban_duration($historyCount) {
 
 /**
  * 智能封禁：自动累进，跳过管理员白名单 IP
+ * 测试模式（WAF_TEST_MODE=true）下：waf_ban 内部会跳过实际封禁，只记录日志
  */
 function waf_smart_ban($ip) {
+    // 1. 管理员白名单 IP 不封禁
     if (waf_is_admin_ip($ip)) return;
+    // 2. 测试模式：不执行累进封禁，但记录到 test_mode_ban.log
+    if (defined('WAF_TEST_MODE') && WAF_TEST_MODE) {
+        $log_line = date('Y-m-d H:i:s') . ' | IP: ' . $ip .
+                    ' | history: ' . waf_get_ban_history_count($ip) .
+                    ' | TEST_MODE skipped actual ban' . "\n";
+        if (is_dir(WAF_LOG_PATH) && is_writable(WAF_LOG_PATH)) {
+            @file_put_contents(WAF_LOG_PATH . 'test_mode_ban.log', $log_line, FILE_APPEND | LOCK_EX);
+        } else {
+            error_log('[ShieldWAF][TEST_MODE][smart_ban] ' . rtrim($log_line));
+        }
+        return;
+    }
+    // 3. 正常模式：累进封禁
     $history  = waf_get_ban_history_count($ip);
     $duration = waf_get_ban_duration($history);
     waf_ban($ip, $duration);

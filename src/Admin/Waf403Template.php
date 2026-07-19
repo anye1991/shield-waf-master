@@ -175,11 +175,18 @@
         <p class="info">
             您的请求已被<strong>盾甲 WAF</strong>拦截。<br>如确有必要访问，请联系网站管理员。
         </p>
-        <?php if (!empty($waf_msg) && false): // 生产环境建议设为 false ?>
-        <div class="debug">
-            拦截原因：<?php echo htmlspecialchars($waf_msg); ?><br>
+        <?php
+        // 测试模式或调试模式：显示拦截原因（方便测试）
+        $show_debug = (defined('WAF_TEST_MODE') && WAF_TEST_MODE) ||
+                      (defined('WAF_DEBUG_MODE') && WAF_DEBUG_MODE);
+        if (!empty($waf_msg) && $show_debug):
+        ?>
+        <div class="debug" style="display:block;">
+            <strong style="color:#fbbf24;">[测试模式]</strong> 拦截原因：<?php echo htmlspecialchars($waf_msg); ?><br>
             您的 IP：<?php echo htmlspecialchars($waf_ip ?? ''); ?><br>
             请求路径：<?php echo htmlspecialchars($waf_uri ?? ''); ?>
+            <br><br>
+            <span style="color:#10b981;">测试模式下 IP 不会被实际封禁，可继续访问。</span>
         </div>
         <?php endif; ?>
         <div class="footer-brand">🛡️ Shield WAF</div>
