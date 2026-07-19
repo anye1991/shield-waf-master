@@ -18,8 +18,10 @@
  * 或者通过 WAF 主入口自动加载（如果是 WAF WordPress 插件模式）。
  */
 
+// 兼容非 WordPress 环境：未定义 ABSPATH 时自动定义为项目根目录
+// 注意：本文件位于 src/Password/，需向上回溯 2 级到项目根
 if (!defined('ABSPATH')) {
-    define('ABSPATH', dirname(__FILE__) . '/');
+    define('ABSPATH', dirname(__DIR__, 2) . '/');
 }
 
 // 加载核心类

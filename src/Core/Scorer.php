@@ -30,10 +30,12 @@ class WafScorer {
         'deviation' => 0.15,
     ];
 
+    // 阈值层级必须严格递增，否则中间层（如 observe）会被 block 短路而失效
+    // 0-30 pass / 30-50 log / 50-70 observe / 70+ block
     private static $thresholds = [
         'pass'    => 30,
-        'log'     => 50,
-        'observe' => 70,
+        'log'     => 30,
+        'observe' => 50,
         'block'   => 70,
     ];
 
@@ -88,6 +90,16 @@ class WafScorer {
         // 需要二次验证的（高分但疑似误报），降低一个级别
         if (!empty($fpResult['needs_verification'])) {
             $totalScore = max(0, $totalScore - 10);
+        }
+
+        // ====== 明确攻击证据强化加成（在 FP 调整之后应用） ======
+        // 当深度解析器检测到明确的攻击布尔标志位（has_eval / has_command_exec /
+        // has_script / has_union / is_path_traversal 等）时，给予总分级保底，
+        // 防止 system(ls) / eval(...) / <script>... 等短载荷攻击因 FP 调整漏检。
+        // 注：此加成只触发于解析器明确的攻击特征（非启发式评分），误报风险极低。
+        $clearAttackEvidenceBonus = self::calcClearAttackEvidenceBonus($semanticResult);
+        if ($clearAttackEvidenceBonus > 0) {
+            $totalScore = max($totalScore, $clearAttackEvidenceBonus);
         }
 
         $action = self::decideAction($totalScore);
@@ -326,6 +338,55 @@ class WafScorer {
             }
         }
         return $scores;
+    }
+
+    // ====================== 明确攻击证据强化加成 ======================
+
+    /**
+     * 当深度解析器检测到明确的攻击布尔标志位时，给予总分级保底。
+     * 此加成只触发于解析器明确的攻击特征（非启发式评分），误报风险极低。
+     * 保底值低于 block(70)，但能将短载荷攻击推到 observe(50) 级别，
+     * 配合其他加成可触发 block。
+     */
+    private static function calcClearAttackEvidenceBonus(array $semanticResult): float {
+        $bonus = 0;
+
+        // PHP 代码执行（最高危）
+        $phpParser = $semanticResult['php_parser_result'] ?? [];
+        if (is_array($phpParser)) {
+            if (!empty($phpParser['has_command_exec'])) $bonus = max($bonus, 75); // system/exec/shell_exec
+            if (!empty($phpParser['has_eval']))         $bonus = max($bonus, 72); // eval()
+            if (!empty($phpParser['has_superglobal_danger'])) $bonus = max($bonus, 55);
+        }
+
+        // SQL 注入
+        $sqlParser = $semanticResult['sql_parser_result'] ?? [];
+        if (is_array($sqlParser)) {
+            if (!empty($sqlParser['has_tautology'])) $bonus = max($bonus, 72); // OR 1=1
+            if (!empty($sqlParser['has_union']))     $bonus = max($bonus, 72); // UNION SELECT
+        }
+
+        // XSS 攻击
+        $htmlParser = $semanticResult['html_parser_result'] ?? [];
+        if (is_array($htmlParser)) {
+            if (!empty($htmlParser['has_script']))              $bonus = max($bonus, 72);
+            if (!empty($htmlParser['has_javascript_protocol'])) $bonus = max($bonus, 65);
+            if (!empty($htmlParser['has_event_handler']))       $bonus = max($bonus, 55);
+        }
+
+        // 路径遍历
+        $pathParser = $semanticResult['path_parser_result'] ?? [];
+        if (is_array($pathParser) && !empty($pathParser['is_path_traversal'])) {
+            $bonus = max($bonus, 72);
+        }
+
+        // XXE 实体注入
+        $xxeParser = $semanticResult['xxe_parser_result'] ?? [];
+        if (is_array($xxeParser) && !empty($xxeParser['has_xxe'])) {
+            $bonus = max($bonus, 72);
+        }
+
+        return (float)$bonus;
     }
 
     // ====================== 编码绕过专项加成 (+0~40分) ======================

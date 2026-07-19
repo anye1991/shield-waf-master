@@ -10,7 +10,10 @@
  *  - 常量重命名为 WAF_SKIP_RATELIMIT
  *  - v3.0.0 架构重组：所有模块归入 src/{Core,Semantic,Bot,Learn,Defense,Admin,Support}
  */
-defined('ABSPATH') || exit;
+// 兼容非 WordPress 环境：未定义 ABSPATH 时自动定义为本文件所在目录
+if (!defined('ABSPATH')) {
+    define('ABSPATH', dirname(__FILE__) . '/');
+}
 
 // ====================== 配置与函数 ======================
 require_once __DIR__ . '/config.php';
@@ -81,12 +84,27 @@ CsrfProtect::check();
 
 // ====================== 机器人检测 ======================
 require_once __DIR__ . '/src/Bot/BotManager.php';
+// 注：原代码把整个 $_SERVER 当 headers 传给 BotManager，
+// 导致环境变量(如 PATH/HTTP_PROXY等)也被当成 header 参与 Bot 指纹分析，触发误判。
+// 修复：只提取 HTTP_ 开头的请求头 + Content-Type/Content-Length。
+$_waf_http_headers = [];
+foreach ($_SERVER as $_waf_k => $_waf_v) {
+    if (strpos($_waf_k, 'HTTP_') === 0) {
+        $_waf_name = str_replace(' ', '-', ucwords(strtolower(str_replace('_', ' ', substr($_waf_k, 5)))));
+        $_waf_http_headers[$_waf_name] = $_waf_v;
+    } elseif ($_waf_k === 'CONTENT_TYPE') {
+        $_waf_http_headers['Content-Type'] = $_waf_v;
+    } elseif ($_waf_k === 'CONTENT_LENGTH') {
+        $_waf_http_headers['Content-Length'] = $_waf_v;
+    }
+}
 $botResult = BotManager::check([
     'uri'     => $_SERVER['REQUEST_URI'] ?? '/',
     'ua'      => $_SERVER['HTTP_USER_AGENT'] ?? '',
-    'headers' => $_SERVER,
+    'headers' => $_waf_http_headers,
     'ip'      => waf_get_real_ip(),
 ]);
+unset($_waf_http_headers, $_waf_k, $_waf_v, $_waf_name);
 
 // 已验证的搜索引擎蜘蛛：bot层面直接放行，攻击检测层面提升阈值（防误拦）
 $isVerifiedSearchEngine = false;
@@ -262,7 +280,8 @@ $scorerResult = WafScorer::score($all, $uri, $_GET, $normResult, waf_get_real_ip
 
 // 综合判断：规则检测或智能评分任一达到拦截阈值即拦截
 // 已验证搜索引擎：提升阈值到95，确保正常爬取不误拦（但真带攻击载荷仍会拦）
-$blockThreshold = 60;
+// 注：detector 阈值统一为 70，与 Scorer 保持一致，避免 60 分误拦截正常请求
+$blockThreshold = 70;
 $scorerIsAttack = $scorerResult['is_attack'];
 $detectorIsAttack = $attackResult['is_attack'];
 

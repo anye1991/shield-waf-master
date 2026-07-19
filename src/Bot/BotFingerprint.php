@@ -141,6 +141,10 @@ class BotFingerprint {
         // 归一化请求头键名为小写（保留插入顺序用于顺序指纹分析）
         $h = [];
         foreach ($headers as $k => $v) {
+            // 兼容：值为数组/对象时强转会触发 warning，跳过非标量
+            if (is_array($v) || is_object($v)) {
+                continue;
+            }
             $h[strtolower((string)$k)] = (string)$v;
         }
 
@@ -364,7 +368,11 @@ class BotFingerprint {
 
         $host_lower = strtolower($hostname);
         foreach ($suffixes as $suffix) {
-            if (str_ends_with($host_lower, $suffix)) {
+            // PHP 8.0+ 使用 str_ends_with，PHP 7.x 使用 substr 兼容
+            $match = function_exists('str_ends_with')
+                ? str_ends_with($host_lower, $suffix)
+                : (substr($host_lower, -strlen($suffix)) === $suffix);
+            if ($match) {
                 return true;
             }
         }

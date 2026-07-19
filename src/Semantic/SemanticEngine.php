@@ -359,13 +359,15 @@ class SemanticEngine {
         }
 
         // 编码绕过意图加成（核心思想：编码越深+解码后攻击得分越高=刻意绕过意图越强）
+        // 注：effectiveAttackScore 取综合分与单项解析器加权分最大值，
+        // 但单项解析器对参数名/短字符串敏感，容易误判，因此系数保守
         $effectiveAttackScore = max(
             $total,
-            $sqlParserScore * 0.8,
-            $htmlParserScore * 0.8,
-            $commandParserScore * 0.8,
-            $phpParserScore * 0.7,
-            $pathParserScore * 0.7
+            $sqlParserScore * 0.6,
+            $htmlParserScore * 0.6,
+            $commandParserScore * 0.6,
+            $phpParserScore * 0.5,
+            $pathParserScore * 0.4
         );
         $encodeBypassScore = self::calcEncodeBypassScore(
             $decodeDepth, $adversarialScore, $total, $adversarialResult, $effectiveAttackScore
@@ -374,7 +376,8 @@ class SemanticEngine {
             $total += $encodeBypassScore;
         }
 
-        // 高置信度明文攻击保底加成（专项解析器≥50分且无编码时的基础提升）
+        // 高置信度明文攻击保底加成（仅在专项解析器有强烈攻击证据时才加成）
+        // 注：门槛提高到 60/75，避免参数名误判（如 ?p=1 触发 pathParser 50 分）导致误拦截
         if ($decodeDepth === 0) {
             $maxParserScore = max(
                 $sqlParserScore,
@@ -383,11 +386,45 @@ class SemanticEngine {
                 $phpParserScore,
                 $pathParserScore
             );
-            if ($maxParserScore >= 60) {
+            if ($maxParserScore >= 75) {
                 $total += 15;
-            } elseif ($maxParserScore >= 45) {
+            } elseif ($maxParserScore >= 60) {
                 $total += 8;
             }
+        }
+
+        // ===== 解析器布尔标志位保底加成 =====
+        // 即使 parser 得分因模型保守而偏低，只要解析器检测到明确的攻击特征标志位
+        // （has_eval / has_command_exec / has_script / has_union / is_path_traversal 等），
+        // 就给予保底分数，防止短载荷攻击（如 system(ls) / eval(...) / <script>...）漏检
+        $parserFlagBonus = 0;
+
+        // PHP 代码执行：eval() / system() / exec() 等
+        $phpParserResult = $phpParserResult ?? [];
+        if (!empty($phpParserResult['has_eval'])) $parserFlagBonus = max($parserFlagBonus, 65);
+        if (!empty($phpParserResult['has_command_exec'])) $parserFlagBonus = max($parserFlagBonus, 75);
+        if (!empty($phpParserResult['has_superglobal_danger'])) $parserFlagBonus = max($parserFlagBonus, 60);
+        if (!empty($phpParserResult['dangerous_functions'])) $parserFlagBonus = max($parserFlagBonus, 60);
+
+        // SQL 注入：UNION / tautology
+        $sqlParserResult = $sqlParserResult ?? [];
+        if (!empty($sqlParserResult['has_union'])) $parserFlagBonus = max($parserFlagBonus, 70);
+        if (!empty($sqlParserResult['has_tautology'])) $parserFlagBonus = max($parserFlagBonus, 75);
+
+        // XSS 攻击：script / event handler / javascript 协议
+        $htmlParserResult = $htmlParserResult ?? [];
+        if (!empty($htmlParserResult['has_script'])) $parserFlagBonus = max($parserFlagBonus, 70);
+        if (!empty($htmlParserResult['has_event_handler'])) $parserFlagBonus = max($parserFlagBonus, 60);
+        if (!empty($htmlParserResult['has_javascript_protocol'])) $parserFlagBonus = max($parserFlagBonus, 65);
+        if (!empty($htmlParserResult['has_svg_payload'])) $parserFlagBonus = max($parserFlagBonus, 60);
+
+        // 路径遍历
+        $pathParserResult = $pathParserResult ?? [];
+        if (!empty($pathParserResult['is_path_traversal'])) $parserFlagBonus = max($parserFlagBonus, 65);
+
+        // 应用保底加成：取当前总分与"标志位保底分"的最大值
+        if ($parserFlagBonus > $total) {
+            $total = $parserFlagBonus;
         }
 
         $total = max(0, min(100, (int)round($total)));
@@ -624,7 +661,7 @@ class SemanticEngine {
     }
 
     private static function countHighDimensions(array $scores): int {
-        return count(array_filter($scores, fn($s) => $s >= 50));
+        return count(array_filter($scores, function($s) { return $s >= 50; }));
     }
 
     private static function emptyResult(): array {
@@ -717,17 +754,20 @@ class SemanticEngine {
             $score += 7;
             $indicators[] = 'html_entity_bypass';
         }
-        if ((in_array('html_numeric_entity', $decodePath) || in_array('html_named_entity', $decodePath)) && $attackScore >= 30) {
-            $score += 5;
+        // HTML 实体编码是明确的人工混淆（非浏览器自动编码），单独加成
+        if ((in_array('html_numeric_entity', $decodePath) || in_array('html_named_entity', $decodePath)) && $attackScore >= 25) {
+            $score += 10;
             $indicators[] = 'html_entity_keyword_obfuscation';
         }
         // 高置信攻击 + 编码隐藏 = 强绕过意图
-        if ($attackScore >= 35 && $decodeDepth >= 1) {
+        // 注：门槛 attackScore≥50 且 decodeDepth≥2，避免浏览器自动 URL 编码触发误判
+        if ($attackScore >= 50 && $decodeDepth >= 2) {
             $score += 10;
             $indicators[] = 'high_confidence_encoded_attack';
         }
         // SQL/HTML/命令关键字被编码 = 明确的绕过意图（追加专项加成）
-        if ($attackScore >= 30 && $decodeDepth >= 1) {
+        // 注：门槛 attackScore≥40 且 decodeDepth≥2，需要深度编码而非浏览器自动编码
+        if ($attackScore >= 40 && $decodeDepth >= 2) {
             $hasKeywordEncode = false;
             foreach (['html_numeric_entity', 'html_named_entity', 'homoglyph_normalize', 'fullwidth_normalize', 'zero_width_remove', 'unicode_percent_u', 'utf8_overlong'] as $tech) {
                 if (in_array($tech, $decodePath)) {

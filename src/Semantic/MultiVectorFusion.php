@@ -86,7 +86,7 @@ class MultiVectorFusion {
             'vector_scores'      => $scores,
             'vectors'            => $vectors,
             'max_single_score'   => !empty($scores) ? max($scores) : 0,
-            'active_vectors'     => count(array_filter($scores, fn($s) => $s > 0)),
+            'active_vectors'     => count(array_filter($scores, function($s) { return $s > 0; })),
             'cross_indicators'   => $crossVectorIndicators,
             'primary_vector'     => !empty($scores) ? array_search(max($scores), $scores) : '',
         ];
@@ -396,8 +396,8 @@ class MultiVectorFusion {
         if (empty($scores)) return 0;
 
         $maxScore = max($scores);
-        $highCount = count(array_filter($scores, fn($s) => $s >= 30));
-        $mediumCount = count(array_filter($scores, fn($s) => $s >= 15 && $s < 30));
+        $highCount = count(array_filter($scores, function($s) { return $s >= 30; }));
+        $mediumCount = count(array_filter($scores, function($s) { return $s >= 15 && $s < 30; }));
 
         $fusion = $maxScore;
 
@@ -409,7 +409,7 @@ class MultiVectorFusion {
         }
 
         // 活跃向量越多风险越高
-        $activeCount = count(array_filter($scores, fn($s) => $s > 0));
+        $activeCount = count(array_filter($scores, function($s) { return $s > 0; }));
         if ($activeCount >= 5) {
             $fusion += 10;
         }

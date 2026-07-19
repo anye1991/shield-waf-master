@@ -116,7 +116,7 @@ foreach ($normalCases as $i => $tc) {
     $result = WafScorer::score($tc['payload'], $tc['uri'], $params, [], '127.0.0.1');
     $scores[] = ['name' => $tc['name'], 'score' => $result['total_score'], 'detail' => $result];
 }
-usort($scores, fn($a, $b) => $b['score'] <=> $a['score']);
+usort($scores, function($a, $b) { return $b['score'] <=> $a['score']; });
 for ($i = 0; $i < min(10, count($scores)); $i++) {
     $s = $scores[$i];
     echo sprintf("  %2d. %-22s %5.1f分  语义=%.0f  加成=%.0f\n",

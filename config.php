@@ -6,7 +6,10 @@
  * 其次从同目录下的 .env 文件加载。
  * .env 文件已被 Nginx 禁止外部访问，确保安全。
  */
-defined('ABSPATH') || exit;
+// 兼容非 WordPress 环境：未定义 ABSPATH 时自动定义为本文件所在目录的上一级
+if (!defined('ABSPATH')) {
+    define('ABSPATH', dirname(__DIR__) . '/');
+}
 
 // ======================== 版本号 ========================
 define('SHIELD_WAF_VERSION', '3.1.0');

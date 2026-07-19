@@ -406,12 +406,12 @@ class AttackPathPredictor {
 
         // 针对预测路径建立防护
         if (!empty($paths)) {
-            $recommendations[] = "在以下路径加强防护: " . implode(', ', array_map(fn($p) => $p['path'], array_slice($paths, 0, 5)));
+            $recommendations[] = "在以下路径加强防护: " . implode(', ', array_map(function($p) { return $p['path']; }, array_slice($paths, 0, 5)));
         }
 
         // 针对预测参数建立防护
         if (!empty($params)) {
-            $recommendations[] = "重点监控以下参数: " . implode(', ', array_map(fn($p) => $p['key'], array_slice($params, 0, 5)));
+            $recommendations[] = "重点监控以下参数: " . implode(', ', array_map(function($p) { return $p['key']; }, array_slice($params, 0, 5)));
         }
 
         // 根据攻击者画像调整策略

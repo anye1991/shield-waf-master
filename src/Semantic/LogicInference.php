@@ -156,7 +156,7 @@ class LogicInference {
         }
         if (preg_match_all('/([^\s;()]+\s*(?:=|!=|<>|<=?|>=?|like)\s*[^\s;()]+)/i', $s, $cm))
             foreach ($cm[1] as $ce) $cands[] = trim($ce);
-        return array_values(array_unique(array_filter($cands, fn($c)=>strlen(trim($c))>=3)));
+        return array_values(array_unique(array_filter($cands, function($c) { return strlen(trim($c)) >= 3; })));
     }
 
     private static function analyzeExprs(string $s): array {

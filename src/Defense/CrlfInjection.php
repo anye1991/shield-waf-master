@@ -19,18 +19,18 @@ class CrlfInjection {
         ['pattern' => '/%0d%0a/i', 'name' => 'URL-encoded CRLF'],
         ['pattern' => '/%0d/i', 'name' => 'URL-encoded carriage return'],
         ['pattern' => '/%0a/i', 'name' => 'URL-encoded newline'],
-        ['pattern' => '/\\r\\n/', 'name' => 'Escaped CRLF'],
-        ['pattern' => '/\\r/', 'name' => 'Escaped carriage return'],
-        ['pattern' => '/\\n/', 'name' => 'Escaped newline'],
-        ['pattern' => '/\\x0d\\x0a/', 'name' => 'Hex CRLF'],
-        ['pattern' => '/\\x0d/', 'name' => 'Hex carriage return'],
-        ['pattern' => '/\\x0a/', 'name' => 'Hex newline'],
-        ['pattern' => '/\\u000d\\u000a/', 'name' => 'Unicode CRLF'],
-        ['pattern' => '/\\u000d/', 'name' => 'Unicode carriage return'],
-        ['pattern' => '/\\u000a/', 'name' => 'Unicode newline'],
-        ['pattern' => '/\\0d\\0a/', 'name' => 'Octal CRLF'],
-        ['pattern' => '/\\0d/', 'name' => 'Octal carriage return'],
-        ['pattern' => '/\\0a/', 'name' => 'Octal newline'],
+        ['pattern' => '/\\\\r\\\\n/', 'name' => 'Escaped CRLF'],
+        ['pattern' => '/\\\\r/', 'name' => 'Escaped carriage return'],
+        ['pattern' => '/\\\\n/', 'name' => 'Escaped newline'],
+        ['pattern' => '/\\\\x0d\\\\x0a/', 'name' => 'Hex CRLF'],
+        ['pattern' => '/\\\\x0d/', 'name' => 'Hex carriage return'],
+        ['pattern' => '/\\\\x0a/', 'name' => 'Hex newline'],
+        ['pattern' => '/\\\\u000d\\\\u000a/', 'name' => 'Unicode escape CRLF'],
+        ['pattern' => '/\\\\u000d/', 'name' => 'Unicode escape carriage return'],
+        ['pattern' => '/\\\\u000a/', 'name' => 'Unicode escape newline'],
+        ['pattern' => '/\\\\0d\\\\0a/', 'name' => 'Octal CRLF'],
+        ['pattern' => '/\\\\0d/', 'name' => 'Octal carriage return'],
+        ['pattern' => '/\\\\0a/', 'name' => 'Octal newline'],
         ['pattern' => '/\x0d\x0a/', 'name' => 'Raw CRLF'],
         ['pattern' => '/\x0d/', 'name' => 'Raw carriage return'],
         ['pattern' => '/\x0a/', 'name' => 'Raw newline'],
@@ -85,7 +85,18 @@ class CrlfInjection {
             $targets[] = $body;
         }
 
-        $headers = getallheaders();
+        // 兼容 nginx/php-fpm/CLI：getallheaders() 仅在 Apache/mod_php 或 PHP 7.3+ SAPI 中可用
+        if (function_exists('getallheaders')) {
+            $headers = getallheaders() ?: [];
+        } else {
+            $headers = [];
+            foreach ($_SERVER as $k => $v) {
+                if (strpos($k, 'HTTP_') === 0) {
+                    $name = str_replace(' ', '-', ucwords(strtolower(str_replace('_', ' ', substr($k, 5)))));
+                    $headers[$name] = $v;
+                }
+            }
+        }
         foreach ($headers as $k => $v) {
             if (in_array($k, self::$headerNames)) {
                 $targets[] = (string)$v;

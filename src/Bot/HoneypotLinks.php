@@ -67,11 +67,14 @@ class HoneypotLinks {
         }
 
         // 检查参数是否匹配蜜罐参数名 + 非空值
+        // 注：避免误判 ?mode=admin / ?preview=true 等正常请求，
+        // 要求值长度≥8 且同时含 2+ 敏感词才触发
         foreach (self::$param_names as $param) {
             if (isset($_GET[$param]) && !empty($_GET[$param])) {
                 $val = (string)$_GET[$param];
-                // 参数值包含可疑关键词也触发
-                if (preg_match('/(admin|root|secret|password|login|config|shell|cmd)/i', $val)) {
+                if (strlen($val) < 8) continue;
+                $matches = preg_match_all('/(admin|root|secret|password|login|config|shell|cmd)/i', $val);
+                if ($matches >= 2) {
                     self::recordTrigger($ip, $uri, 'param_match:' . $param);
                     return true;
                 }

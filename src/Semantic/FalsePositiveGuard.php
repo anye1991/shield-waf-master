@@ -202,7 +202,8 @@ class FalsePositiveGuard {
         $isFalsePositive = $confidence >= 60;
 
         // 极低分数直接放行（明确不是攻击）
-        if ($totalScore < 10) {
+        // 注：必须排除含明确攻击关键字的短载荷，否则 system(ls)/eval() 等短攻击会被误判为正常请求
+        if ($totalScore < 10 && !self::containsAttackKeyword($semanticResult)) {
             $isFalsePositive = true;
             $confidence = 100;
             $reason = '分数极低，明确为正常请求';
@@ -403,7 +404,7 @@ class FalsePositiveGuard {
             $result['expr_parser_score'] ?? 0,
         ];
 
-        $highCount = count(array_filter($lScores, fn($s) => $s >= 40));
+        $highCount = count(array_filter($lScores, function($s) { return $s >= 40; }));
         $totalScore = $result['total_score'] ?? 0;
 
         // 总分高但大部分维度低 => 可能是误报
@@ -412,6 +413,65 @@ class FalsePositiveGuard {
         }
 
         return 'consistent';
+    }
+
+    /**
+     * 检查语义结果是否包含明确攻击证据（短载荷攻击防护）
+     * 即使语义总分极低，只要任一深度解析器检测到明确攻击特征，就不应被判定为误报
+     * 使用解析器的布尔标志位而非文本匹配，避免误判
+     */
+    private static function containsAttackKeyword(array $result): bool {
+        // 1. PHP 代码执行攻击
+        $phpParser = $result['php_parser_result'] ?? [];
+        if (is_array($phpParser)) {
+            if (!empty($phpParser['has_eval'])) return true;
+            if (!empty($phpParser['has_command_exec'])) return true;
+            if (!empty($phpParser['has_superglobal_danger'])) return true;
+            if (!empty($phpParser['dangerous_functions']) && is_array($phpParser['dangerous_functions'])) return true;
+        }
+
+        // 2. SQL 注入
+        $sqlParser = $result['sql_parser_result'] ?? [];
+        if (is_array($sqlParser)) {
+            if (!empty($sqlParser['has_tautology'])) return true;
+            if (!empty($sqlParser['has_union'])) return true;
+            if (!empty($sqlParser['dangerous_functions']) && is_array($sqlParser['dangerous_functions'])) return true;
+            if (!empty($sqlParser['sensitive_tables']) && is_array($sqlParser['sensitive_tables'])) return true;
+        }
+
+        // 3. XSS 攻击
+        $htmlParser = $result['html_parser_result'] ?? [];
+        if (is_array($htmlParser)) {
+            if (!empty($htmlParser['has_script'])) return true;
+            if (!empty($htmlParser['has_event_handler'])) return true;
+            if (!empty($htmlParser['has_javascript_protocol'])) return true;
+            if (!empty($htmlParser['has_svg_payload'])) return true;
+        }
+
+        // 4. 路径遍历
+        $pathParser = $result['path_parser_result'] ?? [];
+        if (is_array($pathParser)) {
+            if (!empty($pathParser['is_path_traversal'])) return true;
+        }
+
+        // 5. 文件包含
+        if (!empty($result['l1_char_score']) && $result['l1_char_score'] >= 30) {
+            // 文件包含协议可能由 l1 字符层检测
+            $indicators = $result['indicators'] ?? [];
+            foreach ($indicators as $ind) {
+                if (!is_string($ind)) continue;
+                $lower = strtolower($ind);
+                if (strpos($lower, 'php://') !== false) return true;
+                if (strpos($lower, 'data://') !== false) return true;
+                if (strpos($lower, 'file://') !== false) return true;
+            }
+        }
+
+        // 6. XXE 实体注入
+        $xxeParser = $result['xxe_parser_result'] ?? [];
+        if (is_array($xxeParser) && !empty($xxeParser['has_xxe'])) return true;
+
+        return false;
     }
 
     /**

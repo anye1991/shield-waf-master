@@ -211,7 +211,8 @@ class WafRiskScore {
             $riskLevel = 'clean';
         }
 
-        $isAttack = $totalScore >= 60;
+        // 注：阈值统一为 70，与 Scorer 和 shield-waf.php 保持一致
+        $isAttack = $totalScore >= 70;
 
         $confidence = 0;
         if ($numHits > 0) {
