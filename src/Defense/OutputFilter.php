@@ -6,73 +6,64 @@ function waf_output_filter_start() {
         return;
     }
 
+    $requestUri = $_SERVER['REQUEST_URI'] ?? '';
+    if (waf_is_static_resource($requestUri)) {
+        return;
+    }
+
     ob_start(function($buffer) {
-        $errorPatterns = [
-            // PHP 核心错误
-            '/Fatal error:/i',
-            '/Parse error:/i',
-            '/Warning:/i',
-            '/Notice:/i',
-            '/Deprecated:/i',
-            '/Strict Standards:/i',
-            '/Uncaught exception/i',
-            '/Stack trace:/i',
-            '/thrown in\s+[^\s]+\s+on line/i',
-            '/on line\s*<b>\d+<\/b>/i',
-            '/on line\s+\d+/i',
-
-            // 数据库错误
-            '/mysql_error\s*\(/i',
-            '/mysqli_error\s*\(/i',
-            '/You have an error in your SQL syntax/i',
-            '/SQL syntax.*?error/i',
-            '/mysql_fetch_array\s*\(/i',
-            '/mysql_num_rows\s*\(/i',
-            '/mysql_query\s*\(/i',
-            '/pg_query\s*\(/i',
-            '/pg_last_error/i',
-            '/sqlite_error/i',
-            '/ORA-\d+/i',
-            '/PDOException/i',
-            '/SQLSTATE\[/i',
-
-            // 文件路径泄露
-            '/in\s+\/[^\s]+\.php\s+on line/i',
-            '/in\s+[A-Z]:\\\\[^\s]+\.php\s+on line/i',
-
-            // 其他敏感信息
-            '/phpinfo\(\)/i',
-            '/PHP Extension/i',
-            '/PHP Version/i',
-            '/server version/i',
-            '/Apache\/\d+/i',
-            '/nginx\/\d+/i',
-            '/open_basedir restriction in effect/i',
-            '/failed to open stream/i',
-            '/No such file or directory/i',
-            '/Permission denied/i',
-        ];
-
-        $matchedPattern = '';
-        $isError = false;
-
-        foreach ($errorPatterns as $pattern) {
-            if (preg_match($pattern, $buffer, $matches)) {
-                $isError = true;
-                $matchedPattern = $matches[0] ?? $pattern;
-                break;
+        if (waf_is_php_error_output($buffer)) {
+            waf_error_masking_log($buffer, 'php_error_detected');
+            if (!headers_sent()) {
+                http_response_code(500);
+                header('Content-Type: text/html; charset=utf-8');
             }
-        }
-
-        if ($isError) {
-            waf_error_masking_log($buffer, $matchedPattern);
-            http_response_code(500);
-            header('Content-Type: text/html; charset=utf-8');
             return '<!DOCTYPE html><html><head><title>500 Internal Server Error</title><style>body{font-family:Arial,sans-serif;max-width:600px;margin:100px auto;padding:20px;text-align:center;color:#333;}h1{color:#d9534f;font-size:2em;}p{line-height:1.6;}</style></head><body><h1>内部服务器错误</h1><p>服务器遇到了一些问题，请稍后重试。</p><p>如问题持续存在，请联系网站管理员。</p></body></html>';
         }
-
         return $buffer;
     });
+}
+
+function waf_is_static_resource($uri) {
+    static $staticExtensions = [
+        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico',
+        '.css', '.js', '.woff', '.woff2', '.ttf', '.eot',
+        '.pdf', '.zip', '.rar', '.gz', '.tar',
+        '.mp3', '.mp4', '.avi', '.mov', '.wav', '.flv', '.webm',
+        '.map', '.txt',
+    ];
+
+    $path = parse_url($uri, PHP_URL_PATH);
+    if ($path === false) return false;
+
+    $lowerPath = strtolower($path);
+    foreach ($staticExtensions as $ext) {
+        if (substr($lowerPath, -strlen($ext)) === $ext) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function waf_is_php_error_output($buffer) {
+    $trimmed = trim($buffer);
+    if ($trimmed === '') return false;
+
+    $errorPatterns = [
+        '/<br\s*\/?>\s*<b>Fatal error<\/b>:/i',
+        '/<br\s*\/?>\s*<b>Parse error<\/b>:/i',
+        '/Fatal error:\s*.+?\sin\s+.+?\.php\s+on line\s+\d+/i',
+        '/Parse error:\s*syntax error,\s*.+?\sin\s+.+?\.php\s+on line\s+\d+/i',
+        '/Uncaught\s+\w+Exception[\s\S]{0,200}thrown\s+in\s+.+?\.php\s+on line\s+\d+/i',
+    ];
+
+    foreach ($errorPatterns as $pattern) {
+        if (@preg_match($pattern, $buffer)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 function waf_error_masking_log($buffer, $matchedPattern) {
