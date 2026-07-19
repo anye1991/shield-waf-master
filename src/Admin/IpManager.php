@@ -9,18 +9,26 @@ defined('ABSPATH') || exit;
 /**
  * 检查当前 IP 是否处于有效封禁期内
  * 注意：不删除过期记录，以保留历史用于累进惩罚
+ * 兜底：WAF_LOG_PATH/ban.txt 不可读时，尝试 /tmp/shield_waf_ban.txt
  */
 function waf_is_banned() {
-    $file = WAF_LOG_PATH . 'ban.txt';
-    if (!is_file($file)) return false;
+    $files = [WAF_LOG_PATH . 'ban.txt'];
+    // 兜底：当主 ban.txt 不存在或不可读时，尝试 /tmp 后备
+    if (!is_file($files[0]) || !is_readable($files[0])) {
+        $files[] = '/tmp/shield_waf_ban.txt';
+    }
     $ip   = waf_get_real_ip();
-    $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     $now  = time();
-    foreach ($lines as $line) {
-        $d = explode('|', $line);
-        if (count($d) !== 2) continue;
-        if ($d[0] === $ip && (int)$d[1] > $now) {
-            return true;
+    foreach ($files as $file) {
+        if (!is_file($file) || !is_readable($file)) continue;
+        $lines = @file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        if (!is_array($lines)) continue;
+        foreach ($lines as $line) {
+            $d = explode('|', $line);
+            if (count($d) !== 2) continue;
+            if ($d[0] === $ip && (int)$d[1] > $now) {
+                return true;
+            }
         }
     }
     return false;
@@ -32,8 +40,28 @@ function waf_is_banned() {
  * @param int    $sec 封禁秒数
  */
 function waf_ban($ip, $sec = 86400) {
-    if (!is_dir(WAF_LOG_PATH)) mkdir(WAF_LOG_PATH, 0700, true);
-    @file_put_contents(WAF_LOG_PATH . 'ban.txt', "$ip|" . (time() + $sec) . "\n", FILE_APPEND | LOCK_EX);
+    $line = "$ip|" . (time() + $sec) . "\n";
+    $written = false;
+    if (defined('WAF_LOG_PATH') && WAF_LOG_PATH) {
+        if (!is_dir(WAF_LOG_PATH)) {
+            @mkdir(WAF_LOG_PATH, 0775, true);
+        }
+        if (is_dir(WAF_LOG_PATH) && is_writable(WAF_LOG_PATH)) {
+            $banFile = WAF_LOG_PATH . 'ban.txt';
+            $written = (@file_put_contents($banFile, $line, FILE_APPEND | LOCK_EX) !== false);
+            if (!$written && is_file($banFile)) {
+                @chmod($banFile, 0664);
+                $written = (@file_put_contents($banFile, $line, FILE_APPEND | LOCK_EX) !== false);
+            }
+        }
+    }
+    // 兜底：WAF_LOG_PATH 不可写时降级到 PHP error_log 和 /tmp
+    if (!$written) {
+        error_log('[ShieldWAF][ban] ' . rtrim($line));
+        if (is_writable('/tmp')) {
+            @file_put_contents('/tmp/shield_waf_ban.txt', $line, FILE_APPEND | LOCK_EX);
+        }
+    }
 }
 
 /**

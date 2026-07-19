@@ -34,16 +34,40 @@ function waf_get_real_ip() {
 
 function waf_block($msg = '') {
     http_response_code(403);
-    if (!is_dir(WAF_LOG_PATH)) mkdir(WAF_LOG_PATH, 0700, true);
     $log_ip  = str_replace(["\r", "\n"], '', waf_get_real_ip());
     $log_uri = str_replace(["\r", "\n"], '', $_SERVER['REQUEST_URI'] ?? '');
     $log_msg = str_replace(["\r", "\n"], '', $msg);
-    @file_put_contents(
-        WAF_LOG_PATH . 'block_' . date('Y-m-d') . '.log',
-        date('Y-m-d H:i:s') . ' | IP: ' . $log_ip .
-        ' | URI: ' . $log_uri . ' | Msg: ' . $log_msg . "\n",
-        FILE_APPEND
-    );
+    $log_line = date('Y-m-d H:i:s') . ' | IP: ' . $log_ip .
+                ' | URI: ' . $log_uri . ' | Msg: ' . $log_msg . "\n";
+
+    // 主日志路径：WAF_LOG_PATH/block_YYYY-MM-DD.log
+    $written = false;
+    if (defined('WAF_LOG_PATH') && WAF_LOG_PATH) {
+        if (!is_dir(WAF_LOG_PATH)) {
+            // 尝试创建，0775 让 nginx/php-fpm 都能写入
+            @mkdir(WAF_LOG_PATH, 0775, true);
+        }
+        if (is_dir(WAF_LOG_PATH) && is_writable(WAF_LOG_PATH)) {
+            $logFile = WAF_LOG_PATH . 'block_' . date('Y-m-d') . '.log';
+            $written = (@file_put_contents($logFile, $log_line, FILE_APPEND | LOCK_EX) !== false);
+            // 兜底：单文件不可写时改权限
+            if (!$written && is_file($logFile)) {
+                @chmod($logFile, 0664);
+                $written = (@file_put_contents($logFile, $log_line, FILE_APPEND | LOCK_EX) !== false);
+            }
+        }
+    }
+
+    // 兜底1：WAF_LOG_PATH 不可写时（如 nginx/php-fpm 用户无权限），降级到 PHP error_log
+    if (!$written) {
+        error_log('[ShieldWAF][block] ' . rtrim($log_line));
+    }
+
+    // 兜底2：尝试写入系统 /tmp（Web 用户一般可写）作为最后保障
+    if (!$written && is_writable('/tmp')) {
+        @file_put_contents('/tmp/shield_waf_block.log', $log_line, FILE_APPEND | LOCK_EX);
+    }
+
     if (defined('WAF_WEBHOOK_URL') && WAF_WEBHOOK_URL) {
         waf_send_webhook($msg);
     }

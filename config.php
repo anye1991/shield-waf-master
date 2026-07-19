@@ -6,9 +6,10 @@
  * 其次从同目录下的 .env 文件加载。
  * .env 文件已被 Nginx 禁止外部访问，确保安全。
  */
-// 兼容非 WordPress 环境：未定义 ABSPATH 时自动定义为本文件所在目录的上一级
+// 兼容非 WordPress 环境：未定义 ABSPATH 时自动定义为本文件所在目录
+// 注：与 shield-waf.php 顶部定义保持一致（dirname(__FILE__) === dirname(__DIR__) when called from /workspace/shield-waf-master/）
 if (!defined('ABSPATH')) {
-    define('ABSPATH', dirname(__DIR__) . '/');
+    define('ABSPATH', dirname(__FILE__) . '/');
 }
 
 // ======================== 版本号 ========================
@@ -328,8 +329,9 @@ define('WAF_FALSE_POSITIVE_GUARD', getenv('WAF_FALSE_POSITIVE_GUARD') !== false 
 define('WAF_SCORER_ENABLED', getenv('WAF_SCORER_ENABLED') !== false ? (getenv('WAF_SCORER_ENABLED') === 'true') : true);
 // 自动学习是否启用
 define('WAF_AUTOLEARN_ENABLED', getenv('WAF_AUTOLEARN_ENABLED') !== false ? (getenv('WAF_AUTOLEARN_ENABLED') === 'true') : true);
-// 拦截阈值（总分>=此值拦截）
-define('WAF_SCORE_BLOCK', getenv('WAF_SCORE_BLOCK') !== false ? (int)getenv('WAF_SCORE_BLOCK') : 60);
+// 拦截阈值（总分>=此值拦截）- 与 shield-waf.php 中 $blockThreshold 保持一致
+// 注：原默认值 60 与 shield-waf.php 硬编码的 70 不一致，导致 Scorer 拦截后 Detector 未拦截
+define('WAF_SCORE_BLOCK', getenv('WAF_SCORE_BLOCK') !== false ? (int)getenv('WAF_SCORE_BLOCK') : 70);
 // 监控阈值（总分>=此值记录日志但不拦截）
 define('WAF_SCORE_MONITOR', getenv('WAF_SCORE_MONITOR') !== false ? (int)getenv('WAF_SCORE_MONITOR') : 40);
 // 语义分析权重（四维评分中语义占比，范围0-100，其余三维度均分剩余）

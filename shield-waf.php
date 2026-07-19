@@ -19,6 +19,27 @@ if (!defined('ABSPATH')) {
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/src/Support/Functions.php';
 
+// ====================== 日志目录可写性检测（首次部署诊断） ======================
+// 现象：用户看到首页403但 logs/ 下没有任何 block_*.log 文件
+// 根因：logs/ 目录属主 root + 权限 755，nginx/php-fpm 以 www-data 运行无写权限
+// 修复：启动时主动尝试 mkdir + chmod，失败则通过 PHP error_log 通知部署者
+if (defined('WAF_LOG_PATH') && WAF_LOG_PATH) {
+    if (!is_dir(WAF_LOG_PATH)) {
+        @mkdir(WAF_LOG_PATH, 0775, true);
+    }
+    if (is_dir(WAF_LOG_PATH) && !is_writable(WAF_LOG_PATH)) {
+        // 尝试改权限（仅当属主是当前进程用户时才能生效）
+        @chmod(WAF_LOG_PATH, 0775);
+    }
+    // 仍不可写时记录到 PHP error_log（部署者能从 php-fpm/nginx error log 看到）
+    if (!is_writable(WAF_LOG_PATH)) {
+        error_log(sprintf(
+            '[ShieldWAF] 警告：日志目录 %s 不可写，请执行：chmod -R 0775 %s && chown -R www-data:www-data %s',
+            WAF_LOG_PATH, WAF_LOG_PATH, dirname(WAF_LOG_PATH)
+        ));
+    }
+}
+
 // ====================== 一次性读取原始请求体（限制大小防OOM） ======================
 if (!defined('WAF_RAW_BODY')) {
     $maxBody = defined('WAF_MAX_BODY_SIZE') ? WAF_MAX_BODY_SIZE : 1048576;
