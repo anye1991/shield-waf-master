@@ -38,7 +38,7 @@ class SemanticMemoryPool {
     private static $loaded = false;
 
     /** 记录一次请求到记忆池，并基于历史（不含当前）重建基线。 */
-    public static function record(string $ip, string $text, string $uri, array $params, array $features): void {
+    public static function record(string $ip, string $text, string $uri, array $params, array $features) {
         self::ensureLoaded();
         $now = microtime(true);
 

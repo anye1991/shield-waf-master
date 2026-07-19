@@ -265,7 +265,7 @@ class CaptchaHandler {
 
     // ====================== 会话存储 ======================
 
-    private static function initDir(): void {
+    private static function initDir() {
         if (self::$store_dir !== null) return;
         $base = defined('WAF_LOG_PATH') ? WAF_LOG_PATH : (sys_get_temp_dir() . '/shield_waf_');
         $dir  = $base . 'captcha/';
@@ -278,7 +278,7 @@ class CaptchaHandler {
         return self::$store_dir . 'sess_' . $safe . '.json';
     }
 
-    private static function saveSession(string $session_id, array $record): void {
+    private static function saveSession(string $session_id, array $record) {
         @file_put_contents(self::sessionFile($session_id), json_encode($record), LOCK_EX);
     }
 
@@ -291,7 +291,7 @@ class CaptchaHandler {
         return is_array($data) ? $data : null;
     }
 
-    private static function deleteSession(string $session_id): void {
+    private static function deleteSession(string $session_id) {
         $file = self::sessionFile($session_id);
         if (is_file($file)) @unlink($file);
     }

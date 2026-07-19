@@ -275,7 +275,7 @@ class ActiveDefense {
     /**
      * 自动封禁IP
      */
-    public static function autoBlock(string $ip, string $reason, string $detail = '', int $seconds = 86400): void {
+    public static function autoBlock(string $ip, string $reason, string $detail = '', int $seconds = 86400) {
         $blocks = self::loadBlocks();
         $now = time();
 
@@ -346,7 +346,7 @@ class ActiveDefense {
     /**
      * 解封IP
      */
-    public static function unblock(string $ip): void {
+    public static function unblock(string $ip) {
         $blocks = self::loadBlocks();
         if (isset($blocks[$ip])) {
             unset($blocks[$ip]);
@@ -357,7 +357,7 @@ class ActiveDefense {
     /**
      * 清理过期封禁记录
      */
-    public static function cleanup(): void {
+    public static function cleanup() {
         $blocks = self::loadBlocks();
         $now = time();
         $changed = false;
@@ -393,7 +393,7 @@ class ActiveDefense {
     /**
      * 记录蜜罐触发
      */
-    private static function logHoneytrap(string $ip, string $uri, string $honeyName): void {
+    private static function logHoneytrap(string $ip, string $uri, string $honeyName) {
         $honeyData = self::loadHoneytraps();
         if (!isset($honeyData[$ip])) {
             $honeyData[$ip] = [];
@@ -457,7 +457,7 @@ class ActiveDefense {
         return is_array($data) ? $data : [];
     }
 
-    private static function saveHoneytraps(array $data): void {
+    private static function saveHoneytraps(array $data) {
         $file = self::getFilePath(self::$honey_file);
         if ($file === '') return;
         $result = @file_put_contents($file, json_encode($data), LOCK_EX);
@@ -482,7 +482,7 @@ class ActiveDefense {
         return is_array($data) ? $data : [];
     }
 
-    private static function saveBlocks(array $data): void {
+    private static function saveBlocks(array $data) {
         $file = self::getFilePath(self::$block_file);
         if ($file === '') return;
         $result = @file_put_contents($file, json_encode($data), LOCK_EX);

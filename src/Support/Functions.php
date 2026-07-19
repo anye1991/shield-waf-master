@@ -1,6 +1,38 @@
 <?php
 defined('ABSPATH') || exit;
 
+// ====================== PHP 版本兼容性 polyfill ======================
+// array_key_first / array_key_last (PHP 7.3+ 引入)
+if (!function_exists('array_key_first')) {
+    function array_key_first(array $arr) {
+        foreach ($arr as $key => $_) return $key;
+        return null;
+    }
+}
+if (!function_exists('array_key_last')) {
+    function array_key_last(array $arr) {
+        end($arr);
+        return key($arr);
+    }
+}
+
+// str_contains / str_starts_with / str_ends_with (PHP 8.0+ 引入)
+if (!function_exists('str_contains')) {
+    function str_contains($haystack, $needle) {
+        return $needle === '' || strpos($haystack, $needle) !== false;
+    }
+}
+if (!function_exists('str_starts_with')) {
+    function str_starts_with($haystack, $needle) {
+        return $needle === '' || strncmp($haystack, $needle, strlen($needle)) === 0;
+    }
+}
+if (!function_exists('str_ends_with')) {
+    function str_ends_with($haystack, $needle) {
+        return $needle === '' || substr($haystack, -strlen($needle)) === $needle;
+    }
+}
+
 function waf_ensure_dir($dir) {
     if (!is_dir($dir)) {
         return @mkdir($dir, 0700, true);

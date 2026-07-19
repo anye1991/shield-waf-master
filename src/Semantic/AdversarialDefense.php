@@ -18,7 +18,7 @@ defined('ABSPATH') || exit;
 
 class AdversarialDefense {
     /** 递归解码最大深度 */
-    private const MAX_DECODE_DEPTH = 5;
+    public const MAX_DECODE_DEPTH = 5;
 
     /** 已知攻击 payload 结构特征（结构化模式，非单个关键词） */
     private static $attack_payload_patterns = [

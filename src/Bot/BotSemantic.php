@@ -312,7 +312,7 @@ class BotSemantic {
 
     // ====================== 行为追踪存储 ======================
 
-    private static function initDir(): void {
+    private static function initDir() {
         if (self::$tracker_dir !== null) return;
         $base = defined('WAF_LOG_PATH') ? WAF_LOG_PATH : (sys_get_temp_dir() . '/shield_waf_');
         $dir  = $base . 'bot_tracker/';

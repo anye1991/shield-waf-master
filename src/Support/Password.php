@@ -40,8 +40,26 @@ class WafPassword
     const ARGON2_TIME_COST = 4;
     const ARGON2_THREADS   = 1;
     // sodium INTERACTIVE 档（与上面参数接近）
-    const SODIUM_OPS  = SODIUM_CRYPTO_PWHASH_OPSLIMIT_INTERACTIVE ?? 2;
-    const SODIUM_MEM = SODIUM_CRYPTO_PWHASH_MEMLIMIT_INTERACTIVE ?? 67108864;
+    // 注：PHP 类常量不能用 ?? 表达式（PHP 8.3+ 才支持），
+    //     改用运行时静态属性初始化，并做 sodium 扩展存在性检查
+    private static $sodiumOps = null;
+    private static $sodiumMem = null;
+
+    private static function getSodiumOps() {
+        if (self::$sodiumOps === null) {
+            self::$sodiumOps = defined('SODIUM_CRYPTO_PWHASH_OPSLIMIT_INTERACTIVE')
+                ? SODIUM_CRYPTO_PWHASH_OPSLIMIT_INTERACTIVE : 2;
+        }
+        return self::$sodiumOps;
+    }
+
+    private static function getSodiumMem() {
+        if (self::$sodiumMem === null) {
+            self::$sodiumMem = defined('SODIUM_CRYPTO_PWHASH_MEMLIMIT_INTERACTIVE')
+                ? SODIUM_CRYPTO_PWHASH_MEMLIMIT_INTERACTIVE : 67108864;
+        }
+        return self::$sodiumMem;
+    }
 
     // ============== 哈希生成 ==============
 
@@ -80,8 +98,8 @@ class WafPassword
         if (function_exists('sodium_crypto_pwhash_str')) {
             $hash = sodium_crypto_pwhash_str(
                 $plain,
-                self::SODIUM_OPS,
-                self::SODIUM_MEM
+                self::getSodiumOps(),
+                self::getSodiumMem()
             );
             return ['algo' => 'argon2id-sodium', 'hash' => $hash];
         }
@@ -202,7 +220,7 @@ class WafPassword
 
         // 检查 2：主层参数是否需要升级
         if ($primaryAlgo === 'argon2id-sodium' && function_exists('sodium_crypto_pwhash_str_needs_rehash')) {
-            if (sodium_crypto_pwhash_str_needs_rehash($primaryHash, self::SODIUM_OPS, self::SODIUM_MEM)) {
+            if (sodium_crypto_pwhash_str_needs_rehash($primaryHash, self::getSodiumOps(), self::getSodiumMem())) {
                 return true;
             }
         } elseif (in_array($primaryAlgo, ['argon2id', 'argon2i', 'bcrypt', 'bcrypt-12'], true)) {
@@ -315,7 +333,7 @@ class WafPassword
         // 测试 argon2id-sodium（如果可用）
         if (function_exists('sodium_crypto_pwhash_str')) {
             $t = microtime(true);
-            $h3 = sodium_crypto_pwhash_str($plain, self::SODIUM_OPS, self::SODIUM_MEM);
+            $h3 = sodium_crypto_pwhash_str($plain, self::getSodiumOps(), self::getSodiumMem());
             $result['benchmarks']['argon2id-sodium'] = [
                 'hash_time_ms' => round((microtime(true) - $t) * 1000, 2),
             ];

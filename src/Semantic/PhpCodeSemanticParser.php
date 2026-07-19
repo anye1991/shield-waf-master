@@ -125,7 +125,7 @@ class PhpCodeSemanticParser {
     /**
      * 使用 tokenizer 分析
      */
-    private static function analyzeWithTokenizer(string $code, array &$result): void {
+    private static function analyzeWithTokenizer(string $code, array &$result) {
         $wrapped = false;
         if (strpos($code, '<?php') === false && strpos($code, '<?') === false) {
             $code = '<?php ' . $code;
@@ -464,7 +464,7 @@ class PhpCodeSemanticParser {
     /**
      * 使用正则降级分析
      */
-    private static function analyzeWithRegex(string $code, array &$result): void {
+    private static function analyzeWithRegex(string $code, array &$result) {
         $result['parser_used'] = 'regex';
         $lines = explode("\n", $code);
         $lineCount = count($lines);
@@ -859,7 +859,7 @@ class PhpCodeSemanticParser {
     /**
      * 计算最终评分
      */
-    private static function calculateScore(array &$result): void {
+    private static function calculateScore(array &$result) {
         $score = 0;
         $attackVectors = 0;
 

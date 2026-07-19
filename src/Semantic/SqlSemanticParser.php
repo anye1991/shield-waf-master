@@ -1573,7 +1573,7 @@ class SqlSemanticParser {
         return $state['tokens'][$state['pos'] + $offset] ?? null;
     }
 
-    private static function next(array &$state): void {
+    private static function next(array &$state) {
         if ($state['pos'] < count($state['tokens']) - 1) {
             $state['pos']++;
         }
@@ -1593,7 +1593,7 @@ class SqlSemanticParser {
         return false;
     }
 
-    private static function skipCommentsAndSemicolons(array &$state): void {
+    private static function skipCommentsAndSemicolons(array &$state) {
         while (!self::isEof($state)) {
             $t = self::current($state);
             if ($t['type'] === self::TOKEN_COMMENT) {
@@ -2233,7 +2233,7 @@ class SqlSemanticParser {
 
     // ==================== Helpers ====================
 
-    private static function checkDangerousFunction(string $name, array &$state): void {
+    private static function checkDangerousFunction(string $name, array &$state) {
         $upper = strtoupper($name);
         foreach (self::$dangerousFunctions as $func) {
             if ($upper === $func || strpos($upper, $func) !== false) {
@@ -2243,7 +2243,7 @@ class SqlSemanticParser {
         }
     }
 
-    private static function checkSensitiveTable(string $name, array &$state): void {
+    private static function checkSensitiveTable(string $name, array &$state) {
         $upper = strtoupper($name);
         foreach (self::$sensitiveTables as $table) {
             if ($upper === $table || strpos($upper, $table) !== false) {

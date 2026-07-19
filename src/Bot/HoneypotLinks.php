@@ -41,7 +41,7 @@ class HoneypotLinks {
     /**
      * 初始化蜜罐系统
      */
-    private static function init(): void {
+    private static function init() {
         if (self::$initialized) return;
         $base = defined('WAF_LOG_PATH') ? WAF_LOG_PATH : (sys_get_temp_dir() . '/shield_waf_');
         self::$trigger_dir = $base . 'honeypot_triggers/';
@@ -172,7 +172,7 @@ class HoneypotLinks {
     /**
      * 记录蜜罐触发
      */
-    private static function recordTrigger(string $ip, string $uri, string $reason): void {
+    private static function recordTrigger(string $ip, string $uri, string $reason) {
         self::init();
         $file = self::$trigger_dir . md5($ip) . '.json';
         $record = [

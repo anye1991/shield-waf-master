@@ -1959,7 +1959,7 @@ class WafSandbox {
      *   - Admin IP 跳过（管理员手动操作不应污染行为基线）
      *   - 失败静默，绝不影响沙箱主流程
      */
-    private static function notifyAutoLearn(string $reason, string $path, array $context = []): void {
+    private static function notifyAutoLearn(string $reason, string $path, array $context = []) {
         if (!defined('WAF_SANDBOX_LEARN_COUPLING') || !WAF_SANDBOX_LEARN_COUPLING) return;
         if (!class_exists('AutoLearn', false)) return;
 
@@ -1999,7 +1999,7 @@ class WafSandbox {
     /**
      * 集成点 3：基线联动 — 通知 AutoLearn 冻结/解冻行为基线
      */
-    private static function notifyAutoLearnFreeze(bool $freeze): void {
+    private static function notifyAutoLearnFreeze(bool $freeze) {
         if (!defined('WAF_SANDBOX_LEARN_COUPLING') || !WAF_SANDBOX_LEARN_COUPLING) return;
         if (!class_exists('AutoLearn', false)) return;
 

@@ -85,7 +85,7 @@ class CharSemantics {
     /**
      * 函数调用模式：标识符 + (
      */
-    private const FUNC_NAME_PATTERN = '/[a-zA-Z_][a-zA-Z0-9_]*\s*\(/';
+    public const FUNC_NAME_PATTERN = '/[a-zA-Z_][a-zA-Z0-9_]*\s*\(/';
 
     /**
      * 字符级攻击意图推理入口

@@ -33,7 +33,7 @@ class AutoLearn {
 
     private static $static_cache = [];
     private static $static_cache_ts = [];
-    private const STATIC_CACHE_TTL = 30;
+    public const STATIC_CACHE_TTL = 30;
 
     public static function init() {
         if (self::$patterns_file !== null) return;
@@ -416,7 +416,7 @@ class AutoLearn {
      * @param string $reason  事件原因（quarantine/surgical_cut/instant_delete）
      * @param array  $context 附加上下文（文件路径、评分等）
      */
-    public static function markIpFromSandbox(string $ip, string $reason, array $context = []): void {
+    public static function markIpFromSandbox(string $ip, string $reason, array $context = []) {
         if ($ip === '' || $ip === 'cli' || $ip === 'unknown') return;
         // 防止 IP 格式异常（防注入）
         if (!filter_var($ip, FILTER_VALIDATE_IP)) return;

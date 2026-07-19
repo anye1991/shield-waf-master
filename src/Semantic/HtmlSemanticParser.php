@@ -259,7 +259,7 @@ class HtmlSemanticParser {
      * @param array $result
      * @return void
      */
-    private static function analyzeDomContext(array &$result): void {
+    private static function analyzeDomContext(array &$result) {
         $headDangerous = 0;
         $bodyDangerous = 0;
         $clusters = 0;
@@ -340,7 +340,7 @@ class HtmlSemanticParser {
      * @param array $result
      * @return void
      */
-    private static function analyzeAttributeSemantics(array &$result): void {
+    private static function analyzeAttributeSemantics(array &$result) {
         $externalUrls = [];
         $dataAttrPayloads = [];
         $styleDangers = [];
@@ -417,7 +417,7 @@ class HtmlSemanticParser {
      * @param array $result
      * @return void
      */
-    private static function detectObfuscation(array &$result): void {
+    private static function detectObfuscation(array &$result) {
         $rawHtml = $result['_raw_html'];
         $entityCount = 0;
         $upperCount = 0;

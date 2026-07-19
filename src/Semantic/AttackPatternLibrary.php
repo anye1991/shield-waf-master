@@ -13,7 +13,7 @@ class AttackPatternLibrary {
 
     private static $patterns = null;
 
-    public static function init(): void {
+    public static function init() {
         if (self::$patterns !== null) return;
 
         self::$patterns = [

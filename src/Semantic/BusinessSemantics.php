@@ -88,16 +88,16 @@ class BusinessSemantics {
     private static $pseudo_protocols = ['javascript:','vbscript:','data:','file:','expect:','php:','phar:','gopher:','dict:','jar:'];
 
     /** WebShell 文件名特征模式 */
-    private const WEBSHELL_NAME_PATTERN = '/\b(shell|c99|r57|b374k|wso|eval|backdoor|webshell|cmdshell|hacktool|injector)\b/i';
+    public const WEBSHELL_NAME_PATTERN = '/\b(shell|c99|r57|b374k|wso|eval|backdoor|webshell|cmdshell|hacktool|injector)\b/i';
 
     /** 敏感系统文件路径模式（路径遍历目标） */
-    private const SENSITIVE_FILE_PATTERN = '#/(etc/(passwd|shadow|hosts)|proc/self|var/log|root/\.ssh|windows/system32|boot\.ini|win\.ini|\.env)#i';
+    public const SENSITIVE_FILE_PATTERN = '#/(etc/(passwd|shadow|hosts)|proc/self|var/log|root/\.ssh|windows/system32|boot\.ini|win\.ini|\.env)#i';
 
     /** SQL 注入特征（用于 ID 参数检测） */
-    private const SQL_INJECTION_PATTERN = "/'\\s*(or|and|union)\\b|\\bunion\\s+select\\b|\\bor\\s+1\\s*=\\s*1|\\bunion\\s+all\\b|--\\s*$|--\\s*\\w/i";
+    public const SQL_INJECTION_PATTERN = "/'\\s*(or|and|union)\\b|\\bunion\\s+select\\b|\\bor\\s+1\\s*=\\s*1|\\bunion\\s+all\\b|--\\s*$|--\\s*\\w/i";
 
     /** 重定向参数名模式 */
-    private const REDIRECT_KEY_PATTERN = '/^(returnurl|return_url|redirect|redirect_url|next|url|goto|target|back|callback|redir|continue|dest|destination)$/i';
+    public const REDIRECT_KEY_PATTERN = '/^(returnurl|return_url|redirect|redirect_url|next|url|goto|target|back|callback|redir|continue|dest|destination)$/i';
 
     /** 业务逻辑分析入口
      * @param string $uri    请求 URI
@@ -266,7 +266,7 @@ class BusinessSemantics {
     }
 
     /** 从参数丰富动作意图（action=delete / op=update 等） */
-    private static function enrichActionFromParams(array &$endpoint, array $params): void {
+    private static function enrichActionFromParams(array &$endpoint, array $params) {
         $actionKeys = ['action','op','operation','method','do','task','act'];
         foreach ($params as $k => $v) {
             if (in_array(strtolower((string) $k), $actionKeys, true)) {

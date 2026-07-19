@@ -124,7 +124,7 @@ class AttackChainAnalyzer {
         string $wordRole = '',
         string $intentPhase = '',
         int $logicScore = 0
-    ): void {
+    ) {
         $now = time();
 
         if (!isset(self::$ipHistory[$ip])) {
@@ -289,7 +289,7 @@ class AttackChainAnalyzer {
      *
      * @return void
      */
-    public static function cleanupExpired(): void {
+    public static function cleanupExpired() {
         $now = time();
         foreach (self::$ipHistory as $ip => $history) {
             if ($now - $history['last_activity'] > self::INACTIVITY_TIMEOUT) {
@@ -304,7 +304,7 @@ class AttackChainAnalyzer {
      * @param string $ip 客户端IP
      * @return void
      */
-    public static function clearChain(string $ip): void {
+    public static function clearChain(string $ip) {
         unset(self::$ipHistory[$ip]);
     }
 
