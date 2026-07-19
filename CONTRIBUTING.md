@@ -2,6 +2,8 @@
 
 感谢你关注盾甲 WAF！我们欢迎各种形式的贡献 —— 无论是提交 Bug、建议新功能、完善文档，还是直接贡献代码。
 
+> **署名：暗夜铭少**
+
 ---
 
 ## 📋 目录
@@ -149,6 +151,24 @@ php test_dual_password.php
 
 # 数据库适配器测试（需要对应数据库）
 php test_db_adapter.php
+
+# 首页403回归测试（v4.1 新增）
+php test_homepage_compat.php
+
+# 误报压力测试（37 用例）
+php test_fp_stress.php
+
+# 管理员白名单 + 测试模式（v4.1 新增，11 用例）
+php test_admin_whitelist.php
+
+# 攻击载荷评分详情
+php test_parser_scores.php
+
+# 14 层解码测试
+php test_full_decode.php
+
+# 极限测试
+php test_extreme.php
 ```
 
 ### 测试数据要求
@@ -235,3 +255,7 @@ Closes #123
 ---
 
 有任何问题，欢迎通过 Issue 或邮件联系我们。
+
+---
+
+> **暗夜铭少** — 欢迎一起打造更安全的 Web 世界

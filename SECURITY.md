@@ -2,20 +2,61 @@
 
 盾甲 WAF 高度重视安全问题。作为一款 Web 应用防火墙产品，我们对自身代码安全的要求甚至高于对客户的防护标准。
 
+> **署名：暗夜铭少**
+
 ---
 
 ## 🔐 安全审计状态
 
-代码已通过 **97 项**全面安全审计：
+代码已通过 **97 项**全面安全审计 + v4.1 深度代码审计：
 
 | 等级 | 数量 | 状态 |
 |------|------|------|
 | 🔴 Critical | 12 | ✅ 全部修复 |
-| 🟠 High | 27 | ✅ 已修复 15+ |
+| 🟠 High | 27 | ✅ 已修复 24+（v4.1 新增 9 项修复） |
 | 🟡 Medium | 35 | 🔄 进行中 |
 | 🟢 Low | 23 | 📋 计划中 |
 
 完整审计报告：[SECURITY_AUDIT_REPORT.md](SECURITY_AUDIT_REPORT.md)
+
+---
+
+## 🆕 v4.1 深度代码审计修复（2026-07-19）
+
+本次深度审计针对用户反馈"首页403 + PHP兼容性问题"展开，定位并修复以下关键问题：
+
+### 首页403误拦截根因链
+| 问题 | 文件 | 影响 |
+|------|------|------|
+| CachePoisoning Host 字符类正则误匹配 localhost | [CachePoisoning.php](src/Defense/CachePoisoning.php) | 首页直接403 |
+| `getAllHeadersCompat()` 无限递归 | [CachePoisoning.php](src/Defense/CachePoisoning.php) | Apache环境stack overflow |
+| `$_SERVER` 当 headers 传给 BotManager | [shield-waf.php](shield-waf.php) | 环境变量污染Bot指纹 |
+| CRLF `\u000d\u000a` PCRE2 非法转义 | [CrlfInjection.php](src/Defense/CrlfInjection.php) | 每次请求编译失败 |
+| `BotFingerprint` 数组值强转警告 | [BotFingerprint.php](src/Bot/BotFingerprint.php) | 每次请求触发warning |
+
+### PHP 兼容性修复
+| 问题 | 修复前 | 修复后 |
+|------|--------|--------|
+| 箭头函数 `fn()` | PHP 7.4+ 专有 | 全部改为传统 closure |
+| `str_ends_with` | PHP 8.0+ 专有 | 添加 `function_exists` 守护 |
+| `getallheaders()` | nginx/php-fpm 不存在 | 添加 `$_SERVER` 回退 |
+| `ABSPATH` 未定义 | 致命错误 | 自动定义指向正确目录 |
+
+### 评分与拦截逻辑修复
+| 问题 | 修复前 | 修复后 |
+|------|--------|--------|
+| `Scorer.observe` 阈值失效 | observe=70 与 block=70 相等 | observe=50（严格递增） |
+| `FalsePositiveGuard` 短载荷漏检 | `system(ls)` 误判为正常 | 添加 `containsAttackKeyword` 检查 |
+| 短载荷攻击得分偏低 | 69.6分差0.4到block | 新增 `calcClearAttackEvidenceBonus` 保底 |
+| `HoneypotLinks` 误判 | 短值含敏感词即触发 | 要求值长度≥8且含2+敏感词 |
+| `Detector` 阈值不一致 | 60 与 Scorer 70 不一致 | 统一为 70 |
+
+### 日志与运维修复
+| 问题 | 修复前 | 修复后 |
+|------|--------|--------|
+| logs 目录不可写时日志丢失 | `@file_put_contents` 静默失败 | 三级兜底：WAF_LOG_PATH → error_log → /tmp |
+| `waf_smart_ban` 累进封禁影响测试 | 测试时IP被封无法继续 | 测试模式跳过实际封禁 |
+| 管理员白名单仅支持文件 | 必须登录控制台添加 | config.php 直配 + CIDR 网段支持 |
 
 ---
 
@@ -33,6 +74,9 @@
 - ✅ **速率限制**：原子操作防竞态条件绕过
 - ✅ **.env 安全**：白名单机制，禁止覆盖敏感环境变量
 - ✅ **文件权限**：配置文件 0600，数据目录 0700
+- ✅ **日志兜底**：三级降级（WAF_LOG_PATH → error_log → /tmp）
+- ✅ **测试模式**：只拦截不封IP，方便部署期间调试
+- ✅ **管理员白名单**：config.php 直配 IP/CIDR，跳过速率限制与封禁
 
 ---
 

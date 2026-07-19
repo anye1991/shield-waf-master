@@ -1,12 +1,13 @@
-# 🛡️ 盾甲 WAF (Shield WAF) v4.0.0
+# 🛡️ 盾甲 WAF (Shield WAF) v4.1.0
 
-[![Version](https://img.shields.io/badge/version-4.0.0-blue)](https://github.com/)
-[![PHP](https://img.shields.io/badge/PHP-5.6%2B-purple)](https://php.net/)
+[![Version](https://img.shields.io/badge/version-4.1.0-blue)](https://github.com/)
+[![PHP](https://img.shields.io/badge/PHP-7.0%2B-purple)](https://php.net/)
 [![Database](https://img.shields.io/badge/database-MySQL%20%7C%20PostgreSQL%20%7C%20SQLite%20%7C%20MSSQL-orange)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 [![Security](https://img.shields.io/badge/security-audited-red)]()
 
 > **下一代 PHP Web 应用防火墙 · 14 层编码归一化 · 语义分析引擎 · 双重密码加密 · 可视化控制台**
+> **署名：暗夜铭少**
 
 ---
 
@@ -22,6 +23,8 @@
 | 🤖 **机器人防护** | 12 维评分模型，蜜罐系统，验证码体系，32 种蜘蛛识别 |
 | 📡 **全数据库兼容** | MySQL / PostgreSQL / SQLite / MSSQL，原生扩展 + PDO 双模式 |
 | ⚡ **零依赖部署** | 单文件引入，即插即用，兼容 WordPress / ThinkPHP / Laravel 等任意框架 |
+| 🧪 **测试模式** | 一键开启「只拦截不封IP」，方便部署期间调试规则不影响线上访问 |
+| 🛡️ **管理员白名单** | 配置文件直配 IP/CIDR 网段，跳过速率限制与封禁检查 |
 
 ---
 
@@ -271,7 +274,7 @@ AutoLearn 模型训练
 ### 方式二：任意 PHP 站点集成
 
 ```php
-// 在项目入口文件最顶部加入
+// 在项目入口文件最顶部加入（必须是第一行）
 require_once '/path/to/shield-waf-master/shield-waf.php';
 // 完成！WAF 自动开始防护
 ```
@@ -294,6 +297,94 @@ $valid = DualPassword::verify('user_password', $hash);
 
 ---
 
+## ⚠️ 部署必读：常见陷阱与解决方案
+
+### 1. 首页打开直接 403
+
+**根因**：logs 目录不可写，导致 ban 记录无法持久化，但 403 仍输出
+**解决**：
+
+```bash
+# 授予 logs 目录写入权限（最常见解决方案）
+chmod -R 0775 logs/
+chown -R www-data:www-data logs/   # nginx/php-fpm 用户
+
+# 验证
+ls -la logs/block_$(date +%Y-%m-%d).log
+```
+
+如果 logs 不可写，WAF 会自动降级到：
+1. PHP `error_log()` → 写入 nginx/php-fpm error log
+2. `/tmp/shield_waf_block.log` → 系统临时目录（最后兜底）
+
+### 2. 测试期间不想封禁自己 IP
+
+**方案一**：开启测试模式（推荐）
+
+```php
+// config.php 顶部加入
+define('WAF_TEST_MODE', true);
+```
+
+或 `.env`：
+```bash
+WAF_TEST_MODE=true
+```
+
+效果：
+- ✅ 仍会拦截攻击（输出 403 页面）
+- ✅ 不实际封禁 IP（不写 ban.txt）
+- ✅ 记录到 `logs/test_mode_ban.log` 方便复盘
+- ✅ 403 页面显示拦截原因
+- ✅ 响应头 `X-ShieldWAF-TestMode: 1`
+
+**方案二**：配置管理员白名单
+
+```php
+// config.php 加入
+define('WAF_ADMIN_IPS', ['127.0.0.1', '192.168.1.100', '10.0.0.0/8']);
+```
+
+或 `.env`：
+```bash
+WAF_ADMIN_IPS=127.0.0.1,192.168.1.100,10.0.0.0/8
+```
+
+效果：
+- ✅ 跳过速率限制（CC）
+- ✅ 跳过封禁检查（waf_is_banned）
+- ✅ waf_smart_ban 不累进封禁
+- ✅ 支持 CIDR 网段（如 `10.0.0.0/8` 命中 `10.1.2.3`）
+- ⚠️ 仍会 waf_block 触发 403（拦截规则照常工作）
+
+### 3. PHP 版本兼容性
+
+最低支持 PHP 7.0。已修复的兼容性问题：
+
+| 问题 | 影响版本 | 已修复 |
+|------|---------|--------|
+| 箭头函数 `fn()` | PHP 7.4+ 专有 | ✅ 全部改为传统 closure |
+| `str_ends_with` | PHP 8.0+ 专有 | ✅ 添加 `function_exists` 守护 |
+| `getallheaders()` | nginx/php-fpm 不存在 | ✅ 添加 `$_SERVER` 回退 |
+| `??` 合并运算符 | PHP 7.0+ | ✅ 兼容 |
+| 标量类型声明 | PHP 7.0+ | ✅ 兼容 |
+
+### 4. 部署检查清单
+
+部署后请逐项确认：
+
+- [ ] `php -v` 显示 PHP 7.0+（推荐 7.4+ 或 8.x）
+- [ ] `logs/` 目录可写（`is_writable('logs/')` 返回 true）
+- [ ] `data/` 目录可写
+- [ ] 访问首页返回 200，不是 403
+- [ ] `tail -f logs/block_*.log` 能看到拦截记录
+- [ ] 模拟攻击 `/?id=1' OR 1=1--` 能触发 403
+- [ ] `logs/ban.txt` 能记录封禁 IP（默认模式）
+- [ ] 配置 `WAF_ADMIN_IPS` 加入办公网段
+- [ ] 测试模式 `WAF_TEST_MODE=true` 仅在测试期间开启
+
+---
+
 ## ⚙️ 配置
 
 ### 环境变量 / .env 配置
@@ -302,6 +393,12 @@ $valid = DualPassword::verify('user_password', $hash);
 # 基础配置
 WAF_ENABLED=true
 WAF_LOG_PATH=/var/log/shield-waf/
+
+# 管理员 IP 白名单（逗号分隔，支持 CIDR 网段）
+WAF_ADMIN_IPS=127.0.0.1,192.168.1.100,10.0.0.0/8
+
+# 测试模式（只拦截不封IP，生产环境务必 false）
+WAF_TEST_MODE=false
 
 # 速率限制
 WAF_CC_ENABLED=true
@@ -327,7 +424,7 @@ WAF_DEBUG=false
 WAF_DB_DEBUG=false
 ```
 
-> 完整配置项见 [config.php](src/config.php)
+> 完整配置项见 [config.php](config.php)
 
 ---
 
@@ -361,9 +458,21 @@ WAF_DB_DEBUG=false
 | 等级 | 数量 | 状态 |
 |------|------|------|
 | 🔴 Critical | 12 | ✅ 全部修复 |
-| 🟠 High | 27 | ✅ 已修复 15+ |
+| 🟠 High | 27 | ✅ 已修复 24+（v4.1 新增 9 项修复） |
 | 🟡 Medium | 35 | 🔄 进行中 |
 | 🟢 Low | 23 | 📋 计划中 |
+
+**v4.1 新增修复**（深度代码审计）：
+- 首页403误拦截根因（CachePoisoning 字符类正则误匹配 localhost）
+- `getallheaders()` 无限递归 bug
+- 10处箭头函数 `fn()` (PHP 7.4+) 兼容性
+- `CrlfInjection` PCRE2 非法转义编译失败
+- `BotFingerprint` 数组值强转警告
+- `Scorer.observe` 阈值失效（与block相等被短路）
+- `FalsePositiveGuard` 短载荷攻击漏检
+- `WordPressIntegration.ABSPATH` 路径错误
+- `HoneypotLinks` 误判（要求值长度≥8且含2+敏感词）
+- 日志目录不可写时403页面输出但日志丢失
 
 审计报告：[SECURITY_AUDIT_REPORT.md](SECURITY_AUDIT_REPORT.md)
 
@@ -379,22 +488,34 @@ WAF_DB_DEBUG=false
 - ✅ 配置持久化使用 JSON（无 unserialize）
 - ✅ XML 解析禁用外部实体（防 XXE）
 - ✅ 速率限制原子操作（防竞态绕过）
+- ✅ 日志三级兜底（WAF_LOG_PATH → error_log → /tmp）
+- ✅ 测试模式只拦截不封IP（不影响业务）
+- ✅ 管理员白名单支持 CIDR 网段
 
 ---
 
 ## 📁 项目结构
 
 ```
-shield-waf/
+shield-waf-master/
 ├── shield-waf.php              # 主入口文件
-├── config.php                  # 配置文件
+├── config.php                  # 配置文件（含 WAF_ADMIN_IPS / WAF_TEST_MODE）
 ├── README.md                   # 项目文档
+├── CHANGELOG.md                # 变更记录
+├── SECURITY.md                 # 安全策略
+├── SECURITY_AUDIT_REPORT.md    # 安全审计报告
+├── TEST_REPORT.md              # 测试报告
+├── CONTRIBUTING.md             # 贡献指南
 ├── data/                       # 运行时数据（自动创建）
 │   ├── modules_config.json     # 模块开关配置
 │   ├── settings.json           # 系统设置
 │   ├── whitelist_url.json      # URL 白名单
 │   └── sandbox_tasks.json      # 扫描任务
-├── logs/                       # 日志目录（自动创建）
+├── logs/                       # 日志目录（自动创建，需可写）
+│   ├── block_YYYY-MM-DD.log    # 拦截日志
+│   ├── ban.txt                 # 封禁IP列表
+│   ├── admin_ips.txt           # 控制台动态添加的白名单
+│   └── test_mode_ban.log       # 测试模式下的封禁记录（不实际封禁）
 ├── src/
 │   ├── Admin/                  # 管理后台
 │   │   ├── Dashboard.php       # 控制台主页面
@@ -403,19 +524,25 @@ shield-waf/
 │   │   ├── PasswordApi.php     # 密码服务 API
 │   │   ├── ScannerApi.php      # 扫描器 API
 │   │   ├── DashboardBot.php    # 机器人管理
+│   │   ├── IpManager.php       # IP 管理（封禁/白名单）
+│   │   ├── Waf403Template.php  # 403 拦截页面模板
+│   │   ├── DarkGate.php        # 暗门认证
 │   │   └── Sandbox.php         # 沙箱核心
 │   ├── Core/                   # 核心模块
 │   │   ├── Normalizer.php      # 请求归一化
 │   │   ├── Scorer.php          # 评分引擎
+│   │   ├── Detector.php        # 检测引擎
 │   │   └── Request.php         # 请求封装
 │   ├── Defense/                # 防御模块（33 个）
 │   │   ├── SqlInjection.php
 │   │   ├── XssFilter.php
 │   │   ├── RateLimit.php
 │   │   ├── Upload.php
-│   │   ├── SsrfDefender.php
-│   │   └── ... (30+ 模块)
-│   ├── Semantic/               # 语义分析
+│   │   ├── CachePoisoning.php  # 缓存投毒防护
+│   │   ├── CrlfInjection.php   # CRLF 注入防护
+│   │   ├── CorsPolicy.php      # CORS 策略
+│   │   └── ... (26+ 模块)
+│   ├── Semantic/               # 语义分析（11 大解析器）
 │   ├── Bot/                    # 机器人防护
 │   ├── Password/               # 密码加密
 │   │   ├── DualPassword.php    # 双重加密核心
@@ -424,7 +551,7 @@ shield-waf/
 │   │   └── WordPressIntegration.php
 │   ├── Support/                # 工具函数
 │   └── Learning/               # 自学习
-└── tests/                      # 测试用例
+├── test_*.php                  # 测试用例（首页403/FP压力/白名单等）
 ```
 
 ---
@@ -437,14 +564,21 @@ shield-waf/
 
 ```bash
 # 克隆项目
-git clone https://github.com/yourname/shield-waf.git
+git clone https://github.com/anye1991/shield-waf-master.git
+cd shield-waf-master
 
-# 运行测试
-php test_password.php
-php test_dual_password.php
+# 运行测试套件
+php test_password.php            # 密码模块测试
+php test_dual_password.php       # 双重加密测试
+php test_homepage_compat.php     # 首页403回归测试
+php test_fp_stress.php           # 误报压力测试（37用例）
+php test_admin_whitelist.php    # 管理员白名单+测试模式（11用例）
+php test_parser_scores.php       # 攻击载荷评分详情
+php test_full_decode.php         # 14层解码测试
+php test_extreme.php             # 极限测试
 
-# 代码审计
-php -l src/  # 语法检查
+# 代码语法检查
+find src -name "*.php" -exec php -l {} \; | grep -v "No syntax errors"
 ```
 
 ---
@@ -459,11 +593,14 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 
 | 版本 | 核心特性 |
 |------|---------|
-| **v4.0.0** 🔥 | 可视化控制台 12 页面 · 双重密码加密 · 多数据库适配 · 全量视觉动效升级 |
+| **v4.1.0** 🔥 | 深度代码审计修复 · 首页403根因解决 · PHP 7.0 兼容性 · 管理员IP白名单 · 测试模式 · 日志三级兜底 |
+| v4.0.0 | 可视化控制台 12 页面 · 双重密码加密 · 多数据库适配 · 全量视觉动效升级 |
 | v3.1.0 | 统一归一化引擎 · 沙箱/上传双引擎重优化 · 学习闭环 · 全配置 .env 化 |
 | v3.0.0 | 8 个高级防护模块 · 语义分析引擎 · 机器人防护 · 沙箱系统 |
 | v2.0.0 | 10 层编码归一化 · 评分系统 · 自学习 · WordPress 深度集成 |
 | v1.0.0 | 基础 SQL/XSS 防护 · IP 封禁 · 速率限制 |
+
+> 完整变更记录见 [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
