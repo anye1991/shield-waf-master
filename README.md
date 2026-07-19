@@ -1,7 +1,7 @@
-# 🛡️ 盾甲 WAF (Shield WAF) v4.1.0
+# 🛡️ 盾甲 WAF (Shield WAF) v4.1.1
 
-[![Version](https://img.shields.io/badge/version-4.1.0-blue)](https://github.com/)
-[![PHP](https://img.shields.io/badge/PHP-7.0%2B-purple)](https://php.net/)
+[![Version](https://img.shields.io/badge/version-4.1.1-blue)](https://github.com/)
+[![PHP](https://img.shields.io/badge/PHP-7.4%2B-purple)](https://php.net/)
 [![Database](https://img.shields.io/badge/database-MySQL%20%7C%20PostgreSQL%20%7C%20SQLite%20%7C%20MSSQL-orange)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 [![Security](https://img.shields.io/badge/security-audited-red)]()
@@ -359,21 +359,27 @@ WAF_ADMIN_IPS=127.0.0.1,192.168.1.100,10.0.0.0/8
 
 ### 3. PHP 版本兼容性
 
-最低支持 PHP 7.0。已修复的兼容性问题：
+**最低支持 PHP 7.4**（推荐 7.4 或 8.x）。v4.1.1 已通过 105 个 PHP 文件全量审计：
 
 | 问题 | 影响版本 | 已修复 |
 |------|---------|--------|
+| 类常量 `??` 表达式 | PHP 8.3+ 致命错误 | ✅ 改为静态属性 + getter |
+| `str_contains`/`starts_with`/`ends_with` | PHP 8.0+ 专有 | ✅ Functions.php polyfill |
+| `array_key_first`/`last` | PHP 7.3+ 引入 | ✅ Functions.php polyfill |
 | 箭头函数 `fn()` | PHP 7.4+ 专有 | ✅ 全部改为传统 closure |
-| `str_ends_with` | PHP 8.0+ 专有 | ✅ 添加 `function_exists` 守护 |
-| `getallheaders()` | nginx/php-fpm 不存在 | ✅ 添加 `$_SERVER` 回退 |
-| `??` 合并运算符 | PHP 7.0+ | ✅ 兼容 |
-| 标量类型声明 | PHP 7.0+ | ✅ 兼容 |
+| `void` 返回类型 | PHP 7.1+ | ✅ 全部移除 |
+| `private/protected const` | PHP 7.1+ | ✅ 5 处改为 public const |
+| `getallheaders()` | nginx/php-fpm 不存在 | ✅ `$_SERVER` 回退 |
+| match/nullsafe/联合类型/mixed | PHP 8.0+ 专有 | ✅ 全部未使用 |
+| enum/readonly/never | PHP 8.1+ 专有 | ✅ 全部未使用 |
+
+完整审计报告：[SECURITY_AUDIT_REPORT.md](SECURITY_AUDIT_REPORT.md)
 
 ### 4. 部署检查清单
 
 部署后请逐项确认：
 
-- [ ] `php -v` 显示 PHP 7.0+（推荐 7.4+ 或 8.x）
+- [ ] `php -v` 显示 PHP 7.4+（推荐 7.4 或 8.x）
 - [ ] `logs/` 目录可写（`is_writable('logs/')` 返回 true）
 - [ ] `data/` 目录可写
 - [ ] 访问首页返回 200，不是 403

@@ -15,6 +15,20 @@ if (!defined('ABSPATH')) {
     define('ABSPATH', dirname(__FILE__) . '/');
 }
 
+// ====================== PHP 版本检查（v4.1.1 定格 PHP 7.4+） ======================
+if (PHP_VERSION_ID < 70400) {
+    http_response_code(500);
+    header('Content-Type: text/html; charset=utf-8');
+    die('<!DOCTYPE html><html><head><meta charset="utf-8"><title>PHP 版本不兼容</title></head>'
+        . '<body style="font-family:sans-serif;padding:40px;max-width:720px;margin:auto;color:#333">'
+        . '<h2 style="color:#c00">🛡️ 盾甲 WAF：PHP 版本不兼容</h2>'
+        . '<p>当前 PHP 版本：<b>' . PHP_VERSION . '</b></p>'
+        . '<p>盾甲 WAF v4.1.1 最低要求 <b>PHP 7.4</b>。</p>'
+        . '<p>请升级 PHP 到 7.4 或更高版本（推荐 8.x）。</p>'
+        . '<hr><p style="color:#999;font-size:12px">暗夜铭少 · Shield WAF v4.1.1</p>'
+        . '</body></html>');
+}
+
 // ====================== 配置与函数 ======================
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/src/Support/Functions.php';
