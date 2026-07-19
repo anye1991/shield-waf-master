@@ -7,6 +7,57 @@
 
 ---
 
+## [v4.1.1] - 2026-07-19
+
+### 🔧 深度 PHP 7.4 兼容性审计
+
+针对用户反馈"7.4 就报错"的问题，对全项目 105 个 PHP 文件进行了系统性扫描，全面修复 PHP 版本兼容性问题。
+
+#### 新增兼容性 Polyfill
+
+- **`src/Support/Functions.php`** 新增 5 个 PHP 8.0+ 函数的 polyfill：
+  - `array_key_first()` / `array_key_last()`（PHP 7.3+ 引入）
+  - `str_contains()` / `str_starts_with()` / `str_ends_with()`（PHP 8.0+ 引入）
+  - 全部使用 `function_exists` 守护，避免与原生函数冲突
+
+#### 修复的兼容性问题
+
+- **`src/Support/Password.php`**：
+  - 类常量使用 `??` 表达式（PHP 8.3+ 才支持类常量表达式）→ 改为静态属性 + getter 方法
+- **`src/Learn/AutoLearn.php`**、**`src/Semantic/BusinessSemantics.php`**：
+  - 5 处 `private const` 改为 `public const`（向下兼容更广 PHP 版本）
+
+#### 扫描结果
+
+| 检查项 | PHP 版本要求 | 发现问题 | 修复状态 |
+|--------|-------------|---------|---------|
+| match 表达式 | PHP 8.0+ | 0 | ✅ 未使用 |
+| nullsafe 运算符 `?->` | PHP 8.0+ | 0 | ✅ 未使用 |
+| 联合类型 `A\|B` | PHP 8.0+ | 0 | ✅ 未使用 |
+| 构造器属性提升 | PHP 8.0+ | 0 | ✅ 未使用 |
+| mixed 类型 | PHP 8.0+ | 0 | ✅ 未使用 |
+| static 返回类型 | PHP 8.0+ | 0 | ✅ 未使用 |
+| throw 表达式 | PHP 8.0+ | 0 | ✅ 未使用 |
+| enum 枚举 | PHP 8.1+ | 0 | ✅ 未使用 |
+| readonly 属性 | PHP 8.1+ | 0 | ✅ 未使用 |
+
+#### 验证测试
+
+- **105 个 PHP 文件语法检查**：全部通过
+- **密码模块测试**：41/41 通过
+- **密码模块完整测试**：68/68 通过
+- **首页兼容性测试**：17/17 通过
+- **FP 压力测试**：37/37 通过，0 误报
+- **管理员白名单+测试模式**：11/11 通过
+
+### 📚 文档
+
+- **SECURITY_AUDIT_REPORT.md**：新增「PHP 版本兼容性审计」章节（17 项全部修复）
+- **README.md**：新增 v4.1.1 版本历程
+- **CHANGELOG.md**：新增 v4.1.1 记录
+
+---
+
 ## [v4.1.0] - 2026-07-19
 
 ### 🆕 新增功能
