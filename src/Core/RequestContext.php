@@ -62,15 +62,37 @@ class RequestContext
         // 常见API端点（支付/登录相关）
         'api/pay', 'api/order', 'api/callback', 'api/notify',
         'api/login', 'api/auth',
+        // WordPress 特有端点
+        'wp-json', 'xmlrpc', 'xmlrpc.php', 'wp-cron', 'admin-ajax',
+        'ajax', 'async-upload', 'asyncupload', 'upload-attachment',
+        // Elementor 页面构建器
+        'elementor', 'elementor_ajax',
+        // Divi 页面构建器
+        'et_pb_contact_form_submit', 'divi',
+        // 社交媒体登录
+        'facebook', 'google', 'twitter', 'github', 'qq', 'weibo',
+        'social-login', 'social_login',
     ];
 
     /** @var array 敏感输入场景路径关键字 */
     private static $softSkipPaths = [
+        // 评论/评价
         'comment', 'comments', 'review', 'reviews',
+        // 搜索
         'search', 's', 'q', 'keyword',
-        'forum', 'post', 'thread', 'reply',
-        'edit', 'draft', 'publish',
-        'message', 'chat', 'mail',
+        // 论坛/社区
+        'forum', 'post', 'thread', 'reply', 'topic', 'board',
+        // 编辑/发布
+        'edit', 'draft', 'publish', 'compose',
+        // 消息/聊天
+        'message', 'chat', 'mail', 'inbox', 'conversation',
+        // 用户内容
+        'profile', 'user-profile', 'member', 'members',
+        // 下载/资源
+        'download', 'attachment', 'file',
+        // 更多页面构建器
+        'avada', 'visual_composer', 'beaver_builder', 'fl-builder',
+        'oxygen', 'wpbakery',
     ];
 
     /**
@@ -184,12 +206,14 @@ class RequestContext
             if (strpos($lower, '/' . $kw . '/') === 0) {
                 return true;
             }
-            // 3. .php 文件名匹配 /wp-login.php /wp-comments-post.php
+            // 3. .php 文件名匹配 /wp-login.php /wp-comments-post.php /async-upload.php
             //    关键字可能带连字符前缀：comments → wp-comments-post.php
             if (substr($lower, -4) === '.php') {
                 $basename = basename($lower);
                 // 移除 .php 后缀
                 $stem = substr($basename, 0, -4);
+                // 直接匹配 stem 本身（如 async-upload）
+                if ($stem === $kw) return true;
                 // 按连字符/点拆分 stem
                 $parts = preg_split('/[-_.]/', $stem);
                 foreach ($parts as $p) {

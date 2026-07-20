@@ -2,20 +2,46 @@
 defined('ABSPATH') || exit;
 
 class SecurityHeaders {
+    // 主流 CDN 域名白名单（脚本/样式/字体通用）
+    private static $cdnHosts = [
+        // 国内 CDN
+        'https://cdn.jsdelivr.net', 'https://cdn.staticfile.org',
+        'https://at.alicdn.com', 'https://lib.baomitu.com',
+        'https://res.wx.qq.com', 'https://gw.alipayobjects.com',
+        'https://img.alicdn.com',
+        // Google
+        'https://fonts.googleapis.com', 'https://fonts.gstatic.com',
+        'https://www.google.com', 'https://www.google-analytics.com',
+        'https://www.googletagmanager.com', 'https://ajax.googleapis.com',
+        'https://maps.googleapis.com', 'https://translate.googleapis.com',
+        // jQuery / Bootstrap / Font Awesome
+        'https://code.jquery.com', 'https://maxcdn.bootstrapcdn.com',
+        'https://use.fontawesome.com', 'https://cdnjs.cloudflare.com',
+        'https://unpkg.com',
+        // 百度
+        'https://hm.baidu.com', 'https://api.map.baidu.com',
+        'https://api.t.map.baidu.com',
+        // Cloudflare
+        'https://cdnjs.cloudflare.com',
+        // 微信
+        'https://res.wx.qq.com', 'https://mp.weixin.qq.com',
+        'https://open.weixin.qq.com',
+        // 社交
+        'https://connect.facebook.net', 'https://platform.twitter.com',
+        'https://platform.linkedin.com',
+    ];
+
     private static $defaultCsp = [
         'default-src' => ["'self'"],
-        'script-src' => ["'self'", "'unsafe-inline'", "'unsafe-eval'", 'https://cdn.jsdelivr.net', 'https://cdn.staticfile.org'],
-        'style-src' => ["'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net', 'https://cdn.staticfile.org'],
+        'script-src' => ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        'style-src' => ["'self'", "'unsafe-inline'"],
         'img-src' => ["'self'", 'data:', 'blob:', '*'],
-        'font-src' => ["'self'", 'data:', 'https://cdn.jsdelivr.net', 'https://cdn.staticfile.org', 'https://at.alicdn.com'],
+        'font-src' => ["'self'", 'data:'],
         'connect-src' => ["'self'", '*'],
         'object-src' => ["'none'"],
         'base-uri' => ["'self'"],
-        // form-action 放宽为 *，允许表单提交到支付网关、OAuth 回调等第三方域名
         'form-action' => ['*'],
         'frame-ancestors' => ["'self'"],
-        // 移除 upgrade-insecure-requests：老网站可能还有 HTTP 图片资源，强制升级会导致 404
-        // 'upgrade-insecure-requests' => [],
     ];
 
     private static $defaultPermissions = [
@@ -81,6 +107,16 @@ class SecurityHeaders {
         $cspConfig = self::getConfig('SHIELD_WAF_CSP', []);
         if (!is_array($cspConfig)) $cspConfig = [];
         $csp = array_merge_recursive($csp, $cspConfig);
+
+        // 自动将 CDN 域名添加到 script-src、style-src 和 font-src
+        foreach (['script-src', 'style-src', 'font-src'] as $directive) {
+            if (!isset($csp[$directive])) $csp[$directive] = [];
+            foreach (self::$cdnHosts as $host) {
+                if (!in_array($host, $csp[$directive], true)) {
+                    $csp[$directive][] = $host;
+                }
+            }
+        }
 
         // 构造 CSP 字符串
         $cspString = '';
