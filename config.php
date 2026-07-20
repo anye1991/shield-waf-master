@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 }
 
 // ======================== 版本号 ========================
-define('SHIELD_WAF_VERSION', '4.1.1');
+define('SHIELD_WAF_VERSION', '4.2.0');
 
 // ======================== 简易 .env 加载（带白名单） ========================
 function waf_load_env($dir) {
