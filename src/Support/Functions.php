@@ -80,7 +80,7 @@ function waf_block($msg = '') {
             @mkdir(WAF_LOG_PATH, 0775, true);
         }
         if (is_dir(WAF_LOG_PATH) && is_writable(WAF_LOG_PATH)) {
-            $logFile = WAF_LOG_PATH . 'block_' . date('Y-m-d') . '.log';
+            $logFile = WAF_LOG_PATH . '/block_' . date('Y-m-d') . '.log';
             $written = (@file_put_contents($logFile, $log_line, FILE_APPEND | LOCK_EX) !== false);
             // 兜底：单文件不可写时改权限
             if (!$written && is_file($logFile)) {

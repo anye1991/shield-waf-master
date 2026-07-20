@@ -29,7 +29,7 @@ if ($method === 'POST' && in_array($action, $writeActions)) {
 }
 
 $ip = waf_get_real_ip();
-$cache_file = WAF_LOG_PATH . 'dashboard_api_rate';
+$cache_file = WAF_LOG_PATH . '/dashboard_api_rate';
 $prev = is_file($cache_file) ? json_decode(file_get_contents($cache_file), true) : null;
 $now = microtime(true);
 if ($prev && $prev['ip'] === $ip && ($now - $prev['time']) < 1.0) {
@@ -175,7 +175,7 @@ switch ($action) {
         }
 
     default:
-        $cacheFile = WAF_LOG_PATH . 'dashboard_cache.json';
+        $cacheFile = WAF_LOG_PATH . '/dashboard_cache.json';
         if (is_file($cacheFile) && time() - filemtime($cacheFile) < WAF_STATS_CACHE_SEC) {
             $json = file_get_contents($cacheFile);
             echo $json;
@@ -192,7 +192,7 @@ switch ($action) {
     // ====================== 沙箱↔AutoLearn 联动信息 ======================
     case 'learn_coupling':
         // 沙箱事件回流的高危 IP 列表
-        $blacklistFile = WAF_LOG_PATH . 'sandbox_blacklist.json';
+        $blacklistFile = WAF_LOG_PATH . '/sandbox_blacklist.json';
         $blacklist = is_file($blacklistFile) ? json_decode(file_get_contents($blacklistFile), true) : ['ips' => [], 'total_events' => 0];
         // 只返回最近 20 条高危 IP，按 last_seen 倒序
         $ips = $blacklist['ips'] ?? [];
@@ -491,7 +491,7 @@ switch ($action) {
         }
         $files = ['learned_patterns.json', 'attack_stats.json', 'weight_adjustments.json', 'feedback_log.json', 'normal_patterns.json'];
         foreach ($files as $f) {
-            $path = WAF_LOG_PATH . $f;
+            $path = WAF_LOG_PATH . '/' . $f;
             if (is_file($path)) @unlink($path);
         }
         exit(json_encode(['success' => true, 'message' => '学习数据已重置']));
@@ -527,7 +527,7 @@ switch ($action) {
         if ($pattern === '') {
             exit(json_encode(['success' => false, 'message' => 'pattern 不能为空']));
         }
-        $file = WAF_LOG_PATH . 'learned_patterns.json';
+        $file = WAF_LOG_PATH . '/learned_patterns.json';
         $data = is_file($file) ? json_decode(file_get_contents($file), true) : null;
         if (!is_array($data) || !isset($data['rules'])) {
             exit(json_encode(['success' => false, 'message' => '学习规则文件不存在']));

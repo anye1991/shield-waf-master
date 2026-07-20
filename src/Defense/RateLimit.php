@@ -69,13 +69,31 @@ function waf_cc_check_file($ip) {
     $now = time();
     $file = WAF_CC_LOG;
 
-    $fp = fopen($file, 'c+');
-    if (!$fp) {
-        // fail-closed：无法确定时拦截更安全
-        if (defined('WAF_DEBUG') && WAF_DEBUG) {
-            error_log('ShieldWAF RateLimit: cannot open cc log file: ' . $file);
+    // 确保日志目录存在（防止部署环境 logs 目录未创建导致 fopen 失败）
+    if (defined('WAF_LOG_PATH') && WAF_LOG_PATH) {
+        if (!is_dir(WAF_LOG_PATH)) {
+            @mkdir(WAF_LOG_PATH, 0775, true);
         }
-        return false;
+        // 若主目录仍不可写，降级到 /tmp 兜底（fail-open：不影响访问）
+        if (is_dir(WAF_LOG_PATH) && !is_writable(WAF_LOG_PATH)) {
+            $file = '/tmp/shield_waf_cc_counter.txt';
+        }
+    }
+
+    $fp = @fopen($file, 'c+');
+    if (!$fp) {
+        // 兜底：再尝试 /tmp
+        if ($file !== '/tmp/shield_waf_cc_counter.txt') {
+            $file = '/tmp/shield_waf_cc_counter.txt';
+            $fp = @fopen($file, 'c+');
+        }
+        if (!$fp) {
+            // fail-closed：无法确定时拦截更安全
+            if (defined('WAF_DEBUG') && WAF_DEBUG) {
+                error_log('ShieldWAF RateLimit: cannot open cc log file: ' . $file);
+            }
+            return false;
+        }
     }
 
     flock($fp, LOCK_EX);

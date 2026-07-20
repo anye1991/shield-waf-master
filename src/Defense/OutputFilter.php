@@ -86,7 +86,7 @@ function waf_error_masking_log($buffer, $matchedPattern) {
 
     waf_ensure_dir(WAF_LOG_PATH);
 
-    $logFile = WAF_LOG_PATH . 'error_masking_' . date('Y-m-d') . '.log';
+    $logFile = WAF_LOG_PATH . '/error_masking_' . date('Y-m-d') . '.log';
     $logData = [
         'time' => date('Y-m-d H:i:s'),
         'ip' => waf_get_real_ip(),

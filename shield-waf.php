@@ -387,7 +387,7 @@ if ($requestPath === '/waf-password-api') {
 // ====================== 登录页暴力破解防护（固定文件，无跨小时边界问题） ======================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && strpos($requestPath, 'wp-login.php') !== false) {
     $login_ip = waf_get_real_ip();
-    $login_file = WAF_LOG_PATH . 'login_attempt.txt';
+    $login_file = WAF_LOG_PATH . '/login_attempt.txt';
     $now = time();
     $window = 300; // 5 分钟窗口
     $limit = 10;   // 最多 10 次 POST 尝试

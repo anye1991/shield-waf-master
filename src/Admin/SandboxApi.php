@@ -125,7 +125,7 @@ try {
             break;
 
         case 'scan-history':
-            $historyFile = WAF_LOG_PATH . 'sandbox/scan_history.json';
+            $historyFile = WAF_LOG_PATH . '/sandbox/scan_history.json';
             $history = is_file($historyFile) ? json_decode(file_get_contents($historyFile), true) : [];
             echo json_encode(['success' => true, 'history' => $history], JSON_UNESCAPED_UNICODE);
             break;
@@ -317,6 +317,6 @@ try {
         @mkdir(WAF_LOG_PATH, 0700, true);
     }
     $logMsg = '[' . date('Y-m-d H:i:s') . '] [' . waf_get_real_ip() . '] ' . $e->getMessage() . "\n";
-    @file_put_contents(WAF_LOG_PATH . 'api_error.log', $logMsg, FILE_APPEND);
+    @file_put_contents(WAF_LOG_PATH . '/api_error.log', $logMsg, FILE_APPEND);
     echo json_encode(['error' => 'Internal server error'], JSON_UNESCAPED_UNICODE);
 }

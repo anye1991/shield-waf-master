@@ -107,7 +107,7 @@ class WafSandbox {
         // 计算 WAF 自身根目录（src/Admin/ 往上两级）
         self::$waf_root_dir = realpath(dirname(__DIR__, 2));
 
-        $sandboxDir = WAF_LOG_PATH . 'sandbox/';
+        $sandboxDir = WAF_LOG_PATH . '/sandbox/';
         waf_ensure_dir($sandboxDir);
 
         self::$log_file          = $sandboxDir . 'sandbox.log';
@@ -118,7 +118,7 @@ class WafSandbox {
         self::$baseline_file      = $sandboxDir . 'baseline.json';
         self::$baseline_meta_file = $sandboxDir . 'baseline_meta.json';
         self::$quarantine_dir    = defined('WAF_SANDBOX_QUARANTINE_DIR')
-            ? WAF_SANDBOX_QUARANTINE_DIR : WAF_LOG_PATH . 'quarantine/';
+            ? WAF_SANDBOX_QUARANTINE_DIR : WAF_LOG_PATH . '/quarantine/';
         self::$manifest_file      = self::$quarantine_dir . 'manifest.json';
 
         waf_ensure_dir(self::$quarantine_dir);

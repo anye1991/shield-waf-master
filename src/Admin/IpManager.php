@@ -18,7 +18,7 @@ function waf_is_banned() {
     // 管理员白名单 IP 不受封禁检查
     if (waf_is_admin_ip()) return false;
 
-    $files = [WAF_LOG_PATH . 'ban.txt'];
+    $files = [WAF_LOG_PATH . '/ban.txt'];
     // 兜底：当主 ban.txt 不存在或不可读时，尝试 /tmp 后备
     if (!is_file($files[0]) || !is_readable($files[0])) {
         $files[] = '/tmp/shield_waf_ban.txt';
@@ -53,7 +53,7 @@ function waf_ban($ip, $sec = 86400) {
 
     // 测试模式：只记录到 test_mode_ban.log，不实际封禁
     if (defined('WAF_TEST_MODE') && WAF_TEST_MODE) {
-        $testLogFile = WAF_LOG_PATH . 'test_mode_ban.log';
+        $testLogFile = WAF_LOG_PATH . '/test_mode_ban.log';
         $testWritten = false;
         if (is_dir(WAF_LOG_PATH) && is_writable(WAF_LOG_PATH)) {
             $testWritten = (@file_put_contents($testLogFile, '[TEST_MODE] ' . $log_line, FILE_APPEND | LOCK_EX) !== false);
@@ -73,7 +73,7 @@ function waf_ban($ip, $sec = 86400) {
             @mkdir(WAF_LOG_PATH, 0775, true);
         }
         if (is_dir(WAF_LOG_PATH) && is_writable(WAF_LOG_PATH)) {
-            $banFile = WAF_LOG_PATH . 'ban.txt';
+            $banFile = WAF_LOG_PATH . '/ban.txt';
             $written = (@file_put_contents($banFile, $line, FILE_APPEND | LOCK_EX) !== false);
             if (!$written && is_file($banFile)) {
                 @chmod($banFile, 0664);
@@ -95,7 +95,7 @@ function waf_ban($ip, $sec = 86400) {
  * 随机或定期调用即可
  */
 function waf_clean_ban_file() {
-    $file = WAF_LOG_PATH . 'ban.txt';
+    $file = WAF_LOG_PATH . '/ban.txt';
     if (!is_file($file)) return;
     $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     $now   = time();
@@ -117,7 +117,7 @@ function waf_clean_ban_file() {
 }
 
 function waf_unban($ip) {
-    $file = WAF_LOG_PATH . 'ban.txt';
+    $file = WAF_LOG_PATH . '/ban.txt';
     if (!is_file($file)) return;
     $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     $new   = [];
@@ -134,7 +134,7 @@ function waf_unban($ip) {
 }
 
 function waf_get_banned_ips() {
-    $file = WAF_LOG_PATH . 'ban.txt';
+    $file = WAF_LOG_PATH . '/ban.txt';
     if (!is_file($file)) return [];
     $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     $now   = time();
@@ -294,7 +294,7 @@ function waf_get_admin_ips() {
 // ====================== 暴力尝试计数器 ======================
 
 function waf_attempt_file($type) {
-    return WAF_LOG_PATH . "attempt_{$type}.txt";
+    return WAF_LOG_PATH . "/attempt_{$type}.txt";
 }
 
 function waf_attempt_clean($type) {
@@ -381,7 +381,7 @@ function waf_attempt_reset($type) {
  * 获取某个 IP 在 ban.txt 中出现的总次数（历史记录，含已过期但未清理的）
  */
 function waf_get_ban_history_count($ip) {
-    $file = WAF_LOG_PATH . 'ban.txt';
+    $file = WAF_LOG_PATH . '/ban.txt';
     if (!is_file($file)) return 0;
     $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     $count = 0;
@@ -421,7 +421,7 @@ function waf_smart_ban($ip) {
                     ' | history: ' . waf_get_ban_history_count($ip) .
                     ' | TEST_MODE skipped actual ban' . "\n";
         if (is_dir(WAF_LOG_PATH) && is_writable(WAF_LOG_PATH)) {
-            @file_put_contents(WAF_LOG_PATH . 'test_mode_ban.log', $log_line, FILE_APPEND | LOCK_EX);
+            @file_put_contents(WAF_LOG_PATH . '/test_mode_ban.log', $log_line, FILE_APPEND | LOCK_EX);
         } else {
             error_log('[ShieldWAF][TEST_MODE][smart_ban] ' . rtrim($log_line));
         }

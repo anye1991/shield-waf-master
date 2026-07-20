@@ -37,11 +37,11 @@ class AutoLearn {
 
     public static function init() {
         if (self::$patterns_file !== null) return;
-        self::$patterns_file = WAF_LOG_PATH . 'learned_patterns.json';
-        self::$stats_file   = WAF_LOG_PATH . 'attack_stats.json';
-        self::$weights_file = WAF_LOG_PATH . 'weight_adjustments.json';
-        self::$feedback_file = WAF_LOG_PATH . 'feedback_log.json';
-        self::$normal_file  = WAF_LOG_PATH . 'normal_patterns.json';
+        self::$patterns_file = WAF_LOG_PATH . '/learned_patterns.json';
+        self::$stats_file   = WAF_LOG_PATH . '/attack_stats.json';
+        self::$weights_file = WAF_LOG_PATH . '/weight_adjustments.json';
+        self::$feedback_file = WAF_LOG_PATH . '/feedback_log.json';
+        self::$normal_file  = WAF_LOG_PATH . '/normal_patterns.json';
     }
 
     // ====================== 攻击载荷记录 ======================
@@ -424,7 +424,7 @@ class AutoLearn {
         self::init();
         if (!is_dir(WAF_LOG_PATH)) mkdir(WAF_LOG_PATH, 0700, true);
 
-        $file = WAF_LOG_PATH . 'sandbox_blacklist.json';
+        $file = WAF_LOG_PATH . '/sandbox_blacklist.json';
         $data = waf_safe_read_json($file, ['ips' => [], 'total_events' => 0]);
 
         if (!isset($data['ips'][$ip])) {
@@ -480,7 +480,7 @@ class AutoLearn {
         if ($ip === '' || !filter_var($ip, FILTER_VALIDATE_IP)) return 0.0;
         self::init();
 
-        $file = WAF_LOG_PATH . 'sandbox_blacklist.json';
+        $file = WAF_LOG_PATH . '/sandbox_blacklist.json';
         $data = waf_safe_read_json($file, ['ips' => []]);
         if (!isset($data['ips'][$ip])) return 0.0;
 
@@ -555,7 +555,7 @@ class AutoLearn {
      */
     public static function freezeBaseline(string $reason = 'sandbox_lock'): array {
         self::init();
-        $file = WAF_LOG_PATH . 'baseline_freeze.json';
+        $file = WAF_LOG_PATH . '/baseline_freeze.json';
         $data = waf_safe_read_json($file, ['frozen' => false]);
 
         $data = [
@@ -574,7 +574,7 @@ class AutoLearn {
      */
     public static function unfreezeBaseline(): array {
         self::init();
-        $file = WAF_LOG_PATH . 'baseline_freeze.json';
+        $file = WAF_LOG_PATH . '/baseline_freeze.json';
         $data = ['frozen' => false, 'unfrozen_at' => time()];
         waf_safe_write_json($file, $data);
         return $data;
@@ -585,7 +585,7 @@ class AutoLearn {
      */
     public static function isBaselineFrozen(): bool {
         self::init();
-        $file = WAF_LOG_PATH . 'baseline_freeze.json';
+        $file = WAF_LOG_PATH . '/baseline_freeze.json';
         $data = waf_safe_read_json($file, ['frozen' => false]);
         return !empty($data['frozen']);
     }
