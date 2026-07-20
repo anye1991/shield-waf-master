@@ -62,9 +62,18 @@ class RequestContext
         // 常见API端点（支付/登录相关）
         'api/pay', 'api/order', 'api/callback', 'api/notify',
         'api/login', 'api/auth',
-        // WordPress 特有端点
-        'wp-json', 'xmlrpc', 'xmlrpc.php', 'wp-cron', 'admin-ajax',
-        'ajax', 'async-upload', 'asyncupload', 'upload-attachment',
+        // WordPress 核心端点（前台访问，非 /wp-admin 后台路径）
+        'wp-json', 'xmlrpc', 'xmlrpc.php', 'wp-cron', 'wp-cron.php',
+        'admin-ajax', 'ajax', 'async-upload', 'asyncupload', 'upload-attachment',
+        // WordPress 前端核心文件
+        'wp-comments-post.php', 'wp-links-opml.php', 'wp-trackback.php',
+        'wp-activate.php', 'wp-signup.php', 'wp-mail.php', 'wp-feed.php',
+        'wp-robots.php', 'wp-app.php', 'wp-links-opml.php',
+        // WordPress 后台 AJAX（完整路径）
+        'wp-admin/admin-ajax.php', 'wp-admin/admin-post.php',
+        'wp-admin/customize.php', 'wp-admin/media-new.php',
+        // WordPress REST API 自定义路由
+        'wp/v2/', 'wp/v3/', 'wp/v4/',
         // Elementor 页面构建器
         'elementor', 'elementor_ajax',
         // Divi 页面构建器
