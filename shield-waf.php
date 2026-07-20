@@ -52,6 +52,7 @@ if (!is_writable($wafLogDir)) {
 // ====================== 配置与函数 ======================
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/src/Support/Functions.php';
+require_once __DIR__ . '/src/Core/RequestContext.php';
 
 // ====================== 静态资源请求快速放行（避免图片/CSS/JS 被 WAF 误拦截） ======================
 function waf_is_static_request() {
@@ -113,7 +114,13 @@ if (waf_is_static_request()) {
     return;
 }
 
-// ====================== 登录页面检测 ======================
+// ====================== 请求场景识别（通用性设计） ======================
+// 识别登录/支付回调/搜索/评论等业务核心路径，据此调整检测策略
+// $isHardSkip  = 高可信场景（登录POST/支付回调）→ 跳过特征检测，仅保留基础防护
+// $isSoftSkip  = 敏感输入场景（评论/搜索）→ 跳过黑名单关键字检测，保留结构化检测
+// $isLoginPage = 登录页面（兼容旧逻辑，同时覆盖 GET 显示登录页场景）
+$isHardSkip  = RequestContext::isHardSkip();
+$isSoftSkip  = RequestContext::isSoftSkip();
 $isLoginPage = waf_is_login_page();
 
 // ====================== WebSocket 阻断 ======================
@@ -199,7 +206,7 @@ if (($botResult['category'] ?? '') === 'search_engine' && ($botResult['confidenc
     $isVerifiedSearchEngine = true;
 }
 
-if ($botResult['action'] === 'block' && !$isLoginPage) {
+if ($botResult['action'] === 'block' && !$isHardSkip) {
     waf_block('Malicious bot detected - ' . ($botResult['reason'] ?? ''));
 }
 
@@ -228,7 +235,7 @@ if (!empty($body) && !empty($contentType)) {
         'text/xml',
         '',
     ];
-    if (!in_array($type_clean, $valid_types) && !$isLoginPage) {
+    if (!in_array($type_clean, $valid_types) && !$isHardSkip) {
         waf_block('不允许的 Content-Type: ' . $type_clean);
     }
 
@@ -240,7 +247,7 @@ if (!empty($body) && !empty($contentType)) {
 }
 
 // ====================== HTTP 参数污染检测 ======================
-if (!empty($_SERVER['QUERY_STRING']) && !$isLoginPage) {
+if (!empty($_SERVER['QUERY_STRING']) && !$isHardSkip) {
     parse_str($_SERVER['QUERY_STRING'], $query_params);
     $seen = [];
     foreach (explode('&', $_SERVER['QUERY_STRING']) as $pair) {
@@ -255,18 +262,18 @@ if (!empty($_SERVER['QUERY_STRING']) && !$isLoginPage) {
 
 // ====================== GraphQL 注入检测 ======================
 require_once __DIR__ . '/src/Defense/GraphQLDefender.php';
-if (!$isLoginPage) {
+if (!$isHardSkip) {
     GraphQLDefender::check();
 }
 
 // ====================== 高级防护模块 ======================
 require_once __DIR__ . '/src/Defense/SsrfDefender.php';
-if (!$isLoginPage) {
+if (!$isHardSkip) {
     SsrfDefender::check();
 }
 
 require_once __DIR__ . '/src/Defense/NoSqlInjection.php';
-if (!$isLoginPage) {
+if (!$isHardSkip) {
     NoSqlInjection::check();
 }
 
@@ -274,27 +281,27 @@ require_once __DIR__ . '/src/Defense/RequestSmuggling.php';
 RequestSmuggling::check();
 
 require_once __DIR__ . '/src/Defense/JwtSecurity.php';
-if (!$isLoginPage) {
+if (!$isHardSkip) {
     JwtSecurity::check();
 }
 
 require_once __DIR__ . '/src/Defense/TemplateInjection.php';
-if (!$isLoginPage) {
+if (!$isHardSkip) {
     TemplateInjection::check();
 }
 
 require_once __DIR__ . '/src/Defense/ApiSecurity.php';
-if (!$isLoginPage) {
+if (!$isHardSkip) {
     ApiSecurity::check();
 }
 
 require_once __DIR__ . '/src/Defense/CrlfInjection.php';
-if (!$isLoginPage) {
+if (!$isHardSkip) {
     CrlfInjection::check();
 }
 
 require_once __DIR__ . '/src/Defense/CachePoisoning.php';
-if (!$isLoginPage) {
+if (!$isHardSkip) {
     CachePoisoning::check();
 }
 
@@ -311,8 +318,9 @@ require_once __DIR__ . '/src/Defense/RaceCondition.php';
 
 $waf_inputs = array_merge($_GET, $_POST, $_COOKIE);
 
-// 登录页面：跳过基于输入的注入检测（密码字段含特殊字符易误判，多用户网站登录必须正常）
-if (!$isLoginPage) {
+// 高可信场景（登录/支付回调等）：跳过基于输入的注入检测
+// 敏感输入场景（评论/搜索等）：也跳过这些黑名单关键字检测（密码/富文本易误判）
+if (!RequestContext::shouldSkipSignature()) {
     $ldapResult = LdapInjection::detect($waf_inputs);
     if ($ldapResult['detected']) {
         waf_block('LDAP Injection attack detected - ' . json_encode($ldapResult['details']));
@@ -344,7 +352,7 @@ if (!$isLoginPage) {
     }
 }
 
-// Session 相关检测保留（登录页面也需要防会话固定/劫持）
+// Session 相关检测保留（所有场景都需要防会话固定/劫持）
 $sfResult = SessionFixation::detect();
 if ($sfResult['detected']) {
     waf_block('Session Fixation attack detected - ' . json_encode($sfResult['details']));
@@ -356,8 +364,8 @@ if ($shResult['detected']) {
 }
 
 $orResult = OpenRedirect::detect($waf_inputs);
-// 登录页面的 redirect_to 参数不拦截（多用户网站正常跳转）
-if ($orResult['detected'] && !$isLoginPage) {
+// 高可信场景（登录/支付回调）的 redirect_to 参数不拦截
+if ($orResult['detected'] && !$isHardSkip) {
     waf_block('Open Redirect attack detected - ' . json_encode($orResult['details']));
 }
 
@@ -400,16 +408,16 @@ if ($isVerifiedSearchEngine) {
 }
 
 if ($detectorIsAttack || $scorerIsAttack) {
-    // 登录页面：只记录日志，不拦截（多用户网站前台登录必须正常）
-    // 但极端高危攻击（score >= 95）仍然拦截，防止登录页被利用
+    // 高可信场景（登录/支付回调）：只记录日志，不拦截（业务核心流程必须正常）
+    // 但极端高危攻击（score >= 95）仍然拦截，防止业务页被利用
     $maxScore = max($attackResult['total_score'], $scorerResult['total_score']);
-    if ($isLoginPage && $maxScore < 95) {
+    if ($isHardSkip && $maxScore < 95) {
         // 记录但不拦截
-        $logMsg = sprintf('[LOGIN_PAGE_ALLOW] %s | score=%.1f | uri=%s',
+        $logMsg = sprintf('[TRUSTED_PATH_ALLOW] %s | score=%.1f | uri=%s',
             date('Y-m-d H:i:s'), $maxScore, $uri);
         error_log('[ShieldWAF] ' . $logMsg);
     } else {
-        // 非登录页面或高危攻击：正常拦截
+        // 非高可信场景或高危攻击：正常拦截
         AutoLearn::recordAttack($all, $attackResult);
         waf_smart_ban(waf_get_real_ip());
         $riskInfo = sprintf(

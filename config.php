@@ -196,6 +196,25 @@ define('WAF_DB_DEBUG',            getenv('WAF_DB_DEBUG')            !== false ? 
 define('SHIELD_WAF_CSP',                getenv('SHIELD_WAF_CSP')                !== false ? getenv('SHIELD_WAF_CSP')                : '');
 define('SHIELD_WAF_PERMISSIONS_POLICY', getenv('SHIELD_WAF_PERMISSIONS_POLICY') !== false ? getenv('SHIELD_WAF_PERMISSIONS_POLICY') : '');
 
+// ======================== 场景白名单（通用性配置） ========================
+// WAF 通过路径关键字自动识别请求场景，对登录/支付回调/搜索/评论等业务核心路径
+// 跳过特征检测（CSRF/Bot/注入正则等），仅保留速率限制、IP封禁、Session防护等基础安全。
+// 这样既能防护攻击，又不会误伤任何 PHP 应用的正常业务流程。
+//
+// 1) 高可信路径（HARD_SKIP）：POST 表单本身是业务核心，任何特征拦截都会误伤
+//    默认已覆盖：login/signin/register/auth/my-account/payment/callback/checkout
+//                alipay/wechat/paypal/stripe/oauth/webhook 等
+//    如需追加，在此数组中添加路径关键字（不区分大小写，支持前缀匹配）
+if (!defined('WAF_TRUSTED_PATHS')) {
+    define('WAF_TRUSTED_PATHS', []);
+}
+// 2) 敏感输入路径（SOFT_SKIP）：含富文本/搜索词，跳过黑名单关键字检测但保留结构化检测
+//    默认已覆盖：comment/search/forum/post/reply/edit 等
+//    如需追加，在此数组中添加路径关键字
+if (!defined('WAF_SOFTSKIP_PATHS')) {
+    define('WAF_SOFTSKIP_PATHS', []);
+}
+
 // ======================== 机器人检测 ========================
 // 是否通过 DNS 反向解析验证搜索引擎蜘蛛真实性（最可靠，但每次请求增加一次DNS查询）
 // false = 仅通过 UA + 头特征验证（默认，零延迟）
