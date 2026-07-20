@@ -61,7 +61,10 @@ waf_load_env(__DIR__);
 
 // ======================== 日志与存储路径（提前定义，供密钥自动生成使用） ========================
 // 注意：末尾不带斜杠，拼接时统一加 /xxx
-define('WAF_LOG_PATH',          __DIR__ . '/logs');
+// 允许外部（shield-waf.php）在加载 config.php 之前预定义，实现 /tmp 自动降级
+if (!defined('WAF_LOG_PATH')) {
+    define('WAF_LOG_PATH', __DIR__ . '/logs');
+}
 
 // ======================== 密钥自动生成 ========================
 function waf_generate_random_key($length = 32) {

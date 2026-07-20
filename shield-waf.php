@@ -29,29 +29,44 @@ if (PHP_VERSION_ID < 70400) {
         . '</body></html>');
 }
 
+// ====================== 日志目录自动权限 + /tmp 降级（无需手动 chown） ======================
+$wafLogDir = __DIR__ . '/logs';
+if (!is_dir($wafLogDir)) {
+    @mkdir($wafLogDir, 0777, true);
+}
+if (is_dir($wafLogDir) && !is_writable($wafLogDir)) {
+    @chmod($wafLogDir, 0777);
+}
+// 仍不可写时预定义 WAF_LOG_PATH 为 /tmp（config.php 中会跳过重复定义）
+if (!is_writable($wafLogDir)) {
+    $fallback = '/tmp/shield_waf_logs';
+    if (!is_dir($fallback)) {
+        @mkdir($fallback, 0777, true);
+    }
+    if (is_dir($fallback) && is_writable($fallback)) {
+        define('WAF_LOG_PATH', $fallback);
+        error_log(sprintf('[ShieldWAF] 日志目录 %s 不可写，已自动降级到 %s', $wafLogDir, $fallback));
+    }
+}
+
 // ====================== 配置与函数 ======================
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/src/Support/Functions.php';
 
-// ====================== 日志目录可写性检测（首次部署诊断） ======================
-// 现象：用户看到首页403但 logs/ 下没有任何 block_*.log 文件
-// 根因：logs/ 目录属主 root + 权限 755，nginx/php-fpm 以 www-data 运行无写权限
-// 修复：启动时主动尝试 mkdir + chmod，失败则通过 PHP error_log 通知部署者
-if (defined('WAF_LOG_PATH') && WAF_LOG_PATH) {
-    if (!is_dir(WAF_LOG_PATH)) {
-        @mkdir(WAF_LOG_PATH, 0775, true);
+// ====================== 静态资源请求快速放行（避免图片/CSS/JS 被 WAF 误拦截） ======================
+function waf_is_static_request() {
+    $uri = $_SERVER['REQUEST_URI'] ?? '/';
+    $path = parse_url($uri, PHP_URL_PATH) ?: '/';
+    $staticExts = ['.jpg','.jpeg','.png','.gif','.webp','.svg','.ico','.avif','.apng',
+                   '.css','.js','.woff','.woff2','.ttf','.eot','.otf',
+                   '.mp3','.mp4','.webm','.pdf','.zip','.map'];
+    $lower = strtolower($path);
+    foreach ($staticExts as $ext) {
+        if (substr($lower, -strlen($ext)) === $ext) return true;
     }
-    if (is_dir(WAF_LOG_PATH) && !is_writable(WAF_LOG_PATH)) {
-        // 尝试改权限（仅当属主是当前进程用户时才能生效）
-        @chmod(WAF_LOG_PATH, 0775);
-    }
-    // 仍不可写时记录到 PHP error_log（部署者能从 php-fpm/nginx error log 看到）
-    if (!is_writable(WAF_LOG_PATH)) {
-        error_log(sprintf(
-            '[ShieldWAF] 警告：日志目录 %s 不可写，请执行：chmod -R 0775 %s && chown -R www-data:www-data %s',
-            WAF_LOG_PATH, WAF_LOG_PATH, dirname(WAF_LOG_PATH)
-        ));
-    }
+    // WordPress 图片 resize 路径（如 /wp-content/uploads/2024/01/image-300x200.jpg）
+    if (strpos($lower, '/wp-content/uploads/') !== false) return true;
+    return false;
 }
 
 // ====================== 一次性读取原始请求体（限制大小防OOM） ======================
@@ -63,6 +78,11 @@ if (!defined('WAF_RAW_BODY')) {
 // ====================== 安全响应头 ======================
 require_once __DIR__ . '/src/Defense/SecurityHeaders.php';
 SecurityHeaders::apply();
+
+// 静态资源：已应用安全响应头，直接放行，不做任何 WAF 检测
+if (waf_is_static_request()) {
+    return;
+}
 
 // ====================== WebSocket 阻断 ======================
 require_once __DIR__ . '/src/Defense/WebSocketBlock.php';

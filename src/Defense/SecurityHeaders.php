@@ -6,7 +6,7 @@ class SecurityHeaders {
         'default-src' => ["'self'"],
         'script-src' => ["'self'", "'strict-dynamic'", 'https://cdn.jsdelivr.net'],
         'style-src' => ["'self'", 'https://cdn.jsdelivr.net', 'https://cdn.staticfile.org'],
-        'img-src' => ["'self'", 'data:', 'https://*.gravatar.com'],
+        'img-src' => ["'self'", 'data:', 'blob:', '*', 'https://*.gravatar.com'],
         'font-src' => ["'self'", 'data:', 'https://cdn.staticfile.org'],
         'connect-src' => ["'self'", 'https://cdn.jsdelivr.net'],
         'object-src' => ["'none'"],
