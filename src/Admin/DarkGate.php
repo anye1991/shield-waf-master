@@ -16,27 +16,10 @@ function waf_2fa() {
         if (!hash_equals($_SESSION['waf_csrf'], $token)) {
             waf_block('CSRF token invalid');
         }
-        // 双重哈希验证（Argon2id + bcrypt 两层都通过）
-        // 兼容：旧明文密码也支持（hash_equals 时序安全比较）
+        // 简单密码验证（WordPress 简化模式）
         $input = trim($_POST['w2f'] ?? '');
-        $stored = defined('WAF_PASSWORD_HASH') && WAF_PASSWORD_HASH
-            ? WAF_PASSWORD_HASH
-            : (defined('WAF_2FA_PASS') ? WAF_2FA_PASS : '');
-        if (WafPassword::verify($input, $stored)) {
-            // 检测到明文密码或需要重哈希：自动升级到双重哈希
-            if (class_exists('WafPassword', false) && WafPassword::needsRehash($stored)) {
-                $newHash = WafPassword::hash($input);
-                $hashFile = WAF_LOG_PATH . 'password_hash.json';
-                @file_put_contents($hashFile, json_encode([
-                    'hash' => $newHash,
-                    'upgraded_at' => time(),
-                    'source' => 'login-auto-upgrade',
-                ], JSON_PRETTY_PRINT));
-                // 让本进程内的 WAF_PASSWORD_HASH 也更新（影响后续验证逻辑）
-                if (!defined('WAF_PASSWORD_HASH_UPDATED')) {
-                    define('WAF_PASSWORD_HASH_UPDATED', $newHash);
-                }
-            }
+        $stored = defined('WAF_PASSWORD') ? WAF_PASSWORD : '';
+        if ($stored && hash_equals($stored, $input)) {
             $_SESSION['waf_ok2'] = time() + WAF_MAGIC_EXPIRE;
             // 成功后重置错误计数器
             waf_attempt_reset('2fa');

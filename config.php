@@ -118,85 +118,18 @@ function waf_get_auto_key($keyName, $defaultValue, $minLength = 32) {
 define('WAF_MAGIC_KEY', waf_get_auto_key('WAF_MAGIC_KEY', 'change-me-magic-key-32-chars-min', 32));
 define('WAF_2FA_PASS',  waf_get_auto_key('WAF_2FA_PASS',  'change-me-2fa-password', 32));
 
-// ======================== 双重密码哈希（Argon2id+bcrypt，永不落明文） ========================
-// 设计：
-//   1. WAF_PASSWORD_HASH 优先：从 logs/password_hash.json 读取自动迁移后的双重哈希
-//   2. WAF_2FA_PASS 兼容：仍支持明文，但会自动迁移到 hash 文件
-//   3. 首次加载 config.php 时自动检测明文并迁移
-//
-// 推荐流程：
-//   1. 在 .env 写明文 WAF_2FA_PASS=your-password（首次安装）
-//   2. 首次访问任意页面，自动迁移为双重哈希到 logs/password_hash.json
-//   3. 安全起见：手动从 .env 删除 WAF_2FA_PASS 明文（迁移后不再需要）
-//   4. 后续修改密码：通过控制台"密码管理"页生成 hash，覆盖 password_hash.json
-require_once __DIR__ . '/src/Support/Password.php';
-$GLOBALS['waf_password_hash_file'] = WAF_LOG_PATH . '/password_hash.json';
-
-if (!function_exists('waf_migrate_password_to_hash')) {
-    function waf_migrate_password_to_hash() {
-        $file = $GLOBALS['waf_password_hash_file'] ?? null;
-        if (!$file) return;
-
-        // 已有 hash 文件：直接读
-        if (is_file($file)) {
-            $data = @json_decode(@file_get_contents($file), true);
-            if (is_array($data) && !empty($data['hash']) && strpos($data['hash'], 'dual$v1$') === 0) {
-                return;
-            }
-        }
-
-        // 检测明文密码并迁移
-        $plain = getenv('WAF_2FA_PASS');
-        if ($plain === false) return;
-
-        // 已经是 hash 格式：直接写入 hash 文件
-        if (strpos($plain, 'dual$v1$') === 0) {
-            @file_put_contents($file, json_encode([
-                'hash' => $plain,
-                'migrated_at' => time(),
-                'source' => 'env-direct-hash',
-            ]));
-            return;
-        }
-
-        // 明文密码 → 自动迁移为双重哈希
-        try {
-            $hash = WafPassword::hash($plain);
-            @file_put_contents($file, json_encode([
-                'hash' => $hash,
-                'migrated_at' => time(),
-                'source' => 'env-plaintext-migration',
-                'warning' => '请删除 .env 中的 WAF_2FA_PASS 明文，已迁移到双重哈希',
-            ], JSON_PRETTY_PRINT));
-            // 写入迁移日志
-            @file_put_contents(WAF_LOG_PATH . '/migration.log',
-                '[' . date('Y-m-d H:i:s') . "] 明文密码已自动迁移为双重哈希 (Argon2id+bcrypt)，请删除 .env 中的 WAF_2FA_PASS 明文\n",
-                FILE_APPEND);
-        } catch (\Throwable $e) {
-            // 迁移失败不阻断启动
-            @file_put_contents(WAF_LOG_PATH . '/migration.log',
-                '[' . date('Y-m-d H:i:s') . "] 密码迁移失败: " . $e->getMessage() . "\n",
-                FILE_APPEND);
-        }
+// ======================== 密码认证（WordPress 简化模式：直接使用密码，禁用双重加密） ========================
+// WordPress 用户直接设置密码即可，无需复杂的双重加密
+// 首次安装建议设置强密码：WAF_PASSWORD=你的强密码
+// 后续可通过控制台修改密码
+if (!defined('WAF_PASSWORD')) {
+    $envPassword = getenv('WAF_PASSWORD');
+    if ($envPassword !== false && $envPassword !== '') {
+        define('WAF_PASSWORD', $envPassword);
+    } else {
+        define('WAF_PASSWORD', 'shield-waf-2026');
     }
-}
-waf_migrate_password_to_hash();
-
-// WAF_PASSWORD_HASH：优先从迁移文件读，否则用 .env 的值（可能是明文或 hash）
-if (!defined('WAF_PASSWORD_HASH')) {
-    $hashFile = $GLOBALS['waf_password_hash_file'] ?? null;
-    $storedHash = '';
-    if ($hashFile && is_file($hashFile)) {
-        $data = @json_decode(@file_get_contents($hashFile), true);
-        if (is_array($data) && !empty($data['hash'])) {
-            $storedHash = $data['hash'];
-        }
-    }
-    // 兜底：用 .env 的明文（不推荐，但兼容旧部署）
-    if (!$storedHash) {
-        $storedHash = getenv('WAF_2FA_PASS') ?: 'change-me-2fa-password';
-    }
-    define('WAF_PASSWORD_HASH', $storedHash);
+    unset($envPassword);
 }
 
 // ======================== 暗门有效期与重试次数 ========================

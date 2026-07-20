@@ -2819,24 +2819,18 @@ $svc->changePassword($userId, $oldPass, $newPass);</pre>
 
       <!-- 密码管理 -->
       <div class="table-card">
-        <div class="card-head"><div class="card-title"><span class="dot" style="background:var(--purple)"></span>密码管理（双重哈希 Argon2id + bcrypt）</div></div>
+        <div class="card-head"><div class="card-title"><span class="dot" style="background:var(--purple)"></span>密码管理（WordPress 简化模式）</div></div>
         <table>
           <thead><tr><th>项目</th><th>当前值</th><th>说明</th></tr></thead>
           <tbody>
-            <tr><td>当前存储格式</td><td><span class="tag yellow" id="pwdFormat">-</span></td><td>dual-v1 = 双重哈希 / legacy-plaintext = 明文（不安全）</td></tr>
-            <tr><td>主层算法</td><td><span class="tag cyan" id="pwdPrimary">-</span></td><td>argon2id-sodium 最强 / bcrypt-12 兜底</td></tr>
-            <tr><td>副层算法</td><td><span class="tag cyan" id="pwdSecondary">-</span></td><td>固定 bcrypt cost=10，作为冗余验证</td></tr>
-            <tr><td>是否需要重哈希</td><td><span id="pwdNeedsRehash">-</span></td><td>算法升级或参数变更时自动检测</td></tr>
-            <tr><td>当前最优算法</td><td><span class="tag green" id="pwdBest">-</span></td><td>本机环境支持的最强算法</td></tr>
-            <tr><td>Hash 文件</td><td><span id="pwdFile" style="font-family:monospace;font-size:11px">-</span></td><td>logs/password_hash.json</td></tr>
+            <tr><td>密码模式</td><td><span class="tag green">simple</span></td><td>直接使用明文密码，无需复杂哈希</td></tr>
+            <tr><td>是否自定义密码</td><td><span class="tag" id="pwdCustom">-</span></td><td>默认密码为 shield-waf-2026，建议修改</td></tr>
+            <tr><td>配置文件</td><td><span style="font-family:monospace;font-size:11px">config.php</span></td><td>密码直接存储在配置文件中</td></tr>
           </tbody>
         </table>
         <div style="padding:12px 16px;display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-primary" onclick="pwdTab('hash')">🔐 生成 hash</button>
-          <button class="btn" onclick="pwdTab('verify')">✓ 验证 hash</button>
           <button class="btn" onclick="pwdTab('verify-current')">✓ 验证当前密码</button>
-          <button class="btn" onclick="pwdTab('migrate')">🔄 迁移/修改密码</button>
-          <button class="btn" onclick="pwdBenchmark()">⚡ 性能测试</button>
+          <button class="btn btn-primary" onclick="pwdTab('change')">🔄 修改密码</button>
         </div>
         <div id="pwdPanel" style="padding:12px 16px;border-top:1px solid var(--border);min-height:120px"></div>
       </div>
@@ -4019,7 +4013,7 @@ function loadSettings(){
   loadPasswordInfo();
 }
 
-// ========== 密码管理 ==========
+// ========== 密码管理（WordPress 简化模式） ==========
 function pwdApi(action, data, method){
   const opts = {method: method || (data ? 'POST' : 'GET')};
   if(data){
@@ -4034,104 +4028,34 @@ function pwdApi(action, data, method){
 function loadPasswordInfo(){
   pwdApi('info').then(res=>{
     if(!res.success) return;
-    const info = res.info || {};
-    const fmt = info.format || 'unknown';
-    document.getElementById('pwdFormat').textContent = fmt;
-    document.getElementById('pwdFormat').className = 'tag ' + (fmt === 'dual-v1' ? 'green' : 'red');
-    document.getElementById('pwdPrimary').textContent = info.primary || '-';
-    document.getElementById('pwdSecondary').textContent = info.secondary || '-';
-    const needR = info.needs_rehash;
-    document.getElementById('pwdNeedsRehash').innerHTML = needR
-      ? '<span class="tag yellow">是（建议升级）</span>'
-      : '<span class="tag green">否（已最新）</span>';
-    document.getElementById('pwdBest').textContent = info.best_algo || '-';
-    const fileMeta = res.file || {};
-    document.getElementById('pwdFile').textContent = fileMeta.source
-      ? `已迁移 (${fileMeta.source})` + (fileMeta.migrated_at ? ' @ ' + new Date(fileMeta.migrated_at * 1000).toLocaleString('zh-CN') : '')
-      : '未迁移（使用 .env 明文）';
+    const el = document.getElementById('pwdCustom');
+    if(el){
+      el.textContent = res.has_custom ? '是' : '否（使用默认密码）';
+      el.className = 'tag ' + (res.has_custom ? 'green' : 'yellow');
+    }
   });
 }
 
 function pwdTab(tab){
   const panel = document.getElementById('pwdPanel');
-  if(tab === 'hash'){
-    panel.innerHTML = `
-      <h4 style="margin-bottom:8px">🔐 生成双重哈希</h4>
-      <p style="color:var(--text3);font-size:12px;margin-bottom:8px">输入明文密码，生成 dual$v1$ 格式的双重哈希字符串</p>
-      <input type="password" id="pwdHashInput" placeholder="输入明文密码（至少 6 字符）" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bg2);border:1px solid var(--border2);color:var(--text);border-radius:4px">
-      <button class="btn btn-primary" onclick="pwdDoHash()">生成哈希</button>
-      <div id="pwdHashResult" style="margin-top:12px"></div>
-    `;
-  } else if(tab === 'verify'){
-    panel.innerHTML = `
-      <h4 style="margin-bottom:8px">✓ 验证 hash</h4>
-      <p style="color:var(--text3);font-size:12px;margin-bottom:8px">输入明文和 hash 字符串，验证是否匹配（不修改任何存储）</p>
-      <input type="password" id="pwdVerifyInput" placeholder="明文密码" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bg2);border:1px solid var(--border2);color:var(--text);border-radius:4px">
-      <textarea id="pwdVerifyHash" placeholder="dual$v1$..." style="width:100%;padding:8px;margin-bottom:8px;background:var(--bg2);border:1px solid var(--border2);color:var(--text);border-radius:4px;font-family:monospace;font-size:11px;min-height:60px;resize:vertical"></textarea>
-      <button class="btn btn-primary" onclick="pwdDoVerify()">验证</button>
-      <div id="pwdVerifyResult" style="margin-top:12px"></div>
-    `;
-  } else if(tab === 'verify-current'){
+  if(tab === 'verify-current'){
     panel.innerHTML = `
       <h4 style="margin-bottom:8px">✓ 验证当前密码</h4>
-      <p style="color:var(--text3);font-size:12px;margin-bottom:8px">输入明文，验证是否匹配当前生效的 WAF_PASSWORD_HASH</p>
-      <input type="password" id="pwdVerifyCurInput" placeholder="当前明文密码" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bg2);border:1px solid var(--border2);color:var(--text);border-radius:4px">
+      <p style="color:var(--text3);font-size:12px;margin-bottom:8px">输入密码，验证是否匹配当前配置</p>
+      <input type="password" id="pwdVerifyCurInput" placeholder="输入密码" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bg2);border:1px solid var(--border2);color:var(--text);border-radius:4px">
       <button class="btn btn-primary" onclick="pwdDoVerifyCurrent()">验证</button>
       <div id="pwdVerifyCurResult" style="margin-top:12px"></div>
     `;
-  } else if(tab === 'migrate'){
+  } else if(tab === 'change'){
     panel.innerHTML = `
-      <h4 style="margin-bottom:8px">🔄 迁移/修改密码</h4>
-      <p style="color:var(--text3);font-size:12px;margin-bottom:8px">
-        输入新密码，自动生成双重哈希并写入 logs/password_hash.json。<br>
-        旧 hash 自动备份。完成后建议从 .env 删除 WAF_2FA_PASS 明文。
-      </p>
-      <input type="password" id="pwdMigrateInput" placeholder="新密码（至少 6 字符）" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bg2);border:1px solid var(--border2);color:var(--text);border-radius:4px">
-      <button class="btn btn-primary" onclick="pwdDoMigrate()">迁移并写入</button>
-      <div id="pwdMigrateResult" style="margin-top:12px"></div>
+      <h4 style="margin-bottom:8px">🔄 修改密码</h4>
+      <p style="color:var(--text3);font-size:12px;margin-bottom:8px">输入新密码，直接更新到 config.php</p>
+      <input type="password" id="pwdChangeInput" placeholder="新密码（至少 6 字符）" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bg2);border:1px solid var(--border2);color:var(--text);border-radius:4px">
+      <input type="password" id="pwdChangeConfirm" placeholder="确认新密码" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bg2);border:1px solid var(--border2);color:var(--text);border-radius:4px">
+      <button class="btn btn-primary" onclick="pwdDoChange()">保存修改</button>
+      <div id="pwdChangeResult" style="margin-top:12px"></div>
     `;
   }
-}
-
-function pwdDoHash(){
-  const v = document.getElementById('pwdHashInput').value;
-  if(v.length < 6) return showToast('密码至少 6 字符', 'error');
-  showToast('生成中...');
-  pwdApi('hash', {password: v}, 'POST').then(res=>{
-    if(res.success){
-      document.getElementById('pwdHashResult').innerHTML = `
-        <div style="background:var(--bg2);border:1px solid var(--border2);padding:12px;border-radius:4px">
-          <div style="color:var(--green);margin-bottom:8px">✓ 生成成功（主层: ${res.info.primary}, 副层: ${res.info.secondary}）</div>
-          <div style="color:var(--text3);font-size:11px;margin-bottom:4px">双重哈希（点击复制）：</div>
-          <textarea onclick="this.select();document.execCommand('copy');showToast('已复制','success')" style="width:100%;height:80px;padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--cyan);border-radius:4px;font-family:monospace;font-size:11px;resize:none">${res.hash}</textarea>
-          <div style="color:var(--text3);font-size:11px;margin-top:8px">${res.instruction}</div>
-        </div>
-      `;
-      showToast('生成成功', 'success');
-    } else {
-      showToast(res.error || '失败', 'error');
-    }
-  });
-}
-
-function pwdDoVerify(){
-  const v = document.getElementById('pwdVerifyInput').value;
-  const h = document.getElementById('pwdVerifyHash').value;
-  if(!v || !h) return showToast('请填写完整', 'error');
-  pwdApi('verify', {password: v, hash: h}, 'POST').then(res=>{
-    if(res.success){
-      const color = res.valid ? 'var(--green)' : 'var(--red)';
-      const icon = res.valid ? '✓' : '✗';
-      document.getElementById('pwdVerifyResult').innerHTML = `
-        <div style="color:${color};padding:12px;background:var(--bg2);border-radius:4px">
-          ${icon} ${res.valid ? '密码匹配' : '密码不匹配'}<br>
-          <span style="font-size:11px;color:var(--text3)">主层: ${res.info.primary} / 副层: ${res.info.secondary}</span>
-        </div>
-      `;
-    } else {
-      showToast(res.error || '失败', 'error');
-    }
-  });
 }
 
 function pwdDoVerifyCurrent(){
@@ -4143,8 +4067,7 @@ function pwdDoVerifyCurrent(){
       const icon = res.valid ? '✓' : '✗';
       document.getElementById('pwdVerifyCurResult').innerHTML = `
         <div style="color:${color};padding:12px;background:var(--bg2);border-radius:4px">
-          ${icon} ${res.valid ? '密码匹配当前存储' : '密码不匹配'}<br>
-          <span style="font-size:11px;color:var(--text3)">格式: ${res.info.format}</span>
+          ${icon} ${res.valid ? '密码匹配' : '密码不匹配'}
         </div>
       `;
     } else {
@@ -4153,53 +4076,25 @@ function pwdDoVerifyCurrent(){
   });
 }
 
-function pwdDoMigrate(){
-  const v = document.getElementById('pwdMigrateInput').value;
+function pwdDoChange(){
+  const v = document.getElementById('pwdChangeInput').value;
+  const c = document.getElementById('pwdChangeConfirm').value;
   if(v.length < 6) return showToast('密码至少 6 字符', 'error');
-  if(!confirm('确认用新密码覆盖 hash 文件？\n\n旧 hash 会被自动备份。\n完成后请从 .env 删除 WAF_2FA_PASS 明文。')) return;
-  showToast('迁移中...');
-  pwdApi('migrate', {new_password: v}, 'POST').then(res=>{
+  if(v !== c) return showToast('两次输入的密码不一致', 'error');
+  if(!confirm('确认修改密码？修改后下次登录生效。')) return;
+  showToast('保存中...');
+  pwdApi('change', {new_password: v}, 'POST').then(res=>{
     if(res.success){
-      document.getElementById('pwdMigrateResult').innerHTML = `
+      document.getElementById('pwdChangeResult').innerHTML = `
         <div style="color:var(--green);padding:12px;background:var(--bg2);border-radius:4px">
-          ✓ ${res.message}<br>
-          <span style="font-size:11px;color:var(--text3)">主层: ${res.info.primary} / 副层: ${res.info.secondary}</span><br>
-          <span style="font-size:11px;color:var(--text3)">${res.instruction}</span>
+          ✓ ${res.message}
         </div>
       `;
-      showToast('已迁移', 'success');
+      showToast('修改成功', 'success');
       loadPasswordInfo();
     } else {
       showToast(res.error || '失败', 'error');
     }
-  });
-}
-
-function pwdBenchmark(){
-  const panel = document.getElementById('pwdPanel');
-  panel.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text3)">测试中（可能耗时 2-3 秒）...</div>';
-  pwdApi('benchmark', null, 'GET').then(res=>{
-    if(!res.success) return showToast(res.error || '失败', 'error');
-    const b = res.benchmark || {};
-    const bench = b.benchmarks || {};
-    const row = (k) => `<tr><td style="font-family:monospace">${k}</td><td>${bench[k] ? bench[k].hash_time_ms + ' ms' : '-'}</td><td>${bench[k] && bench[k].verify_time_ms ? bench[k].verify_time_ms + ' ms' : '-'}</td></tr>`;
-    panel.innerHTML = `
-      <h4 style="margin-bottom:8px">⚡ 性能测试结果</h4>
-      <table style="width:100%;font-size:13px">
-        <thead><tr><th>算法</th><th>哈希耗时</th><th>验证耗时</th></tr></thead>
-        <tbody>
-          ${row('bcrypt-10')}
-          ${row('bcrypt-12')}
-          ${row('argon2id-sodium')}
-          ${row('dual-full')}
-          ${row('dual-verify')}
-        </tbody>
-      </table>
-      <div style="margin-top:12px;color:var(--text3);font-size:11px">
-        PHP ${b.php_version} · 最强算法: <span style="color:var(--cyan)">${b.best_algo}</span><br>
-        可用算法: ${(b.available || []).map(a => a.algo).join(', ')}
-      </div>
-    `;
   });
 }
 
