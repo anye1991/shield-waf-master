@@ -5,7 +5,7 @@
 [![Database](https://img.shields.io/badge/database-MySQL%20%7C%20PostgreSQL%20%7C%20SQLite%20%7C%20MSSQL-orange)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 [![Security](https://img.shields.io/badge/security-audited-red)]()
-
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13568/badge)](https://www.bestpractices.dev/zh-CN/projects/13568/passing)
 > **下一代 PHP Web 应用防火墙 · 14 层编码归一化 · 语义分析引擎 · 双重密码加密 · 可视化控制台**
 > **署名：暗夜铭少**
 
