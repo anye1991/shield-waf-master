@@ -4,17 +4,16 @@ defined('ABSPATH') || exit;
 class SecurityHeaders {
     private static $defaultCsp = [
         'default-src' => ["'self'"],
-        'script-src' => ["'self'", "'strict-dynamic'", 'https://cdn.jsdelivr.net'],
-        'style-src' => ["'self'", 'https://cdn.jsdelivr.net', 'https://cdn.staticfile.org'],
-        'img-src' => ["'self'", 'data:', 'blob:', '*', 'https://*.gravatar.com'],
-        'font-src' => ["'self'", 'data:', 'https://cdn.staticfile.org'],
-        'connect-src' => ["'self'", 'https://cdn.jsdelivr.net'],
+        'script-src' => ["'self'", "'unsafe-inline'", "'unsafe-eval'", 'https://cdn.jsdelivr.net', 'https://cdn.staticfile.org'],
+        'style-src' => ["'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net', 'https://cdn.staticfile.org'],
+        'img-src' => ["'self'", 'data:', 'blob:', '*'],
+        'font-src' => ["'self'", 'data:', 'https://cdn.jsdelivr.net', 'https://cdn.staticfile.org', 'https://at.alicdn.com'],
+        'connect-src' => ["'self'", '*'],
         'object-src' => ["'none'"],
         'base-uri' => ["'self'"],
         'form-action' => ["'self'"],
         'frame-ancestors' => ["'self'"],
         'upgrade-insecure-requests' => [],
-        'block-all-mixed-content' => [],
     ];
 
     private static $defaultPermissions = [
@@ -71,7 +70,8 @@ class SecurityHeaders {
         self::setHeader('Referrer-Policy: strict-origin-when-cross-origin');
         self::setHeader('X-Permitted-Cross-Domain-Policies: none');
         self::setHeader('X-Download-Options: noopen');
-        self::setHeader('X-Robots-Tag: noindex, nofollow, nosnippet, noarchive');
+        // X-Robots-Tag 默认不发送，避免影响搜索引擎收录
+        // 如需禁用搜索引擎索引，可在配置中开启
     }
 
     public static function applyCsp() {
@@ -80,26 +80,20 @@ class SecurityHeaders {
         if (!is_array($cspConfig)) $cspConfig = [];
         $csp = array_merge_recursive($csp, $cspConfig);
 
-        // 生成 nonce 并注入 CSP
-        $nonce = self::generateNonce();
-        if (!isset($csp['script-src'])) $csp['script-src'] = ["'self'"];
-        $csp['script-src'][] = "'nonce-$nonce'";
-        if (!isset($csp['style-src'])) $csp['style-src'] = ["'self'"];
-        $csp['style-src'][] = "'nonce-$nonce'";
-
         // 构造 CSP 字符串
         $cspString = '';
         foreach ($csp as $directive => $sources) {
-            $cspString .= $directive . ' ' . implode(' ', $sources) . '; ';
+            if (is_array($sources) && count($sources) > 0) {
+                $cspString .= $directive . ' ' . implode(' ', $sources) . '; ';
+            } else {
+                $cspString .= $directive . '; ';
+            }
         }
         $cspString = rtrim($cspString);
 
         if (!headers_sent()) {
             header("Content-Security-Policy: {$cspString}");
         }
-        // 把 nonce 存入全局变量供模板使用
-        $GLOBALS['WAF_CSP_NONCE'] = $nonce;
-        // 不再发 X-Nonce 头（浏览器不识别）
     }
 
     private static function applyPermissionsPolicy() {
