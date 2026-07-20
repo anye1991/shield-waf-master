@@ -33,9 +33,8 @@ function waf_check_upload() {
 
         // ========== 第1层：扩展名白名单 ==========
         $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
-        $allowedExt = defined('WAF_UPLOAD_ALLOWED_EXT')
-            ? json_decode(WAF_UPLOAD_ALLOWED_EXT, true)
-            : ['jpg','jpeg','png','gif','webp','bmp','ico','svg'];
+        // PHP 7.0+ 数组常量直接使用，无需 json_decode
+        $allowedExt = defined('WAF_UPLOAD_ALLOWED_EXT') ? WAF_UPLOAD_ALLOWED_EXT : ['jpg','jpeg','png','gif','webp','bmp','ico','svg'];
         if (!is_array($allowedExt)) {
             $allowedExt = ['jpg','jpeg','png','gif','webp','bmp','ico','svg'];
         }
@@ -76,9 +75,8 @@ function waf_check_upload() {
         }
 
         // ========== 第2层：MIME 类型检测 ==========
-        $allowedMime = defined('WAF_UPLOAD_ALLOWED_MIME')
-            ? json_decode(WAF_UPLOAD_ALLOWED_MIME, true)
-            : ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/x-icon', 'image/svg+xml'];
+        // PHP 7.0+ 数组常量直接使用，无需 json_decode
+        $allowedMime = defined('WAF_UPLOAD_ALLOWED_MIME') ? WAF_UPLOAD_ALLOWED_MIME : ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/x-icon', 'image/svg+xml'];
         if (!is_array($allowedMime)) {
             $allowedMime = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/x-icon', 'image/svg+xml'];
         }

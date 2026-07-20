@@ -49,7 +49,7 @@ function waf_sandbox_validate_path($path)
         return false;
     }
 
-    $allowedDirs = defined('WAF_SANDBOX_MONITOR_DIRS') ? json_decode(WAF_SANDBOX_MONITOR_DIRS, true) : [ABSPATH];
+    $allowedDirs = defined('WAF_SANDBOX_MONITOR_DIRS') ? WAF_SANDBOX_MONITOR_DIRS : [ABSPATH];
     if (!is_array($allowedDirs) || empty($allowedDirs)) {
         $allowedDirs = [ABSPATH];
     }

@@ -167,8 +167,8 @@ class WafSandbox {
         }
 
         // 4. 用户自定义白名单路径
-        $customWhitelist = defined('WAF_SANDBOX_WHITELIST_PATHS')
-            ? json_decode(WAF_SANDBOX_WHITELIST_PATHS, true) : [];
+        // PHP 7.0+ 数组常量直接使用，无需 json_decode
+        $customWhitelist = defined('WAF_SANDBOX_WHITELIST_PATHS') ? WAF_SANDBOX_WHITELIST_PATHS : [];
         if (!is_array($customWhitelist)) {
             $customWhitelist = [];
         }
@@ -1077,12 +1077,14 @@ class WafSandbox {
     }
 
     private static function getMonitorDirs() {
-        $dirs = defined('WAF_SANDBOX_MONITOR_DIRS') ? json_decode(WAF_SANDBOX_MONITOR_DIRS, true) : [ABSPATH];
+        // PHP 7.0+ 数组常量直接使用，无需 json_decode
+        $dirs = defined('WAF_SANDBOX_MONITOR_DIRS') ? WAF_SANDBOX_MONITOR_DIRS : [ABSPATH];
         return is_array($dirs) ? $dirs : [ABSPATH];
     }
 
     private static function getExcludeDirs() {
-        $dirs = defined('WAF_SANDBOX_EXCLUDE_DIRS') ? json_decode(WAF_SANDBOX_EXCLUDE_DIRS, true) : [WAF_LOG_PATH];
+        // PHP 7.0+ 数组常量直接使用，无需 json_decode
+        $dirs = defined('WAF_SANDBOX_EXCLUDE_DIRS') ? WAF_SANDBOX_EXCLUDE_DIRS : [WAF_LOG_PATH];
         $dirs = is_array($dirs) ? $dirs : [WAF_LOG_PATH];
 
         // 自动加入 WAF 自身根目录
