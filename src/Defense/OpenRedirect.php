@@ -46,6 +46,48 @@ class OpenRedirect {
         ['pattern' => '/\\\\/', 'severity' => 60, 'name' => 'Backslash in URL', 'category' => 'suspicious'],
     ];
 
+    // 缓存的合并大正则（首次使用时构建），覆盖全部 18 条 patterns
+    private static $combinedRedirectPattern = null;
+
+    /**
+     * 把所有 redirect 相关 patterns 合并为单个 alternation 大正则。
+     * 原 patterns 中 `/^\/\//` 和 `/@/` 没有 /i，但内容不含字母，/i 无副作用；
+     * 其余均带 /i。统一加 /i 安全（不改变大小写敏感行为）。
+     * 注意：`^` 锚点对每个 alternation 分支局部生效，合并后行为不变。
+     */
+    private static function getCombinedRedirectPattern() {
+        if (self::$combinedRedirectPattern !== null) {
+            return self::$combinedRedirectPattern;
+        }
+        $parts = [];
+        foreach (self::$externalUrlPatterns as $p) {
+            $parts[] = '(?:' . self::patternBody($p['pattern']) . ')';
+        }
+        foreach (self::$encodedUrlPatterns as $p) {
+            $parts[] = '(?:' . self::patternBody($p['pattern']) . ')';
+        }
+        foreach (self::$multiJumpPatterns as $p) {
+            $parts[] = '(?:' . self::patternBody($p['pattern']) . ')';
+        }
+        foreach (self::$suspiciousDomainPatterns as $p) {
+            $parts[] = '(?:' . self::patternBody($p['pattern']) . ')';
+        }
+        self::$combinedRedirectPattern = '/' . implode('|', $parts) . '/i';
+        return self::$combinedRedirectPattern;
+    }
+
+    /**
+     * 解析 /body/flags 形式的正则，仅取 body 部分。避免 trim($p, '/') 把
+     * 带 /i 后缀的 pattern 末尾 'i' 残留进 body，导致合并大正则出现裸 '/'。
+     */
+    private static function patternBody($pattern) {
+        $lastSlash = strrpos($pattern, '/');
+        if ($lastSlash === false || $lastSlash === 0) {
+            return substr($pattern, 1);
+        }
+        return substr($pattern, 1, $lastSlash - 1);
+    }
+
     public static function detect($inputs) {
         $score = 0;
         $details = [];
@@ -88,38 +130,77 @@ class OpenRedirect {
             return ['detected' => false, 'score' => 0, 'findings' => [], 'key' => $key];
         }
 
+        // 长度上限：超过 8KB 只扫前 8KB
+        if (strlen($value) > 8192) {
+            $value = substr($value, 0, 8192);
+        }
+
         $isRedirectParam = self::isRedirectParam($lowerKey);
         $paramMultiplier = $isRedirectParam ? 1.0 : 0.45;
 
-        foreach (self::$externalUrlPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
+        // 廉价预筛：所有 18 条 patterns 都至少需要以下字符/子串之一才可能命中：
+        //   externalUrlPatterns: ':' 或 '/'
+        //   encodedUrlPatterns:  '%'
+        //   multiJumpPatterns:   'redirect' 或 'next' (大小写不敏感)
+        //   suspiciousDomainPatterns: '@' '%' '.' '\' 等
+        // 若都不包含，直接跳过所有 18 条 preg_match。
+        if (strpos($value, ':') === false
+            && strpos($value, '/') === false
+            && strpos($value, '@') === false
+            && strpos($value, '%') === false
+            && strpos($value, '\\') === false
+            && stripos($value, 'redirect') === false
+            && stripos($value, 'next') === false) {
+            // 无任何可疑字符，但仍需走 looksLikeExternalDomain 检测（仅含字母+点+域名形式）
+            if ($isRedirectParam && self::looksLikeExternalDomain($value)) {
+                $domainScore = (int)(55 * $paramMultiplier);
+                if ($score < $domainScore) {
+                    $score = $domainScore;
+                }
+                $findings[] = 'Potential external domain in redirect parameter';
             }
+            return [
+                'detected' => $score >= 50,
+                'score' => $score,
+                'findings' => $findings,
+                'key' => $key,
+                'is_redirect_param' => $isRedirectParam,
+            ];
         }
 
-        foreach (self::$encodedUrlPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
+        // 合并大正则做一次廉价筛除：未命中则跳过 18 条逐条匹配
+        $combined = self::getCombinedRedirectPattern();
+        if (preg_match($combined, $value)) {
+            foreach (self::$externalUrlPatterns as $pattern) {
+                if (preg_match($pattern['pattern'], $value)) {
+                    $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
+                    $score = max($score, $adjustedScore);
+                    $findings[] = $pattern['name'];
+                }
             }
-        }
 
-        foreach (self::$multiJumpPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
+            foreach (self::$encodedUrlPatterns as $pattern) {
+                if (preg_match($pattern['pattern'], $value)) {
+                    $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
+                    $score = max($score, $adjustedScore);
+                    $findings[] = $pattern['name'];
+                }
             }
-        }
 
-        foreach (self::$suspiciousDomainPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
+            foreach (self::$multiJumpPatterns as $pattern) {
+                if (preg_match($pattern['pattern'], $value)) {
+                    $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
+                    $score = max($score, $adjustedScore);
+                    $findings[] = $pattern['name'];
+                }
+            }
+
+            foreach (self::$suspiciousDomainPatterns as $pattern) {
+                if (preg_match($pattern['pattern'], $value)) {
+                    $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
+                    $score = max($score, $adjustedScore);
+                    $findings[] = $pattern['name'];
+                }
             }
         }
 
@@ -131,23 +212,26 @@ class OpenRedirect {
             $decodedValue = $next;
         }
         if ($decodedValue !== $value) {
-            foreach (self::$externalUrlPatterns as $pattern) {
-                if (preg_match($pattern['pattern'], $decodedValue)) {
-                    $adjustedScore = (int)($pattern['severity'] * 0.85 * $paramMultiplier);
-                    if ($score < $adjustedScore) {
-                        $score = $adjustedScore;
+            // 解码后值同样用合并大正则做廉价筛除
+            if (preg_match($combined, $decodedValue)) {
+                foreach (self::$externalUrlPatterns as $pattern) {
+                    if (preg_match($pattern['pattern'], $decodedValue)) {
+                        $adjustedScore = (int)($pattern['severity'] * 0.85 * $paramMultiplier);
+                        if ($score < $adjustedScore) {
+                            $score = $adjustedScore;
+                        }
+                        $findings[] = 'Decoded: ' . $pattern['name'];
                     }
-                    $findings[] = 'Decoded: ' . $pattern['name'];
                 }
-            }
 
-            foreach (self::$multiJumpPatterns as $pattern) {
-                if (preg_match($pattern['pattern'], $decodedValue)) {
-                    $adjustedScore = (int)($pattern['severity'] * 0.8 * $paramMultiplier);
-                    if ($score < $adjustedScore) {
-                        $score = $adjustedScore;
+                foreach (self::$multiJumpPatterns as $pattern) {
+                    if (preg_match($pattern['pattern'], $decodedValue)) {
+                        $adjustedScore = (int)($pattern['severity'] * 0.8 * $paramMultiplier);
+                        if ($score < $adjustedScore) {
+                            $score = $adjustedScore;
+                        }
+                        $findings[] = 'Decoded: ' . $pattern['name'];
                     }
-                    $findings[] = 'Decoded: ' . $pattern['name'];
                 }
             }
         }

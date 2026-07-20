@@ -1,0 +1,497 @@
+{
+    "CachePoisoning_normal": {
+        "class": "CachePoisoning",
+        "sample": "正常短",
+        "per_op_us": 117.59
+    },
+    "CachePoisoning_normal_long": {
+        "class": "CachePoisoning",
+        "sample": "正常5KB",
+        "per_op_us": 136.68
+    },
+    "CachePoisoning_normal_huge": {
+        "class": "CachePoisoning",
+        "sample": "正常50KB",
+        "per_op_us": 286.7
+    },
+    "CachePoisoning_sqli": {
+        "class": "CachePoisoning",
+        "sample": "SQLi",
+        "per_op_us": 114.32
+    },
+    "CachePoisoning_xss": {
+        "class": "CachePoisoning",
+        "sample": "XSS",
+        "per_op_us": 114.49
+    },
+    "CachePoisoning_ssti": {
+        "class": "CachePoisoning",
+        "sample": "SSTI",
+        "per_op_us": 114.43
+    },
+    "CachePoisoning_xxe": {
+        "class": "CachePoisoning",
+        "sample": "XXE",
+        "per_op_us": 125.61
+    },
+    "CachePoisoning_ldap": {
+        "class": "CachePoisoning",
+        "sample": "LDAP",
+        "per_op_us": 114.16
+    },
+    "CachePoisoning_nosql": {
+        "class": "CachePoisoning",
+        "sample": "NoSQL",
+        "per_op_us": 116.95
+    },
+    "CrlfInjection_normal": {
+        "class": "CrlfInjection",
+        "sample": "正常短",
+        "per_op_us": 30.62
+    },
+    "CrlfInjection_normal_long": {
+        "class": "CrlfInjection",
+        "sample": "正常5KB",
+        "per_op_us": 31.96
+    },
+    "CrlfInjection_normal_huge": {
+        "class": "CrlfInjection",
+        "sample": "正常50KB",
+        "per_op_us": 41.59
+    },
+    "CrlfInjection_sqli": {
+        "class": "CrlfInjection",
+        "sample": "SQLi",
+        "per_op_us": 30.71
+    },
+    "CrlfInjection_xss": {
+        "class": "CrlfInjection",
+        "sample": "XSS",
+        "per_op_us": 30.89
+    },
+    "CrlfInjection_ssti": {
+        "class": "CrlfInjection",
+        "sample": "SSTI",
+        "per_op_us": 30.62
+    },
+    "CrlfInjection_xxe": {
+        "class": "CrlfInjection",
+        "sample": "XXE",
+        "per_op_us": 30.76
+    },
+    "CrlfInjection_ldap": {
+        "class": "CrlfInjection",
+        "sample": "LDAP",
+        "per_op_us": 30.7
+    },
+    "CrlfInjection_nosql": {
+        "class": "CrlfInjection",
+        "sample": "NoSQL",
+        "per_op_us": 30.86
+    },
+    "OpenRedirect_normal": {
+        "class": "OpenRedirect",
+        "sample": "正常短",
+        "per_op_us": 22.44
+    },
+    "OpenRedirect_normal_long": {
+        "class": "OpenRedirect",
+        "sample": "正常5KB",
+        "per_op_us": 26.73
+    },
+    "OpenRedirect_normal_huge": {
+        "class": "OpenRedirect",
+        "sample": "正常50KB",
+        "per_op_us": 41.95
+    },
+    "OpenRedirect_sqli": {
+        "class": "OpenRedirect",
+        "sample": "SQLi",
+        "per_op_us": 22.3
+    },
+    "OpenRedirect_xss": {
+        "class": "OpenRedirect",
+        "sample": "XSS",
+        "per_op_us": 22.45
+    },
+    "OpenRedirect_ssti": {
+        "class": "OpenRedirect",
+        "sample": "SSTI",
+        "per_op_us": 22.38
+    },
+    "OpenRedirect_xxe": {
+        "class": "OpenRedirect",
+        "sample": "XXE",
+        "per_op_us": 22.63
+    },
+    "OpenRedirect_ldap": {
+        "class": "OpenRedirect",
+        "sample": "LDAP",
+        "per_op_us": 22.18
+    },
+    "OpenRedirect_nosql": {
+        "class": "OpenRedirect",
+        "sample": "NoSQL",
+        "per_op_us": 22.12
+    },
+    "NoSqlInjection_normal": {
+        "class": "NoSqlInjection",
+        "sample": "正常短",
+        "per_op_us": 3.14
+    },
+    "NoSqlInjection_normal_long": {
+        "class": "NoSqlInjection",
+        "sample": "正常5KB",
+        "per_op_us": 4.43
+    },
+    "NoSqlInjection_normal_huge": {
+        "class": "NoSqlInjection",
+        "sample": "正常50KB",
+        "per_op_us": 18.25
+    },
+    "NoSqlInjection_sqli": {
+        "class": "NoSqlInjection",
+        "sample": "SQLi",
+        "per_op_us": 3.18
+    },
+    "NoSqlInjection_xss": {
+        "class": "NoSqlInjection",
+        "sample": "XSS",
+        "per_op_us": 3.15
+    },
+    "NoSqlInjection_ssti": {
+        "class": "NoSqlInjection",
+        "sample": "SSTI",
+        "per_op_us": 3.15
+    },
+    "NoSqlInjection_xxe": {
+        "class": "NoSqlInjection",
+        "sample": "XXE",
+        "per_op_us": 3.24
+    },
+    "NoSqlInjection_ldap": {
+        "class": "NoSqlInjection",
+        "sample": "LDAP",
+        "per_op_us": 3.09
+    },
+    "NoSqlInjection_nosql": {
+        "class": "NoSqlInjection",
+        "sample": "NoSQL",
+        "per_op_us": 3.17
+    },
+    "TemplateInjection_normal": {
+        "class": "TemplateInjection",
+        "sample": "正常短",
+        "per_op_us": 2.93
+    },
+    "TemplateInjection_normal_long": {
+        "class": "TemplateInjection",
+        "sample": "正常5KB",
+        "per_op_us": 3.93
+    },
+    "TemplateInjection_normal_huge": {
+        "class": "TemplateInjection",
+        "sample": "正常50KB",
+        "per_op_us": 14.72
+    },
+    "TemplateInjection_sqli": {
+        "class": "TemplateInjection",
+        "sample": "SQLi",
+        "per_op_us": 2.93
+    },
+    "TemplateInjection_xss": {
+        "class": "TemplateInjection",
+        "sample": "XSS",
+        "per_op_us": 2.94
+    },
+    "TemplateInjection_ssti": {
+        "class": "TemplateInjection",
+        "sample": "SSTI",
+        "per_op_us": 2.94
+    },
+    "TemplateInjection_xxe": {
+        "class": "TemplateInjection",
+        "sample": "XXE",
+        "per_op_us": 3.02
+    },
+    "TemplateInjection_ldap": {
+        "class": "TemplateInjection",
+        "sample": "LDAP",
+        "per_op_us": 2.92
+    },
+    "TemplateInjection_nosql": {
+        "class": "TemplateInjection",
+        "sample": "NoSQL",
+        "per_op_us": 2.95
+    },
+    "LdapInjection_normal": {
+        "class": "LdapInjection",
+        "sample": "正常短",
+        "per_op_us": 3.71
+    },
+    "LdapInjection_normal_long": {
+        "class": "LdapInjection",
+        "sample": "正常5KB",
+        "per_op_us": 4.85
+    },
+    "LdapInjection_normal_huge": {
+        "class": "LdapInjection",
+        "sample": "正常50KB",
+        "per_op_us": 15.73
+    },
+    "LdapInjection_sqli": {
+        "class": "LdapInjection",
+        "sample": "SQLi",
+        "per_op_us": 3.77
+    },
+    "LdapInjection_xss": {
+        "class": "LdapInjection",
+        "sample": "XSS",
+        "per_op_us": 6.88
+    },
+    "LdapInjection_ssti": {
+        "class": "LdapInjection",
+        "sample": "SSTI",
+        "per_op_us": 7.84
+    },
+    "LdapInjection_xxe": {
+        "class": "LdapInjection",
+        "sample": "XXE",
+        "per_op_us": 3.88
+    },
+    "LdapInjection_ldap": {
+        "class": "LdapInjection",
+        "sample": "LDAP",
+        "per_op_us": 10.74
+    },
+    "LdapInjection_nosql": {
+        "class": "LdapInjection",
+        "sample": "NoSQL",
+        "per_op_us": 3.7
+    },
+    "XPathInjection_normal": {
+        "class": "XPathInjection",
+        "sample": "正常短",
+        "per_op_us": 5.07
+    },
+    "XPathInjection_normal_long": {
+        "class": "XPathInjection",
+        "sample": "正常5KB",
+        "per_op_us": 66.99
+    },
+    "XPathInjection_normal_huge": {
+        "class": "XPathInjection",
+        "sample": "正常50KB",
+        "per_op_us": 114.97
+    },
+    "XPathInjection_sqli": {
+        "class": "XPathInjection",
+        "sample": "SQLi",
+        "per_op_us": 5.64
+    },
+    "XPathInjection_xss": {
+        "class": "XPathInjection",
+        "sample": "XSS",
+        "per_op_us": 5.69
+    },
+    "XPathInjection_ssti": {
+        "class": "XPathInjection",
+        "sample": "SSTI",
+        "per_op_us": 6.01
+    },
+    "XPathInjection_xxe": {
+        "class": "XPathInjection",
+        "sample": "XXE",
+        "per_op_us": 6.22
+    },
+    "XPathInjection_ldap": {
+        "class": "XPathInjection",
+        "sample": "LDAP",
+        "per_op_us": 5.38
+    },
+    "XPathInjection_nosql": {
+        "class": "XPathInjection",
+        "sample": "NoSQL",
+        "per_op_us": 5.75
+    },
+    "XxeInjection_normal": {
+        "class": "XxeInjection",
+        "sample": "正常短",
+        "per_op_us": 8.52
+    },
+    "XxeInjection_normal_long": {
+        "class": "XxeInjection",
+        "sample": "正常5KB",
+        "per_op_us": 71.1
+    },
+    "XxeInjection_normal_huge": {
+        "class": "XxeInjection",
+        "sample": "正常50KB",
+        "per_op_us": 126
+    },
+    "XxeInjection_sqli": {
+        "class": "XxeInjection",
+        "sample": "SQLi",
+        "per_op_us": 8.68
+    },
+    "XxeInjection_xss": {
+        "class": "XxeInjection",
+        "sample": "XSS",
+        "per_op_us": 8.32
+    },
+    "XxeInjection_ssti": {
+        "class": "XxeInjection",
+        "sample": "SSTI",
+        "per_op_us": 9.31
+    },
+    "XxeInjection_xxe": {
+        "class": "XxeInjection",
+        "sample": "XXE",
+        "per_op_us": 27.59
+    },
+    "XxeInjection_ldap": {
+        "class": "XxeInjection",
+        "sample": "LDAP",
+        "per_op_us": 8.44
+    },
+    "XxeInjection_nosql": {
+        "class": "XxeInjection",
+        "sample": "NoSQL",
+        "per_op_us": 8.39
+    },
+    "Deserialization_normal": {
+        "class": "Deserialization",
+        "sample": "正常短",
+        "per_op_us": 6.46
+    },
+    "Deserialization_normal_long": {
+        "class": "Deserialization",
+        "sample": "正常5KB",
+        "per_op_us": 12.02
+    },
+    "Deserialization_normal_huge": {
+        "class": "Deserialization",
+        "sample": "正常50KB",
+        "per_op_us": 32.41
+    },
+    "Deserialization_sqli": {
+        "class": "Deserialization",
+        "sample": "SQLi",
+        "per_op_us": 7.39
+    },
+    "Deserialization_xss": {
+        "class": "Deserialization",
+        "sample": "XSS",
+        "per_op_us": 7.25
+    },
+    "Deserialization_ssti": {
+        "class": "Deserialization",
+        "sample": "SSTI",
+        "per_op_us": 22.04
+    },
+    "Deserialization_xxe": {
+        "class": "Deserialization",
+        "sample": "XXE",
+        "per_op_us": 21.99
+    },
+    "Deserialization_ldap": {
+        "class": "Deserialization",
+        "sample": "LDAP",
+        "per_op_us": 6.36
+    },
+    "Deserialization_nosql": {
+        "class": "Deserialization",
+        "sample": "NoSQL",
+        "per_op_us": 21.54
+    },
+    "IdorDetection_normal": {
+        "class": "IdorDetection",
+        "sample": "正常短",
+        "per_op_us": 4.1
+    },
+    "IdorDetection_normal_long": {
+        "class": "IdorDetection",
+        "sample": "正常5KB",
+        "per_op_us": 5.07
+    },
+    "IdorDetection_normal_huge": {
+        "class": "IdorDetection",
+        "sample": "正常50KB",
+        "per_op_us": 15.48
+    },
+    "IdorDetection_sqli": {
+        "class": "IdorDetection",
+        "sample": "SQLi",
+        "per_op_us": 4.11
+    },
+    "IdorDetection_xss": {
+        "class": "IdorDetection",
+        "sample": "XSS",
+        "per_op_us": 4.08
+    },
+    "IdorDetection_ssti": {
+        "class": "IdorDetection",
+        "sample": "SSTI",
+        "per_op_us": 4.07
+    },
+    "IdorDetection_xxe": {
+        "class": "IdorDetection",
+        "sample": "XXE",
+        "per_op_us": 4.15
+    },
+    "IdorDetection_ldap": {
+        "class": "IdorDetection",
+        "sample": "LDAP",
+        "per_op_us": 4.07
+    },
+    "IdorDetection_nosql": {
+        "class": "IdorDetection",
+        "sample": "NoSQL",
+        "per_op_us": 4.12
+    },
+    "FileInclusion_normal": {
+        "class": "FileInclusion",
+        "sample": "正常短",
+        "per_op_us": 5.29
+    },
+    "FileInclusion_normal_long": {
+        "class": "FileInclusion",
+        "sample": "正常5KB",
+        "per_op_us": 31.32
+    },
+    "FileInclusion_normal_huge": {
+        "class": "FileInclusion",
+        "sample": "正常50KB",
+        "per_op_us": 57.14
+    },
+    "FileInclusion_sqli": {
+        "class": "FileInclusion",
+        "sample": "SQLi",
+        "per_op_us": 5.4
+    },
+    "FileInclusion_xss": {
+        "class": "FileInclusion",
+        "sample": "XSS",
+        "per_op_us": 5.78
+    },
+    "FileInclusion_ssti": {
+        "class": "FileInclusion",
+        "sample": "SSTI",
+        "per_op_us": 5.84
+    },
+    "FileInclusion_xxe": {
+        "class": "FileInclusion",
+        "sample": "XXE",
+        "per_op_us": 16.99
+    },
+    "FileInclusion_ldap": {
+        "class": "FileInclusion",
+        "sample": "LDAP",
+        "per_op_us": 5.31
+    },
+    "FileInclusion_nosql": {
+        "class": "FileInclusion",
+        "sample": "NoSQL",
+        "per_op_us": 5.39
+    }
+}

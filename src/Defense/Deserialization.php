@@ -124,70 +124,107 @@ class Deserialization {
             return ['detected' => false, 'score' => 0, 'findings' => [], 'key' => $key];
         }
 
+        // 长度上限：超过 8KB 只扫前 8KB
+        if (strlen($value) > 8192) {
+            $value = substr($value, 0, 8192);
+            $lowerValue = strtolower($value);
+        }
+
         $isDeserParam = in_array($lowerKey, self::$deserParamNames);
         $paramMultiplier = $isDeserParam ? 1.0 : 0.6;
 
-        foreach (self::$phpSerializationPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
-            }
-        }
+        // 廉价预筛：所有 deser patterns 都至少需要以下指示符之一才可能命中
+        //   phpSerializationPatterns: ':' (O:/a:/s:/i:/b:/d:/C:) 或 '__' (__PHP_Incomplete_Class) 或 'N;'
+        //   magicMethodPatterns:     '__' (所有 __XXX 魔术方法)
+        //   javaPatterns:            'rO0AB' 或 \xAC\xED
+        //   ysoserialPatterns:       'O:' / \xAC\xED / rO0AB (需 hasObjectContext)
+        //   pharPatterns:            ':' (phar://) 或 '__' (__HALT_COMPILER)
+        // 若均不含，跳过所有正则
+        if (strpos($value, ':') !== false
+            || strpos($value, '__') !== false
+            || strpos($value, 'rO0AB') !== false
+            || strpos($value, "\xAC\xED") !== false
+            || strpos($value, 'N;') !== false) {
 
-        foreach (self::$magicMethodPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
+            foreach (self::$phpSerializationPatterns as $pattern) {
+                if (preg_match($pattern['pattern'], $value)) {
+                    $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
+                    $score = max($score, $adjustedScore);
+                    $findings[] = $pattern['name'];
+                }
             }
-        }
 
-        foreach (self::$javaPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $score = max($score, $pattern['severity']);
-                $findings[] = $pattern['name'];
+            foreach (self::$magicMethodPatterns as $pattern) {
+                if (preg_match($pattern['pattern'], $value)) {
+                    $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
+                    $score = max($score, $adjustedScore);
+                    $findings[] = $pattern['name'];
+                }
             }
-        }
 
-        $decoded = base64_decode($value, true);
-        if ($decoded !== false && strlen($decoded) > 4) {
-            if (strpos($decoded, "\xAC\xED\x00\x05") === 0) {
-                $score = max($score, 95);
-                $findings[] = 'Java serialized object (Base64 decoded)';
+            foreach (self::$javaPatterns as $pattern) {
+                if (preg_match($pattern['pattern'], $value)) {
+                    $score = max($score, $pattern['severity']);
+                    $findings[] = $pattern['name'];
+                }
             }
-            if (preg_match('/O:\d+:"/', $decoded) || preg_match('/a:\d+:\{/', $decoded)) {
-                $adjustedScore = (int)(85 * $paramMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = 'PHP serialized data (Base64 decoded)';
-            }
-        }
 
-        foreach (self::$ysoserialPatterns as $pattern) {
-            // 仅在 base64/二进制上下文（含 O: 或 \xAC\xED）中才计分，避免英文单词/项目名误报
-            $hasObjectContext = preg_match('/O:\d+:"/', $value)
+            // ysoserial 仅在含对象上下文 (O: 或 \xAC\xED 或 rO0AB) 时才计分
+            $hasObjectContext = strpos($value, 'O:') !== false
                 || strpos($value, "\xAC\xED") !== false
                 || strpos($value, "rO0AB") === 0;
-            if ($hasObjectContext && preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
+            if ($hasObjectContext) {
+                foreach (self::$ysoserialPatterns as $pattern) {
+                    if (preg_match($pattern['pattern'], $value)) {
+                        $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
+                        $score = max($score, $adjustedScore);
+                        $findings[] = $pattern['name'];
+                    }
+                }
+            }
+
+            foreach (self::$pharPatterns as $pattern) {
+                if (preg_match($pattern['pattern'], $value)) {
+                    $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
+                    $score = max($score, $adjustedScore);
+                    $findings[] = $pattern['name'];
+                }
+            }
+
+            // 组合检测：PHP 对象 + 魔术方法
+            if (strpos($value, 'O:') !== false && strpos($value, '__') !== false) {
+                if (preg_match('/O:\d+:"/', $value) && preg_match('/__wakeup|__destruct/i', $value)) {
+                    $comboScore = 98;
+                    if ($score < $comboScore) {
+                        $score = $comboScore;
+                        $findings[] = 'PHP object + magic method combination';
+                    }
+                }
             }
         }
 
-        foreach (self::$pharPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
-            }
-        }
-
-        if (preg_match('/O:\d+:"/', $value) && preg_match('/__wakeup|__destruct/i', $value)) {
-            $comboScore = 98;
-            if ($score < $comboScore) {
-                $score = $comboScore;
-                $findings[] = 'PHP object + magic method combination';
+        // base64 解码预筛：只在 value 看起来像 base64 (长度 >20 且仅含 base64 字符) 时才解码
+        // 避免 base64_decode 在每个 value 上调用（包括非 base64 的普通字符串）
+        if (strlen($value) > 20) {
+            $trimmedForCheck = trim($value);
+            if (preg_match('/^[A-Za-z0-9+\/]+={0,2}$/', $trimmedForCheck)) {
+                $decoded = base64_decode($value, true);
+                if ($decoded !== false && strlen($decoded) > 4) {
+                    // 解码后内容用 strpos 预筛：只在含 \xAC\xED 或 O: 或 a: 时才进一步检测
+                    if (strpos($decoded, "\xAC\xED") !== false
+                        || strpos($decoded, 'O:') !== false
+                        || strpos($decoded, 'a:') !== false) {
+                        if (strpos($decoded, "\xAC\xED\x00\x05") === 0) {
+                            $score = max($score, 95);
+                            $findings[] = 'Java serialized object (Base64 decoded)';
+                        }
+                        if (preg_match('/O:\d+:"/', $decoded) || preg_match('/a:\d+:\{/', $decoded)) {
+                            $adjustedScore = (int)(85 * $paramMultiplier);
+                            $score = max($score, $adjustedScore);
+                            $findings[] = 'PHP serialized data (Base64 decoded)';
+                        }
+                    }
+                }
             }
         }
 

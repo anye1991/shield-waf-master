@@ -34,6 +34,43 @@ class LdapInjection {
         'bind',
     ];
 
+    // 缓存的合并大正则（首次使用时构建），覆盖全部 wildcard/operator/attribute patterns
+    private static $combinedLdapPattern = null;
+
+    /**
+     * 把全部 3 类 patterns 合并为单个 alternation 大正则。
+     * 原 patterns 全部带 /i，统一加 /i 不改变大小写行为。
+     */
+    private static function getCombinedPattern() {
+        if (self::$combinedLdapPattern !== null) {
+            return self::$combinedLdapPattern;
+        }
+        $parts = [];
+        foreach (self::$wildcardPatterns as $p) {
+            $parts[] = '(?:' . self::patternBody($p['pattern']) . ')';
+        }
+        foreach (self::$operatorPatterns as $p) {
+            $parts[] = '(?:' . self::patternBody($p['pattern']) . ')';
+        }
+        foreach (self::$attributePatterns as $p) {
+            $parts[] = '(?:' . self::patternBody($p['pattern']) . ')';
+        }
+        self::$combinedLdapPattern = '/' . implode('|', $parts) . '/i';
+        return self::$combinedLdapPattern;
+    }
+
+    /**
+     * 解析 /body/flags 形式的正则，仅取 body 部分。避免 trim($p, '/') 把
+     * 带 /i 后缀的 pattern 末尾 'i' 残留进 body，导致合并大正则出现裸 '/'。
+     */
+    private static function patternBody($pattern) {
+        $lastSlash = strrpos($pattern, '/');
+        if ($lastSlash === false || $lastSlash === 0) {
+            return substr($pattern, 1);
+        }
+        return substr($pattern, 1, $lastSlash - 1);
+    }
+
     public static function detect($inputs) {
         $score = 0;
         $details = [];
@@ -84,57 +121,76 @@ class LdapInjection {
             return ['detected' => false, 'score' => 0, 'findings' => [], 'key' => $key];
         }
 
+        // 长度上限：超过 8KB 只扫前 8KB
+        if (strlen($value) > 8192) {
+            $value = substr($value, 0, 8192);
+        }
+
         $isLdapParam = in_array($lowerKey, self::$ldapParamNames);
         $paramMultiplier = $isLdapParam ? 1.0 : 0.6;
 
-        foreach (self::$wildcardPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
-            }
-        }
+        // 廉价预筛：所有 3 类 patterns 都至少需要以下字符之一才可能命中
+        //   wildcardPatterns:   '*' (LDAP 通配符)
+        //   operatorPatterns:   '(' ')' (LDAP filter 操作符 | & ! 等)
+        //   attributePatterns:   '*' (objectClass=* 等)
+        // 后续 filter-like / unescaped parens 检查同样依赖 '(' 或 ')'
+        if (strpos($value, '(') !== false
+            || strpos($value, ')') !== false
+            || strpos($value, '*') !== false) {
 
-        foreach (self::$operatorPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
-            }
-        }
+            // 合并大正则做一次廉价筛除：未命中则跳过 3 类逐条匹配
+            if (preg_match(self::getCombinedPattern(), $value)) {
+                foreach (self::$wildcardPatterns as $pattern) {
+                    if (preg_match($pattern['pattern'], $value)) {
+                        $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
+                        $score = max($score, $adjustedScore);
+                        $findings[] = $pattern['name'];
+                    }
+                }
 
-        foreach (self::$attributePatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
-            }
-        }
+                foreach (self::$operatorPatterns as $pattern) {
+                    if (preg_match($pattern['pattern'], $value)) {
+                        $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
+                        $score = max($score, $adjustedScore);
+                        $findings[] = $pattern['name'];
+                    }
+                }
 
-        if (preg_match('/^\s*\(/', $value) && preg_match('/\)\s*$/', $value)) {
-            $parenScore = (int)(40 * $paramMultiplier);
-            $score = max($score, $parenScore);
-            $findings[] = 'LDAP filter-like structure';
-        }
-
-        $unescapedParens = 0;
-        $len = strlen($value);
-        for ($i = 0; $i < $len; $i++) {
-            if ($value[$i] === '(' || $value[$i] === ')') {
-                // 统计前置连续反斜杠数量，奇数才视为已转义
-                $bs = 0;
-                $j = $i - 1;
-                while ($j >= 0 && $value[$j] === '\\') { $bs++; $j--; }
-                $isEscaped = ($bs % 2 === 1);
-                if (!$isEscaped) {
-                    $unescapedParens++;
+                foreach (self::$attributePatterns as $pattern) {
+                    if (preg_match($pattern['pattern'], $value)) {
+                        $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
+                        $score = max($score, $adjustedScore);
+                        $findings[] = $pattern['name'];
+                    }
                 }
             }
-        }
-        if ($unescapedParens >= 4) {
-            $parenScore = (int)(35 * $paramMultiplier);
-            $score = max($score, $parenScore);
-            $findings[] = 'Multiple unescaped parentheses';
+
+            // filter-like 结构检查（依然需要预筛通过才执行）
+            if (preg_match('/^\s*\(/', $value) && preg_match('/\)\s*$/', $value)) {
+                $parenScore = (int)(40 * $paramMultiplier);
+                $score = max($score, $parenScore);
+                $findings[] = 'LDAP filter-like structure';
+            }
+
+            $unescapedParens = 0;
+            $len = strlen($value);
+            for ($i = 0; $i < $len; $i++) {
+                if ($value[$i] === '(' || $value[$i] === ')') {
+                    // 统计前置连续反斜杠数量，奇数才视为已转义
+                    $bs = 0;
+                    $j = $i - 1;
+                    while ($j >= 0 && $value[$j] === '\\') { $bs++; $j--; }
+                    $isEscaped = ($bs % 2 === 1);
+                    if (!$isEscaped) {
+                        $unescapedParens++;
+                    }
+                }
+            }
+            if ($unescapedParens >= 4) {
+                $parenScore = (int)(35 * $paramMultiplier);
+                $score = max($score, $parenScore);
+                $findings[] = 'Multiple unescaped parentheses';
+            }
         }
 
         return [

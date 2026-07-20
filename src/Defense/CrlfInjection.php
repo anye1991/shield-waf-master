@@ -45,20 +45,123 @@ class CrlfInjection {
         'Authorization', 'Proxy-Authorization', 'Cookie', 'X-Custom-IP-Authorization'
     ];
 
+    // 缓存的合并大正则（首次使用时构建）
+    private static $combinedCrlfPattern = null;
+    private static $combinedNewlineNoI = null;
+    private static $combinedNewlineI = null;
+
+    /**
+     * 解析 /body/flags 形式的正则，返回 [body, flags]
+     * 用于安全合并：trim($p, '/') 会把带 /i 后缀的 pattern 残留 'i' 进 body，
+     * 导致合并大正则中出现裸 '/'，触发 "Unknown modifier" 错误。这里改为
+     * 精确分离 body 与 flags。
+     */
+    private static function splitPatternFlags($pattern) {
+        // 第一个字符必须是 '/'，最后一个 '/' 之后是 flags
+        $firstSlash = 0; // 已知以 '/' 开头
+        $lastSlash = strrpos($pattern, '/');
+        if ($lastSlash === false || $lastSlash === 0) {
+            return [substr($pattern, 1), ''];
+        }
+        $body = substr($pattern, 1, $lastSlash - 1);
+        $flags = substr($pattern, $lastSlash + 1);
+        return [$body, $flags];
+    }
+
+    /**
+     * 把所有 crlfPatterns 合并为单个 alternation 大正则。
+     * crlfPatterns 中第 1 条原无 /i 修饰符，但其内容 (\r\n 字节) 无字母，/i 无副作用；
+     * 第 2-7 条原本就有 /i。统一加 /i 安全。
+     */
+    private static function getCombinedCrlfPattern() {
+        if (self::$combinedCrlfPattern !== null) {
+            return self::$combinedCrlfPattern;
+        }
+        $parts = [];
+        foreach (self::$crlfPatterns as $p) {
+            list($body, $_) = self::splitPatternFlags($p['pattern']);
+            $parts[] = '(?:' . $body . ')';
+        }
+        self::$combinedCrlfPattern = '/' . implode('|', $parts) . '/i';
+        return self::$combinedCrlfPattern;
+    }
+
+    /**
+     * 把 newlinePatterns 按是否有 /i 修饰符分两组分别合并，确保不改变大小写敏感行为。
+     * - 带 /i 的 (URL-encoded %0d/%0a 等) 合并到 $combinedNewlineI
+     * - 不带 /i 的 (raw/escaped 字节序列) 合并到 $combinedNewlineNoI
+     */
+    private static function getCombinedNewlineNoI() {
+        if (self::$combinedNewlineNoI !== null) {
+            return self::$combinedNewlineNoI;
+        }
+        $parts = [];
+        foreach (self::$newlinePatterns as $p) {
+            list($body, $flags) = self::splitPatternFlags($p['pattern']);
+            // 仅保留不带 i 修饰符的 pattern
+            if (strpos($flags, 'i') !== false) {
+                continue;
+            }
+            $parts[] = '(?:' . $body . ')';
+        }
+        self::$combinedNewlineNoI = '/' . implode('|', $parts) . '/';
+        return self::$combinedNewlineNoI;
+    }
+
+    private static function getCombinedNewlineI() {
+        if (self::$combinedNewlineI !== null) {
+            return self::$combinedNewlineI;
+        }
+        $parts = [];
+        foreach (self::$newlinePatterns as $p) {
+            list($body, $flags) = self::splitPatternFlags($p['pattern']);
+            // 仅保留带 i 修饰符的 pattern
+            if (strpos($flags, 'i') === false) {
+                continue;
+            }
+            $parts[] = '(?:' . $body . ')';
+        }
+        self::$combinedNewlineI = '/' . implode('|', $parts) . '/i';
+        return self::$combinedNewlineI;
+    }
+
     public static function check() {
         $targets = self::collectTargets();
-        
+
         foreach ($targets as $target) {
-            foreach (self::$crlfPatterns as $pattern) {
-                if (preg_match($pattern['pattern'], $target)) {
-                    waf_block('CRLF injection - ' . $pattern['name']);
+            if (!is_string($target)) continue;
+
+            // 长度上限：超过 8KB 只扫前 8KB
+            if (strlen($target) > 8192) {
+                $target = substr($target, 0, 8192);
+            }
+
+            // 廉价预筛：所有 crlfPatterns 与 newlinePatterns 都要求出现
+            //   raw \r 或 \n、或 URL 编码 %、或反斜杠转义 \ 才可能命中
+            if (strpos($target, "\r") === false
+                && strpos($target, "\n") === false
+                && strpos($target, '%') === false
+                && strpos($target, '\\') === false) {
+                continue;
+            }
+
+            // 合并大正则做廉价筛除：crlfPatterns
+            if (preg_match(self::getCombinedCrlfPattern(), $target)) {
+                foreach (self::$crlfPatterns as $pattern) {
+                    if (preg_match($pattern['pattern'], $target)) {
+                        waf_block('CRLF injection - ' . $pattern['name']);
+                    }
                 }
             }
 
-            foreach (self::$newlinePatterns as $pattern) {
-                if (preg_match($pattern['pattern'], $target)) {
-                    if (self::isHeaderInjection($target)) {
-                        waf_block('CRLF injection - ' . $pattern['name'] . ' (header injection)');
+            // 合并大正则做廉价筛除：newlinePatterns (按 /i 分两组)
+            if (preg_match(self::getCombinedNewlineNoI(), $target)
+                || preg_match(self::getCombinedNewlineI(), $target)) {
+                foreach (self::$newlinePatterns as $pattern) {
+                    if (preg_match($pattern['pattern'], $target)) {
+                        if (self::isHeaderInjection($target)) {
+                            waf_block('CRLF injection - ' . $pattern['name'] . ' (header injection)');
+                        }
                     }
                 }
             }

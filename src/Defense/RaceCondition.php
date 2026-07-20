@@ -24,17 +24,78 @@ class RaceCondition {
 
     private static $storageDir;
 
+    // 单文件最大字节数（>1MB 视为异常，跳过并清理，防 json_decode 解析超长 JSON 耗时）
+    const MAX_FILE_SIZE = 1048576;
+    // 单 IP 历史记录最大条数
+    const MAX_HISTORY = 500;
+    // APCu TTL（秒）
+    const APU_TTL = 60;
+
     public static function detect() {
+        self::initStorage();
+
+        $currentRequest = self::getRequestFingerprint();
+        $ip = self::getClientIp();
+
+        // APCu 优先（共享内存，性能比文件高 100 倍）
+        // 注意：APCu 路径不做串行化加锁，并发请求可能丢更新，但不会漏检当前请求；
+        // 竞态条件检测关注攻击模式（连续多次请求），允许少量并发丢更新不影响检测能力
+        if (function_exists('apcu_enabled') && apcu_enabled()) {
+            return self::detectWithApcu($ip, $currentRequest);
+        }
+
+        // 文件降级：保留 flock(LOCK_EX) 贯穿读改写，保证检测器自身无竞态
+        return self::detectWithFile($currentRequest);
+    }
+
+    /**
+     * APCu 后端检测路径
+     */
+    private static function detectWithApcu($ip, $currentRequest) {
+        $key = 'waf_rc_' . md5($ip);
+        $found = false;
+        $history = apcu_fetch($key, $found);
+        if (!$found || !is_array($history)) {
+            $history = [];
+        }
+        $history = self::pruneHistory($history);
+
+        [$score, $details, $detected] = self::runAllChecks($currentRequest, $history);
+
+        // 追加当前请求并写回
+        $history[] = $currentRequest;
+        $history = self::pruneHistory($history);
+        if (count($history) > self::MAX_HISTORY) {
+            $history = array_slice($history, -self::MAX_HISTORY);
+        }
+        apcu_store($key, $history, self::APU_TTL);
+
+        return [
+            'detected' => $detected,
+            'score'    => min($score, 100),
+            'details'  => $details,
+        ];
+    }
+
+    /**
+     * 文件后端检测路径：保留原 flock(LOCK_EX) 贯穿读改写的语义
+     */
+    private static function detectWithFile($currentRequest) {
         $score = 0;
         $details = [];
         $detected = false;
 
-        self::initStorage();
-
-        $currentRequest = self::getRequestFingerprint();
-
         // 获取文件锁，贯穿整个读改写周期，避免检测器自身的竞态条件
         $file = self::getStorageFile();
+
+        // 文件大小检查：>1MB 视为异常，删除后重建，防 json_decode 解析超长 JSON 耗时
+        if (is_file($file)) {
+            $fsize = @filesize($file);
+            if ($fsize !== false && $fsize > self::MAX_FILE_SIZE) {
+                @unlink($file);
+            }
+        }
+
         $handle = @fopen($file, 'c+');
         if ($handle === false) {
             return ['detected' => false, 'score' => 0, 'details' => []];
@@ -49,32 +110,7 @@ class RaceCondition {
             $history = self::readHistoryFromHandle($handle);
             $history = self::pruneHistory($history);
 
-            $rateResult = self::checkRequestRate($currentRequest, $history);
-            if ($rateResult['score'] > 0) {
-                $score = max($score, $rateResult['score']);
-                $details[] = $rateResult;
-                if ($rateResult['detected']) {
-                    $detected = true;
-                }
-            }
-
-            $idempotentResult = self::checkIdempotentPost($currentRequest, $history);
-            if ($idempotentResult['score'] > 0) {
-                $score = max($score, $idempotentResult['score']);
-                $details[] = $idempotentResult;
-                if ($idempotentResult['detected']) {
-                    $detected = true;
-                }
-            }
-
-            $sensitiveResult = self::checkSensitiveOperations($currentRequest, $history);
-            if ($sensitiveResult['score'] > 0) {
-                $score = max($score, $sensitiveResult['score']);
-                $details[] = $sensitiveResult;
-                if ($sensitiveResult['detected']) {
-                    $detected = true;
-                }
-            }
+            [$score, $details, $detected] = self::runAllChecks($currentRequest, $history);
 
             self::writeHistoryToHandle($handle, $history, $currentRequest);
         } finally {
@@ -85,9 +121,47 @@ class RaceCondition {
 
         return [
             'detected' => $detected,
-            'score' => min($score, 100),
-            'details' => $details,
+            'score'    => min($score, 100),
+            'details'  => $details,
         ];
+    }
+
+    /**
+     * 运行全部三项检测（rate / idempotent / sensitive），返回 [score, details, detected]
+     */
+    private static function runAllChecks($currentRequest, $history) {
+        $score = 0;
+        $details = [];
+        $detected = false;
+
+        $rateResult = self::checkRequestRate($currentRequest, $history);
+        if ($rateResult['score'] > 0) {
+            $score = max($score, $rateResult['score']);
+            $details[] = $rateResult;
+            if ($rateResult['detected']) {
+                $detected = true;
+            }
+        }
+
+        $idempotentResult = self::checkIdempotentPost($currentRequest, $history);
+        if ($idempotentResult['score'] > 0) {
+            $score = max($score, $idempotentResult['score']);
+            $details[] = $idempotentResult;
+            if ($idempotentResult['detected']) {
+                $detected = true;
+            }
+        }
+
+        $sensitiveResult = self::checkSensitiveOperations($currentRequest, $history);
+        if ($sensitiveResult['score'] > 0) {
+            $score = max($score, $sensitiveResult['score']);
+            $details[] = $sensitiveResult;
+            if ($sensitiveResult['detected']) {
+                $detected = true;
+            }
+        }
+
+        return [$score, $details, $detected];
     }
 
     private static function readHistoryFromHandle($handle) {
@@ -106,8 +180,8 @@ class RaceCondition {
         $history[] = $request;
         $history = self::pruneHistory($history);
 
-        if (count($history) > 500) {
-            $history = array_slice($history, -500);
+        if (count($history) > self::MAX_HISTORY) {
+            $history = array_slice($history, -self::MAX_HISTORY);
         }
 
         ftruncate($handle, 0);
@@ -167,8 +241,15 @@ class RaceCondition {
 
     private static function getStorageFile() {
         $ip = self::getClientIp();
-        $safeIp = str_replace([':', '.'], '_', $ip);
-        return self::$storageDir . '/rc_' . $safeIp . '.json';
+        // 用 md5 哈希做文件名，防止可伪造 IP 中的特殊字符引发文件系统 DoS
+        $hash = md5($ip);
+        // 按 IP 哈希前 2 位分桶子目录，避免单目录文件数过多（百万级文件会拖慢文件系统）
+        $bucket = substr($hash, 0, 2);
+        $subdir = self::$storageDir . '/' . $bucket;
+        if (!is_dir($subdir)) {
+            @mkdir($subdir, 0755, true);
+        }
+        return $subdir . '/rc_' . $hash . '.json';
     }
 
     private static function pruneHistory($history) {

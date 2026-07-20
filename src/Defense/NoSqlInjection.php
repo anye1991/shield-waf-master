@@ -46,6 +46,42 @@ class NoSqlInjection {
         'data', 'doc', 'document', 'record',
     ];
 
+    // 缓存的合并 Mongo 操作符匹配大正则（首次使用时构建）
+    // 替代原来 100 操作符 × 3 strpos = 300 次 strpos 循环
+    private static $mongoOpPattern = null;
+
+    /**
+     * 构建一个合并大正则，一次匹配所有 MongoDB 操作符的注入形式。
+     * 覆盖原 strpos 检查的三种形式：
+     *   1. "$op"  (双引号包裹)
+     *   2. '$op'  (单引号包裹)
+     *   3. \$op\  (反斜杠转义形式)
+     * 使用 /i 修饰符，与原代码 strtolower($value) 行为一致。
+     */
+    private static function getMongoOpPattern() {
+        if (self::$mongoOpPattern !== null) {
+            return self::$mongoOpPattern;
+        }
+        $opNames = [];
+        foreach (self::$mongoOperators as $op) {
+            // $op 形如 '$gt'，去掉前导 $，再 preg_quote 转义正则元字符
+            $opNames[] = preg_quote(substr($op, 1), '/');
+        }
+        $alt = implode('|', $opNames);
+
+        // 用 preg_quote 避免反斜杠转义混乱
+        $q = '["\']';                  // 任一引号
+        $bs = preg_quote('\\', '/');   // 字面反斜杠
+        $d = preg_quote('$', '/');     // 字面美元符
+
+        // 1) "$op" 或 '$op'  : ["']\$op["']
+        // 2) \$op\            : \\\$op\\
+        $quotedForm = $q . $d . '(?:' . $alt . ')' . $q;
+        $backslashForm = $bs . $d . '(?:' . $alt . ')' . $bs;
+        self::$mongoOpPattern = '/(?:' . $quotedForm . '|' . $backslashForm . ')/i';
+        return self::$mongoOpPattern;
+    }
+
     private static $dangerPatterns = [
         ['pattern' => '/\$where\s*:/i', 'severity' => 95, 'name' => 'MongoDB $where operator'],
         ['pattern' => '/\$regex\s*:/i', 'severity' => 85, 'name' => 'MongoDB $regex operator'],
@@ -156,6 +192,13 @@ class NoSqlInjection {
             return ['is_attack' => false, 'reason' => ''];
         }
 
+        // 长度上限：超过 8KB 只扫前 8KB
+        if (strlen($value) > 8192) {
+            $value = substr($value, 0, 8192);
+            // 重新计算 lowerValue 保持一致
+            $lowerValue = strtolower($value);
+        }
+
         if (in_array($key, self::$nosqlParamNames)) {
             foreach (self::$dangerPatterns as $pattern) {
                 if (preg_match($pattern['pattern'], $value)) {
@@ -163,12 +206,18 @@ class NoSqlInjection {
                 }
             }
 
-            foreach (self::$mongoOperators as $op) {
-                if (strpos($lowerValue, '"' . $op . '"') !== false ||
-                    strpos($lowerValue, "'" . $op . "'") !== false ||
-                    strpos($lowerValue, '\\' . $op . '\\') !== false) {
-                    return ['is_attack' => true, 'reason' => "MongoDB operator: $op"];
+            // 合并大正则做一次廉价筛除：未命中则跳过 100 操作符 × 3 strpos 循环
+            if (preg_match(self::getMongoOpPattern(), $value)) {
+                // 大正则命中后，逐条 strpos 还原具体操作符名称（保留 reason 细节）
+                foreach (self::$mongoOperators as $op) {
+                    if (strpos($lowerValue, '"' . $op . '"') !== false ||
+                        strpos($lowerValue, "'" . $op . "'") !== false ||
+                        strpos($lowerValue, '\\' . $op . '\\') !== false) {
+                        return ['is_attack' => true, 'reason' => "MongoDB operator: $op"];
+                    }
                 }
+                // 大正则命中但 strpos 未命中（极少见，可能因大小写或边界差异），兜底告警
+                return ['is_attack' => true, 'reason' => 'MongoDB operator'];
             }
 
             if (preg_match('/\{\s*\$[\w]+\s*:/', $value)) {

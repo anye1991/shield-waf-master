@@ -50,6 +50,10 @@ class IdorDetection {
         '/api/order', '/api/payment', '/api/account',
     ];
 
+    // 缓存 isSensitiveEndpoint() 的结果。
+    // 一次请求内 $_SERVER['REQUEST_URI'] 不变，避免每个 ID 参数都重算一遍。
+    private static $sensitiveEndpointCache = null;
+
     public static function detect($inputs) {
         $score = 0;
         $details = [];
@@ -108,12 +112,16 @@ class IdorDetection {
         }
 
         $hasNumericIdParam = false;
-        foreach (self::$numericIdPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $key)) {
-                $hasNumericIdParam = true;
-                $score = max($score, $pattern['severity']);
-                $findings[] = $pattern['name'];
-                break;
+        // 廉价预筛：所有 numericIdPatterns 都包含 'id' 字符串
+        // (uid/user_id/account_id/order_id/.../id 等)，未含 'id' 的 key 直接跳过
+        if (strpos($lowerKey, 'id') !== false) {
+            foreach (self::$numericIdPatterns as $pattern) {
+                if (preg_match($pattern['pattern'], $key)) {
+                    $hasNumericIdParam = true;
+                    $score = max($score, $pattern['severity']);
+                    $findings[] = $pattern['name'];
+                    break;
+                }
             }
         }
 
@@ -153,14 +161,20 @@ class IdorDetection {
         $score = 0;
         $findings = [];
 
-        foreach (self::$batchParamPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $key)) {
-                $score = max($score, $pattern['severity']);
-                $findings[] = $pattern['name'];
+        // 廉价预筛：所有 batchParamPatterns 都包含 'id' 字符串
+        // (ids/user_ids/order_ids/.../bulk_ids 等)，未含 'id' 的 key 直接跳过
+        if (strpos($lowerKey, 'id') !== false) {
+            foreach (self::$batchParamPatterns as $pattern) {
+                if (preg_match($pattern['pattern'], $key)) {
+                    $score = max($score, $pattern['severity']);
+                    $findings[] = $pattern['name'];
+                }
             }
         }
 
-        $isIdParam = preg_match('/(^|[_-])id($|[_-])/i', $key) === 1;
+        // isIdParam 匹配的也是 'id' 子串，预筛安全
+        $isIdParam = (strpos($lowerKey, 'id') !== false)
+            && preg_match('/(^|[_-])id($|[_-])/i', $key) === 1;
         if ($isIdParam && is_array($value) && count($value) > 3) {
             $arrayScore = 55;
             if ($score < $arrayScore) {
@@ -228,6 +242,10 @@ class IdorDetection {
     }
 
     private static function isSensitiveEndpoint() {
+        // 一次请求内 $_SERVER['REQUEST_URI'] 不变，结果缓存避免重复 parse_url + 遍历
+        if (self::$sensitiveEndpointCache !== null) {
+            return self::$sensitiveEndpointCache;
+        }
         $uri = $_SERVER['REQUEST_URI'] ?? '';
         $path = parse_url($uri, PHP_URL_PATH);
         if ($path === false || $path === null) {
@@ -235,18 +253,23 @@ class IdorDetection {
         }
         $path = strtolower($path);
 
+        $result = false;
         foreach (self::$sensitiveEndpoints as $endpoint) {
             // 精确匹配或路径段前缀匹配（避免 /admin 匹配 /administrator）
             if ($path === $endpoint) {
-                return true;
+                $result = true;
+                break;
             }
             if (strpos($path, $endpoint . '/') === 0) {
-                return true;
+                $result = true;
+                break;
             }
             if (strpos($path, $endpoint . '?') === 0) {
-                return true;
+                $result = true;
+                break;
             }
         }
-        return false;
+        self::$sensitiveEndpointCache = $result;
+        return self::$sensitiveEndpointCache;
     }
 }

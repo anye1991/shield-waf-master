@@ -61,6 +61,31 @@ class CachePoisoning {
         'X-Requested-With', 'Content-Type', 'X-CSRF-Token',
     ];
 
+    // 缓存的合并大正则（首次使用时构建）
+    private static $combinedCachePattern = null;
+
+    /**
+     * 把所有 cachePoisoningPatterns 合并为单个 alternation 大正则。
+     * 原 patterns 全部带 /i 修饰符，统一加 /i 安全。
+     */
+    private static function getCombinedCachePattern() {
+        if (self::$combinedCachePattern !== null) {
+            return self::$combinedCachePattern;
+        }
+        $parts = [];
+        foreach (self::$cachePoisoningPatterns as $p) {
+            $pattern = $p['pattern'];
+            // 解析 /body/flags 形式：精确分离 body 与 flags，避免 trim() 残留 'i' 进 body
+            $lastSlash = strrpos($pattern, '/');
+            $body = ($lastSlash !== false && $lastSlash > 0)
+                ? substr($pattern, 1, $lastSlash - 1)
+                : substr($pattern, 1);
+            $parts[] = '(?:' . $body . ')';
+        }
+        self::$combinedCachePattern = '/' . implode('|', $parts) . '/i';
+        return self::$combinedCachePattern;
+    }
+
     public static function check() {
         self::checkCacheBypassHeaders();
         self::checkDangerousHeaderInjection();
@@ -103,9 +128,34 @@ class CachePoisoning {
     private static function checkPoisoningPatterns() {
         $inputs = self::collectInputs();
         $headers = self::getAllHeadersCompat();
-        
+
+        $combined = self::getCombinedCachePattern();
         foreach (array_merge($inputs, $headers) as $value) {
-            $value = (string)$value;
+            if (!is_string($value)) {
+                $value = (string)$value;
+            }
+            if ($value === '') continue;
+
+            // 长度上限：超过 8KB 只扫前 8KB
+            if (strlen($value) > 8192) {
+                $value = substr($value, 0, 8192);
+            }
+
+            // 廉价预筛：cachePoisoningPatterns 全部要求出现 ':' (header 形式)；
+            // 此外 CRLF/URL编码分支还需要 \r 或 \n 或 %；纯 X-Header 分支需要 'X-'。
+            // 由于所有 patterns 均含 ':'，先检 ':' 即可廉价排除绝大多数安全输入。
+            if (strpos($value, ':') === false
+                && stripos($value, 'http') === false
+                && strpos($value, "\n") === false) {
+                continue;
+            }
+
+            // 合并大正则做一次廉价筛除
+            if (!preg_match($combined, $value)) {
+                continue;
+            }
+
+            // 大正则命中后逐条匹配以还原具体名称
             foreach (self::$cachePoisoningPatterns as $pattern) {
                 if (preg_match($pattern['pattern'], $value)) {
                     waf_block('Cache poisoning - ' . $pattern['name']);

@@ -70,6 +70,47 @@ class FileInclusion {
         'include_once', 'require_once',
     ];
 
+    // 缓存的合并大正则（首次使用时构建），覆盖全部 LFI/traversal/RFI/target patterns
+    private static $combinedLfiRfiPattern = null;
+
+    /**
+     * 把全部 4 类 patterns 合并为单个 alternation 大正则。
+     * 原 traversalPatterns 中部分 patterns 不带 /i 但都不含字母（如 /..\//），
+     * 统一加 /i 不改变大小写行为。
+     */
+    private static function getCombinedPattern() {
+        if (self::$combinedLfiRfiPattern !== null) {
+            return self::$combinedLfiRfiPattern;
+        }
+        $parts = [];
+        foreach (self::$lfiPatterns as $p) {
+            $parts[] = '(?:' . self::patternBody($p['pattern']) . ')';
+        }
+        foreach (self::$traversalPatterns as $p) {
+            $parts[] = '(?:' . self::patternBody($p['pattern']) . ')';
+        }
+        foreach (self::$rfiPatterns as $p) {
+            $parts[] = '(?:' . self::patternBody($p['pattern']) . ')';
+        }
+        foreach (self::$targetFilePatterns as $p) {
+            $parts[] = '(?:' . self::patternBody($p['pattern']) . ')';
+        }
+        self::$combinedLfiRfiPattern = '/' . implode('|', $parts) . '/i';
+        return self::$combinedLfiRfiPattern;
+    }
+
+    /**
+     * 解析 /body/flags 形式的正则，仅取 body 部分。避免 trim($p, '/') 把
+     * 带 /i 后缀的 pattern 末尾 'i' 残留进 body，导致合并大正则出现裸 '/'。
+     */
+    private static function patternBody($pattern) {
+        $lastSlash = strrpos($pattern, '/');
+        if ($lastSlash === false || $lastSlash === 0) {
+            return substr($pattern, 1);
+        }
+        return substr($pattern, 1, $lastSlash - 1);
+    }
+
     public static function detect($inputs) {
         $score = 0;
         $details = [];
@@ -134,6 +175,11 @@ class FileInclusion {
             return ['detected' => false, 'score' => 0, 'findings' => [], 'key' => $key];
         }
 
+        // 长度上限：超过 8KB 只扫前 8KB
+        if (strlen($value) > 8192) {
+            $value = substr($value, 0, 8192);
+        }
+
         $isIncludeParam = in_array($lowerKey, self::$includeParamNames, true);
         $isRfiParam = in_array($lowerKey, self::$rfiParamNames, true);
         $paramMultiplier = $isIncludeParam ? 1.0 : 0.55;
@@ -167,6 +213,24 @@ class FileInclusion {
      */
     private static function scanWithPatterns($value, $isRfiParam, $paramMultiplier, $layerFactor, &$findings, $score, $isDecoded) {
         $prefix = $isDecoded ? 'URL-decoded: ' : '';
+
+        // 廉价预筛：所有 4 类 patterns 都至少需要以下字符之一才可能命中
+        //   lfiPatterns:        ':' (协议 php://, data:// 等) 或 '/' 或 '.'
+        //   traversalPatterns:  '.' 或 '%' 或 '\'
+        //   rfiPatterns:         ':' (http://, https://, ftp://)
+        //   targetFilePatterns:  '/' (路径) 或 '.' (.htaccess / .php 等)
+        if (strpos($value, ':') === false
+            && strpos($value, '/') === false
+            && strpos($value, '.') === false
+            && strpos($value, '%') === false
+            && strpos($value, '\\') === false) {
+            return $score;
+        }
+
+        // 合并大正则做一次廉价筛除：未命中则跳过 4 类逐条匹配
+        if (!preg_match(self::getCombinedPattern(), $value)) {
+            return $score;
+        }
 
         foreach (self::$lfiPatterns as $pattern) {
             if (preg_match($pattern['pattern'], $value)) {

@@ -11,7 +11,12 @@ function waf_output_filter_start() {
         return;
     }
 
-    ob_start(function($buffer) {
+    // 只在缓冲结束（PHP_OUTPUT_HANDLER_END）时检查，避免对每个中间 buffer 都做正则匹配
+    // flags 保持默认（CLEANABLE|FLUSHABLE|REMOVABLE），通过 phase 在 callback 内做早退过滤
+    ob_start(function($buffer, $phase) {
+        if (!($phase & PHP_OUTPUT_HANDLER_END)) {
+            return $buffer;
+        }
         if (waf_is_php_error_output($buffer)) {
             waf_error_masking_log($buffer, 'php_error_detected');
             if (!headers_sent()) {

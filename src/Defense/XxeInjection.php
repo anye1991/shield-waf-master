@@ -51,6 +51,51 @@ class XxeInjection {
         'document', 'doc', 'feed', 'rss', 'sitemap',
     ];
 
+    // 缓存的合并大正则（首次使用时构建），覆盖全部 entity/xinclude/svg/wrapper/target patterns
+    private static $combinedXxePattern = null;
+
+    /**
+     * 把全部 5 类 patterns 合并为单个 alternation 大正则。
+     * 原 patterns 都带 /i；第 12 行的 /<!ENTITY\s+%.*?%\w+;/is 还带 s，
+     * 因其 body 含未转义 .*? 需要 . 跨行匹配。其余 patterns 均不含未转义 .，
+     * 统一加 /is 不改变其行为。
+     */
+    private static function getCombinedPattern() {
+        if (self::$combinedXxePattern !== null) {
+            return self::$combinedXxePattern;
+        }
+        $parts = [];
+        foreach (self::$entityPatterns as $p) {
+            $parts[] = '(?:' . self::patternBody($p['pattern']) . ')';
+        }
+        foreach (self::$xincludePatterns as $p) {
+            $parts[] = '(?:' . self::patternBody($p['pattern']) . ')';
+        }
+        foreach (self::$svgPatterns as $p) {
+            $parts[] = '(?:' . self::patternBody($p['pattern']) . ')';
+        }
+        foreach (self::$wrapperPatterns as $p) {
+            $parts[] = '(?:' . self::patternBody($p['pattern']) . ')';
+        }
+        foreach (self::$fileTargetPatterns as $p) {
+            $parts[] = '(?:' . self::patternBody($p['pattern']) . ')';
+        }
+        self::$combinedXxePattern = '/' . implode('|', $parts) . '/is';
+        return self::$combinedXxePattern;
+    }
+
+    /**
+     * 解析 /body/flags 形式的正则，仅取 body 部分。避免 trim($p, '/') 把
+     * 带 /i 后缀的 pattern 末尾 'i' 残留进 body，导致合并大正则出现裸 '/'。
+     */
+    private static function patternBody($pattern) {
+        $lastSlash = strrpos($pattern, '/');
+        if ($lastSlash === false || $lastSlash === 0) {
+            return substr($pattern, 1);
+        }
+        return substr($pattern, 1, $lastSlash - 1);
+    }
+
     public static function detect($rawBody, $inputs) {
         $score = 0;
         $details = [];
@@ -107,6 +152,12 @@ class XxeInjection {
             return ['detected' => false, 'score' => 0, 'findings' => [], 'key' => $key];
         }
 
+        // 长度上限：超过 8KB 只扫前 8KB
+        if (strlen($value) > 8192) {
+            $value = substr($value, 0, 8192);
+            $lowerValue = strtolower($value);
+        }
+
         $isXmlParam = in_array($lowerKey, self::$xmlParamNames);
         $hasXmlHeader = strpos($lowerValue, '<?xml') !== false;
         // 更精确的 DOCTYPE 判定：要求同时存在 XML 声明、内部 DTD 子集（[）或 SYSTEM 标识
@@ -116,47 +167,70 @@ class XxeInjection {
                        preg_match('/<!DOCTYPE\s+\w+\s+SYSTEM/i', $value));
         $contextMultiplier = ($isXmlParam || $hasXmlHeader || $hasDoctype) ? 1.0 : 0.5;
 
-        foreach (self::$entityPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $contextMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
+        // 廉价预筛：所有 5 类 patterns 都至少需要以下字符/子串之一才可能命中
+        //   entityPatterns:    '<' (<!ENTITY/<!DOCTYPE) 或 '%' (<!ENTITY %)
+        //   xincludePatterns:  '<' (xi:include)
+        //   svgPatterns:        'xlink' 或 'external' (大小写不敏感)
+        //   wrapperPatterns:   ':' (php://, expect:// 等)
+        //   fileTargetPatterns: '/' (路径) 或 '.' (.htaccess / .php)
+        // 若均不含，跳过所有 5 类正则与合并大正则
+        if (strpos($value, '<') !== false
+            || strpos($value, ':') !== false
+            || strpos($value, '/') !== false
+            || strpos($value, '.') !== false
+            || strpos($value, '%') !== false
+            || stripos($value, 'external') !== false
+            || stripos($value, 'xlink') !== false) {
+
+            // 合并大正则做一次廉价筛除：未命中则跳过 5 类逐条匹配
+            if (preg_match(self::getCombinedPattern(), $value)) {
+                foreach (self::$entityPatterns as $pattern) {
+                    if (preg_match($pattern['pattern'], $value)) {
+                        $adjustedScore = (int)($pattern['severity'] * $contextMultiplier);
+                        $score = max($score, $adjustedScore);
+                        $findings[] = $pattern['name'];
+                    }
+                }
+
+                foreach (self::$xincludePatterns as $pattern) {
+                    if (preg_match($pattern['pattern'], $value)) {
+                        $adjustedScore = (int)($pattern['severity'] * $contextMultiplier);
+                        $score = max($score, $adjustedScore);
+                        $findings[] = $pattern['name'];
+                    }
+                }
+
+                foreach (self::$svgPatterns as $pattern) {
+                    if (preg_match($pattern['pattern'], $value)) {
+                        $adjustedScore = (int)($pattern['severity'] * $contextMultiplier);
+                        $score = max($score, $adjustedScore);
+                        $findings[] = $pattern['name'];
+                    }
+                }
+
+                foreach (self::$wrapperPatterns as $pattern) {
+                    if (preg_match($pattern['pattern'], $value)) {
+                        $adjustedScore = (int)($pattern['severity'] * $contextMultiplier);
+                        $score = max($score, $adjustedScore);
+                        $findings[] = $pattern['name'];
+                    }
+                }
+
+                foreach (self::$fileTargetPatterns as $pattern) {
+                    if (preg_match($pattern['pattern'], $value)) {
+                        $adjustedScore = (int)($pattern['severity'] * $contextMultiplier);
+                        $score = max($score, $adjustedScore);
+                        $findings[] = $pattern['name'];
+                    }
+                }
             }
         }
 
-        foreach (self::$xincludePatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $contextMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
-            }
-        }
+        // 复用 stripos 避免在组合检测里重复调用 preg_match('/<!ENTITY|<!DOCTYPE/i')
+        $hasEntity = stripos($value, '<!ENTITY') !== false;
+        $hasDoctypeSimple = stripos($value, '<!DOCTYPE') !== false;
 
-        foreach (self::$svgPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $contextMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
-            }
-        }
-
-        foreach (self::$wrapperPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $contextMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
-            }
-        }
-
-        foreach (self::$fileTargetPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $contextMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
-            }
-        }
-
-        if ($hasXmlHeader && preg_match('/<!ENTITY/i', $value)) {
+        if ($hasXmlHeader && $hasEntity) {
             $comboScore = 95;
             if ($score < $comboScore) {
                 $score = $comboScore;
@@ -165,7 +239,7 @@ class XxeInjection {
         }
 
         // 仅在 DOCTYPE/ENTITY 同时存在时，远程 URL 才计高分
-        $hasEntityOrDoctype = preg_match('/<!ENTITY/i', $value) || preg_match('/<!DOCTYPE/i', $value);
+        $hasEntityOrDoctype = $hasEntity || $hasDoctypeSimple;
         if ($hasEntityOrDoctype && preg_match('#(https?|ftp)://#i', $value)) {
             $comboScore = 90;
             if ($score < $comboScore) {

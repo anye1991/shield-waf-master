@@ -565,8 +565,8 @@ function waf_upload_heuristic($content, $ext = '') {
         $score += min($b64count * 4, 15);
     }
 
-    // 长 base64 字符串
-    if (preg_match_all('/[A-Za-z0-9+\/]{80,}={0,2}/', $content)) {
+    // 长 base64 字符串紧邻危险函数才计分（避免误报合法 base64 数据，如图片、字体）
+    if (preg_match('/(?:eval|base64_decode|assert|system|exec|passthru|shell_exec|str_rot13|gzinflate|gzuncompress)\s*\([^)]*[A-Za-z0-9+\/]{80,}={0,2}/i', $content)) {
         $score += 10;
     }
 

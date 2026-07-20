@@ -165,6 +165,9 @@ class TemplateInjection {
         'partial', 'include', 'extend', 'block', 'macro',
     ];
 
+    // 缓存的合并大正则（首次使用时构建），避免每条输入跑 ~150 条正则
+    private static $combinedPattern = null;
+
     public static function check() {
         $inputs = self::collectInputs();
         foreach ($inputs as $key => $value) {
@@ -173,6 +176,25 @@ class TemplateInjection {
                 waf_block('Template injection detected - ' . $result['reason']);
             }
         }
+    }
+
+    /**
+     * 构建并缓存合并后的 alternation 大正则，用于廉价快速筛除无命中输入。
+     * 仅作"是否命中任一模式"的预筛；具体命中名称仍由逐条 preg_match 兜底返回。
+     * 注意：原 patterns 均无修饰符（既无 i 也无 s），合并大正则也不加任何修饰符，
+     * 避免改变 . 是否跨行、是否区分大小写等行为，确保不漏检、不误报。
+     */
+    private static function getCombinedPattern() {
+        if (self::$combinedPattern !== null) {
+            return self::$combinedPattern;
+        }
+        $parts = [];
+        foreach (self::$templatePatterns as $p) {
+            // 每条单独包裹非捕获组，防止 pattern 内部有顶层 | 破坏整体 alternation 优先级
+            $parts[] = '(?:' . trim($p['pattern'], '/') . ')';
+        }
+        self::$combinedPattern = '/' . implode('|', $parts) . '/';
+        return self::$combinedPattern;
     }
 
     private static function collectInputs() {
@@ -223,10 +245,33 @@ class TemplateInjection {
             return ['is_attack' => false, 'reason' => ''];
         }
 
+        // 长度上限：超过 8KB 只扫前 8KB，避免对超大输入做深度正则扫描
+        if (strlen($value) > 8192) {
+            $value = substr($value, 0, 8192);
+        }
+
         if (in_array($key, self::$templateParamNames)) {
-            foreach (self::$templatePatterns as $pattern) {
-                if (preg_match($pattern['pattern'], $value)) {
-                    return ['is_attack' => true, 'reason' => $pattern['name']];
+            // 廉价预筛：不含任何模板标签起始符则跳过整组正则
+            // 模板起始符涵盖所有 templatePatterns：{{ {% {# {$ {* 以及 {!!（Laravel Blade，预留）
+            if (strpos($value, '{{') === false
+                && strpos($value, '{%') === false
+                && strpos($value, '{#') === false
+                && strpos($value, '{$') === false
+                && strpos($value, '{*') === false
+                && strpos($value, '{!!') === false) {
+                // 无任何模板起始符，必定不命中 templatePatterns，跳过
+                return ['is_attack' => false, 'reason' => ''];
+            }
+
+            // 合并大正则做一次廉价筛除：无任何命中则跳过逐条循环
+            if (!preg_match(self::getCombinedPattern(), $value)) {
+                // 大正则未命中，但通用 {{ }} 检测仍需走（templatePatterns 不含通用 {{...}}）
+            } else {
+                // 大正则命中，逐条匹配找出具体名称并返回
+                foreach (self::$templatePatterns as $pattern) {
+                    if (preg_match($pattern['pattern'], $value)) {
+                        return ['is_attack' => true, 'reason' => $pattern['name']];
+                    }
                 }
             }
 
