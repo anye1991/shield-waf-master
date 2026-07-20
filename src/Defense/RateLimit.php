@@ -6,7 +6,11 @@ if (!defined('WAF_CC_LOG')) {
     define('WAF_CC_LOG', $logDir . '/cc_counter.txt');
 }
 if (!defined('WAF_CC_WINDOW')) define('WAF_CC_WINDOW', 60);
-if (!defined('WAF_CC_LIMIT')) define('WAF_CC_LIMIT', 60);
+// 默认 120 次/分钟（静态资源已提前放行，此处仅计动态请求）
+// WordPress heartbeat、AJAX、前端轮询等正常场景需要更高阈值
+if (!defined('WAF_CC_LIMIT')) define('WAF_CC_LIMIT', 120);
+// AJAX/已登录用户可配置更高阈值（通过 RequestContext 动态判断）
+if (!defined('WAF_CC_LIMIT_AJAX')) define('WAF_CC_LIMIT_AJAX', 240);
 // 单 IP 在文件后端中的最大记录行数，超过则丢弃最旧记录，防止单文件无限增长
 if (!defined('WAF_CC_FILE_MAX_PER_IP')) define('WAF_CC_FILE_MAX_PER_IP', 1000);
 // 异步清理：每 N 次请求触发一次全窗口清理（写时仍然过滤过期行，但读时跳过过期行不再强制全量重写）
@@ -30,19 +34,49 @@ function waf_cc_check() {
     }
     $ip = str_replace(["\n", "\r", "|"], '', $ip);
 
+    // 动态阈值：AJAX 请求（WordPress heartbeat / wp-json / admin-ajax）使用更高阈值
+    // 静态资源已在 shield-waf.php 顶部 return，不会进入这里
+    $limit = WAF_CC_LIMIT;
+    if (self_is_ajax_request()) {
+        $limit = defined('WAF_CC_LIMIT_AJAX') ? WAF_CC_LIMIT_AJAX : 240;
+    }
+
     // APCu 优先（共享内存，性能比文件高 100 倍）
     if (function_exists('apcu_enabled') && apcu_enabled()) {
-        return waf_cc_check_apcu($ip);
+        return waf_cc_check_apcu($ip, $limit);
     }
 
     // 文件降级
-    return waf_cc_check_file($ip);
+    return waf_cc_check_file($ip, $limit);
+}
+
+/**
+ * 判断是否为 AJAX 请求
+ * WordPress heartbeat、admin-ajax、wp-json、REST API 等高频合法请求
+ */
+function self_is_ajax_request() {
+    // 标准 X-Requested-With 头
+    if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) &&
+        strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest') {
+        return true;
+    }
+    $uri = $_SERVER['REQUEST_URI'] ?? '';
+    $path = parse_url($uri, PHP_URL_PATH) ?: '';
+    $lower = strtolower($path);
+    // WordPress AJAX / REST API / heartbeat 端点
+    if (strpos($lower, 'admin-ajax.php') !== false) return true;
+    if (strpos($lower, '/wp-json/') !== false) return true;
+    if (strpos($lower, 'heartbeat') !== false) return true;
+    // 通用 API 路径
+    if (strpos($lower, '/api/') !== false) return true;
+    return false;
 }
 
 /**
  * APCu 后端：单次原子自增，O(1) 复杂度
  */
-function waf_cc_check_apcu($ip) {
+function waf_cc_check_apcu($ip, $limit = null) {
+    if ($limit === null) $limit = WAF_CC_LIMIT;
     $key = 'waf_cc_' . md5($ip);
     $found = false;
     $count = apcu_inc($key, 1, $found);
@@ -50,12 +84,12 @@ function waf_cc_check_apcu($ip) {
         // 首次访问：初始化计数并设置窗口 TTL
         if (apcu_store($key, 1, WAF_CC_WINDOW) === false) {
             // APCu 写入失败，降级到文件后端
-            return waf_cc_check_file($ip);
+            return waf_cc_check_file($ip, $limit);
         }
         $count = 1;
     }
     // 计数超过阈值即拦截（含本次请求）
-    return $count <= WAF_CC_LIMIT;
+    return $count <= $limit;
 }
 
 /**
@@ -65,7 +99,8 @@ function waf_cc_check_apcu($ip) {
  *   2. 异步清理：每 WAF_CC_CLEANUP_INTERVAL 次请求才触发全窗口清理，其余请求仅追加新行
  *   3. 写入时仍用 flock(LOCK_EX) 持有锁贯穿读改写，保持 fail-closed 与原子性
  */
-function waf_cc_check_file($ip) {
+function waf_cc_check_file($ip, $limit = null) {
+    if ($limit === null) $limit = WAF_CC_LIMIT;
     $now = time();
     $file = WAF_CC_LOG;
 
@@ -116,7 +151,7 @@ function waf_cc_check_file($ip) {
         }
     }
 
-    if ($count >= WAF_CC_LIMIT) {
+    if ($count >= $limit) {
         flock($fp, LOCK_UN);
         fclose($fp);
         return false;

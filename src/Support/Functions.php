@@ -40,6 +40,43 @@ function waf_ensure_dir($dir) {
     return true;
 }
 
+/**
+ * 日志文件轮转：按大小自动截断，防止单文件无限增长
+ * 默认单文件 10MB 上限，超过则截断保留尾部 50% 内容
+ * 可通过 WAF_LOG_MAX_SIZE（字节）配置
+ */
+function waf_log_rotate($file, $maxSize = null) {
+    if (!is_file($file)) return;
+    if ($maxSize === null) {
+        $maxSize = defined('WAF_LOG_MAX_SIZE') ? WAF_LOG_MAX_SIZE : 10485760; // 10MB
+    }
+    $size = @filesize($file);
+    if ($size === false || $size < $maxSize) return;
+
+    // 截断保留尾部 50% 内容
+    $keepSize = intval($maxSize / 2);
+    $fp = @fopen($file, 'r');
+    if (!$fp) return;
+    fseek($fp, -$keepSize, SEEK_END);
+    $tail = stream_get_contents($fp);
+    fclose($fp);
+
+    // 去掉可能截断的不完整首行
+    $firstNl = strpos($tail, "\n");
+    if ($firstNl !== false) {
+        $tail = substr($tail, $firstNl + 1);
+    }
+
+    // 原子写入
+    $tmp = $file . '.tmp.' . getmypid();
+    if (@file_put_contents($tmp, $tail) !== false) {
+        @chmod($tmp, 0664);
+        @rename($tmp, $file);
+    } else {
+        @unlink($tmp);
+    }
+}
+
 function waf_safe_read_json($file, $default = []) {
     if (!is_file($file)) return $default;
     $content = @file_get_contents($file);
@@ -56,12 +93,59 @@ function waf_safe_write_json($file, $data) {
 }
 
 function waf_get_real_ip() {
+    // 缓存结果（单次请求内多次调用）
+    static $cachedIp = null;
+    if ($cachedIp !== null) return $cachedIp;
+
     // 如果配置了信任 Cloudflare
     if (defined('WAF_TRUST_CF_IP') && WAF_TRUST_CF_IP && !empty($_SERVER['HTTP_CF_CONNECTING_IP'])) {
-        return $_SERVER['HTTP_CF_CONNECTING_IP'];
+        // 安全验证：只有当来源 IP 确实属于 Cloudflare 网段时才信任 CF-Connecting-IP
+        // 防止非 CF 环境下该头被伪造
+        $remoteAddr = $_SERVER['REMOTE_ADDR'] ?? '';
+        if ($remoteAddr && waf_is_cloudflare_ip($remoteAddr)) {
+            $cachedIp = $_SERVER['HTTP_CF_CONNECTING_IP'];
+            return $cachedIp;
+        }
+        // 来源 IP 不在 CF 段，降级用 REMOTE_ADDR（安全优先）
     }
     // 默认只信任直接连接 IP，防止伪造
-    return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+    $cachedIp = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+    return $cachedIp;
+}
+
+/**
+ * 检查 IP 是否属于 Cloudflare 官方网段
+ * 仅在启用 WAF_TRUST_CF_IP 时调用
+ */
+function waf_is_cloudflare_ip($ip) {
+    if (!filter_var($ip, FILTER_VALIDATE_IP)) return false;
+    // Cloudflare 官方 IPv4 段（https://www.cloudflare.com/ips-v4/）
+    // 使用 cidr 匹配，避免大段误判
+    static $cfCidrs = [
+        '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22',
+        '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20',
+        '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13',
+        '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22',
+    ];
+    foreach ($cfCidrs as $cidr) {
+        if (waf_ip_in_cidr($ip, $cidr)) return true;
+    }
+    return false;
+}
+
+/**
+ * 判断 IP 是否在 CIDR 网段内（支持 IPv4）
+ */
+function waf_ip_in_cidr($ip, $cidr) {
+    list($subnet, $mask) = explode('/', $cidr, 2);
+    $ipLong = ip2long($ip);
+    $subnetLong = ip2long($subnet);
+    if ($ipLong === false || $subnetLong === false) return false;
+    $mask = (int)$mask;
+    if ($mask <= 0) return true;
+    if ($mask > 32) return false;
+    $maskLong = -1 << (32 - $mask);
+    return ($ipLong & $maskLong) === ($subnetLong & $maskLong);
 }
 
 function waf_block($msg = '') {
@@ -81,6 +165,10 @@ function waf_block($msg = '') {
         }
         if (is_dir(WAF_LOG_PATH) && is_writable(WAF_LOG_PATH)) {
             $logFile = WAF_LOG_PATH . '/block_' . date('Y-m-d') . '.log';
+            // 写入前检查轮转（1% 概率抽样检查，避免每次都 stat）
+            if (rand(1, 100) === 1) {
+                waf_log_rotate($logFile);
+            }
             $written = (@file_put_contents($logFile, $log_line, FILE_APPEND | LOCK_EX) !== false);
             // 兜底：单文件不可写时改权限
             if (!$written && is_file($logFile)) {

@@ -65,37 +65,29 @@ function waf_is_static_request() {
     foreach ($staticExts as $ext) {
         if (substr($lower, -strlen($ext)) === $ext) return true;
     }
-    // WordPress 图片 resize 路径（如 /wp-content/uploads/2024/01/image-300x200.jpg）
-    if (strpos($lower, '/wp-content/uploads/') !== false) return true;
+    // 上传目录放行（可通过 WAF_UPLOAD_PATH 自定义，默认兼容 WordPress）
+    $uploadPath = defined('WAF_UPLOAD_PATH') ? strtolower(WAF_UPLOAD_PATH) : '/wp-content/uploads/';
+    if ($uploadPath && strpos($lower, $uploadPath) !== false) return true;
     return false;
 }
 
-// ====================== 登录页面白名单（多用户网站前台登录不拦截） ======================
+// ====================== 登录页面白名单（统一委托给 RequestContext，避免逻辑重复） ======================
+// 保留此函数用于兼容旧调用点，实际逻辑由 RequestContext::isHardSkip / isLoginPage 统一处理
 function waf_is_login_page() {
+    // 登录页面判定：无论 GET 还是 POST 都算（用于攻击评分时记录但不拦截）
+    // RequestContext::isHardSkip 只在 POST 时返回 true，所以这里独立判断
+    if (class_exists('RequestContext')) {
+        return RequestContext::isLoginPagePath();
+    }
+    // 兜底（理论上不会走到，RequestContext 在 shield-waf.php 顶部已加载）
     $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
     $lower = strtolower($path);
-
-    // WordPress 默认登录页
-    if (strpos($lower, 'wp-login.php') !== false) return true;
     if (strpos($lower, 'wp-login') !== false) return true;
-
-    // 常见前台登录路径（多用户网站）
-    $loginPaths = ['/login', '/sign-in', '/signin', '/my-account', '/account',
-                   '/member/login', '/user/login', '/auth/login', '/customer/login',
-                   '/members/login', '/users/login', '/user/signin'];
+    $loginPaths = ['/login', '/signin', '/sign-in', '/my-account', '/account',
+                   '/member/login', '/user/login', '/auth/login', '/customer/login'];
     foreach ($loginPaths as $loginPath) {
         if ($lower === $loginPath || strpos($lower, $loginPath . '/') === 0) return true;
     }
-
-    // WooCommerce My Account
-    if (strpos($lower, '/my-account') !== false) return true;
-
-    // BuddyPress / BuddyBoss
-    if (strpos($lower, '/members/') !== false && strpos($lower, 'login') !== false) return true;
-
-    // Ultimate Member
-    if (strpos($lower, '/account') !== false) return true;
-
     return false;
 }
 

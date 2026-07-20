@@ -10,11 +10,34 @@ class CsrfProtect {
         $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
         $referer = $_SERVER['HTTP_REFERER'] ?? '';
         if (!empty($origin)) {
-            $originHost = parse_url($origin, PHP_URL_HOST);
-            if ($originHost && strcasecmp($originHost, $host) !== 0) waf_block('CSRF check failed: Origin mismatch');
+            $originHost = self::extractHost($origin);
+            if ($originHost && !self::hostEqual($originHost, $host)) {
+                waf_block('CSRF check failed: Origin mismatch');
+            }
         } elseif (!empty($referer)) {
-            $refererHost = parse_url($referer, PHP_URL_HOST);
-            if ($refererHost && strcasecmp($refererHost, $host) !== 0) waf_block('CSRF check failed: Referer mismatch');
+            $refererHost = self::extractHost($referer);
+            if ($refererHost && !self::hostEqual($refererHost, $host)) {
+                waf_block('CSRF check failed: Referer mismatch');
+            }
         }
+    }
+
+    /**
+     * 从 URL 中提取 host（不含端口）
+     */
+    private static function extractHost($url) {
+        $parsed = parse_url($url);
+        return $parsed['host'] ?? '';
+    }
+
+    /**
+     * 比较 host 是否相等（忽略端口差异，处理 CDN/反代场景）
+     * 例：example.com == example.com:443 == example.com:80
+     */
+    private static function hostEqual($a, $b) {
+        // 去掉端口部分
+        $aHost = preg_replace('/:\d+$/', '', $a);
+        $bHost = preg_replace('/:\d+$/', '', $b);
+        return strcasecmp($aHost, $bHost) === 0;
     }
 }

@@ -79,7 +79,7 @@ function waf_generate_random_key($length = 32) {
 
 function waf_get_auto_key($keyName, $defaultValue, $minLength = 32) {
     $envValue = getenv($keyName);
-    if ($envValue !== false && $envValue !== '') {
+    if ($envValue !== false && $envValue !== '' && $envValue !== $defaultValue) {
         return $envValue;
     }
 
@@ -91,7 +91,8 @@ function waf_get_auto_key($keyName, $defaultValue, $minLength = 32) {
         }
     }
 
-    if ($envValue === $defaultValue || $envValue === false || $envValue === '') {
+    // 环境变量未设置或等于默认值 → 自动生成随机密钥
+    if ($envValue === false || $envValue === '' || $envValue === $defaultValue) {
         $newKey = waf_generate_random_key($minLength);
         if ($newKey && strlen($newKey) >= $minLength) {
             $autoKeys = [];
@@ -107,7 +108,7 @@ function waf_get_auto_key($keyName, $defaultValue, $minLength = 32) {
             @chmod($autoKeyFile, 0600);
 
             @file_put_contents(WAF_LOG_PATH . '/security.log',
-                '[' . date('Y-m-d H:i:s') . "] 警告：检测到 " . $keyName . " 使用默认值，已自动生成随机密钥并保存到 auto_key.php\n",
+                '[' . date('Y-m-d H:i:s') . "] 警告：" . $keyName . " 未设置，已自动生成随机密钥并保存到 auto_key.php\n",
                 FILE_APPEND);
 
             return $newKey;
@@ -123,14 +124,16 @@ define('WAF_2FA_PASS',  waf_get_auto_key('WAF_2FA_PASS',  'change-me-2fa-passwor
 
 // ======================== 密码认证（WordPress 简化模式：直接使用密码，禁用双重加密） ========================
 // WordPress 用户直接设置密码即可，无需复杂的双重加密
-// 首次安装建议设置强密码：WAF_PASSWORD=你的强密码
-// 后续可通过控制台修改密码
+// 密码优先级：服务器环境变量 > .env > 自动生成随机密码（保存到 auto_key.php）
+// 安全策略：不再使用硬编码默认密码，首次启动自动生成强随机密码并写入 auto_key.php
+// 用户可在控制台修改密码，或通过 WAF_PASSWORD 环境变量自定义
 if (!defined('WAF_PASSWORD')) {
     $envPassword = getenv('WAF_PASSWORD');
     if ($envPassword !== false && $envPassword !== '') {
         define('WAF_PASSWORD', $envPassword);
     } else {
-        define('WAF_PASSWORD', 'shield-waf-2026');
+        // 未设置密码时自动生成随机密码（复用已有的 auto_key 机制）
+        define('WAF_PASSWORD', waf_get_auto_key('WAF_PASSWORD', '', 24));
     }
     unset($envPassword);
 }

@@ -138,12 +138,24 @@ class RequestContext
      *   - /user/login/ 路径任意一段匹配关键字
      *   - /wp-login.php /wp-comments-post.php 处理 .php 后缀
      *   - 不误匹配：/loginabc 不算（需边界）
+     *   - 路径穿越防护：先规范化 .. / // / ./ 等，防止 /login/../wp-admin 绕过
      */
     private static function matchAny($path, $keywords)
     {
         // 去掉 query string，保留 path
         $path = parse_url($path, PHP_URL_PATH) ?: $path;
         $lower = strtolower($path);
+
+        // 路径穿越规范化：防止 /login/../wp-admin 之类绕过
+        // 反复处理直到稳定（防止 /a/../../b 多层穿越）
+        $prev = '';
+        while ($prev !== $lower) {
+            $prev = $lower;
+            $lower = preg_replace('#(?:^|/)\.(?:/|$)#', '/', $lower);   // /./ → /
+            $lower = preg_replace('#(?:^|/)[^/]+/\.\.(?:/|$)#', '/', $lower); // /foo/.. → /
+            $lower = preg_replace('#/{2,}#', '/', $lower);               // // → /
+        }
+        $lower = '/' . ltrim($lower, '/');
 
         foreach ($keywords as $kw) {
             $kw = trim($kw, '/');
@@ -183,6 +195,27 @@ class RequestContext
     public static function isHardSkip()
     {
         return self::detect() === self::SCENE_HARD_SKIP;
+    }
+
+    /**
+     * 是否为登录页面路径（无论 GET 还是 POST）
+     * 用于攻击评分时记录但不拦截的场景判断
+     * 与 isHardSkip() 的区别：isHardSkip 只在 POST 时返回 true，
+     * isLoginPagePath 在 GET/POST 都返回 true（GET 登录页也需要记录但容忍）
+     */
+    public static function isLoginPagePath()
+    {
+        $uri  = $_SERVER['REQUEST_URI'] ?? '/';
+        $path = parse_url($uri, PHP_URL_PATH) ?: '/';
+        $lower = strtolower($path);
+        // 登录相关关键字（hardSkipPaths 中的登录类子集）
+        $loginKeywords = [
+            'login', 'signin', 'sign-in', 'sign_up', 'signup', 'sign-up',
+            'register', 'registration', 'auth', 'my-account', 'account',
+            'lostpassword', 'lost-password', 'resetpassword', 'reset-password',
+            'wp-login.php',
+        ];
+        return self::matchAny($lower, $loginKeywords);
     }
 
     /** 是否为敏感输入场景（跳过黑名单检测） */
