@@ -69,6 +69,35 @@ function waf_is_static_request() {
     return false;
 }
 
+// ====================== 登录页面白名单（多用户网站前台登录不拦截） ======================
+function waf_is_login_page() {
+    $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+    $lower = strtolower($path);
+
+    // WordPress 默认登录页
+    if (strpos($lower, 'wp-login.php') !== false) return true;
+    if (strpos($lower, 'wp-login') !== false) return true;
+
+    // 常见前台登录路径（多用户网站）
+    $loginPaths = ['/login', '/sign-in', '/signin', '/my-account', '/account',
+                   '/member/login', '/user/login', '/auth/login', '/customer/login',
+                   '/members/login', '/users/login', '/user/signin'];
+    foreach ($loginPaths as $loginPath) {
+        if ($lower === $loginPath || strpos($lower, $loginPath . '/') === 0) return true;
+    }
+
+    // WooCommerce My Account
+    if (strpos($lower, '/my-account') !== false) return true;
+
+    // BuddyPress / BuddyBoss
+    if (strpos($lower, '/members/') !== false && strpos($lower, 'login') !== false) return true;
+
+    // Ultimate Member
+    if (strpos($lower, '/account') !== false) return true;
+
+    return false;
+}
+
 // ====================== 一次性读取原始请求体（限制大小防OOM） ======================
 if (!defined('WAF_RAW_BODY')) {
     $maxBody = defined('WAF_MAX_BODY_SIZE') ? WAF_MAX_BODY_SIZE : 1048576;
@@ -83,6 +112,9 @@ SecurityHeaders::apply();
 if (waf_is_static_request()) {
     return;
 }
+
+// ====================== 登录页面检测 ======================
+$isLoginPage = waf_is_login_page();
 
 // ====================== WebSocket 阻断 ======================
 require_once __DIR__ . '/src/Defense/WebSocketBlock.php';
@@ -299,7 +331,8 @@ if ($shResult['detected']) {
 }
 
 $orResult = OpenRedirect::detect($waf_inputs);
-if ($orResult['detected']) {
+// 登录页面的 redirect_to 参数不拦截（多用户网站正常跳转）
+if ($orResult['detected'] && !$isLoginPage) {
     waf_block('Open Redirect attack detected - ' . json_encode($orResult['details']));
 }
 
@@ -347,26 +380,35 @@ if ($isVerifiedSearchEngine) {
 }
 
 if ($detectorIsAttack || $scorerIsAttack) {
-    // 记录攻击到自动学习系统
-    AutoLearn::recordAttack($all, $attackResult);
-
-    waf_smart_ban(waf_get_real_ip());
-    $riskInfo = sprintf(
-        'Risk: %s (%.1f%%, depth=%d, hits=%d, learned=%d%s | Scorer: %.1f [E=%.0f S=%.0f C=%.0f D=%.0f])%s',
-        $attackResult['risk_level'],
-        $attackResult['total_score'],
-        $attackResult['encoding_depth'],
-        $attackResult['hit_count'],
-        $attackResult['learned_hits'],
-        !empty($attackResult['double_encoding']) ? ', dbl_enc=1' : '',
-        $scorerResult['total_score'],
-        $scorerResult['entropy_score'],
-        $scorerResult['semantic_score'],
-        $scorerResult['compiler_score'],
-        $scorerResult['deviation_score'],
-        $isVerifiedSearchEngine ? ' | SE_THRESHOLD=' . $blockThreshold : ''
-    );
-    waf_block('Attack detected - ' . $riskInfo);
+    // 登录页面：只记录日志，不拦截（多用户网站前台登录必须正常）
+    // 但极端高危攻击（score >= 95）仍然拦截，防止登录页被利用
+    $maxScore = max($attackResult['total_score'], $scorerResult['total_score']);
+    if ($isLoginPage && $maxScore < 95) {
+        // 记录但不拦截
+        $logMsg = sprintf('[LOGIN_PAGE_ALLOW] %s | score=%.1f | uri=%s',
+            date('Y-m-d H:i:s'), $maxScore, $uri);
+        error_log('[ShieldWAF] ' . $logMsg);
+    } else {
+        // 非登录页面或高危攻击：正常拦截
+        AutoLearn::recordAttack($all, $attackResult);
+        waf_smart_ban(waf_get_real_ip());
+        $riskInfo = sprintf(
+            'Risk: %s (%.1f%%, depth=%d, hits=%d, learned=%d%s | Scorer: %.1f [E=%.0f S=%.0f C=%.0f D=%.0f])%s',
+            $attackResult['risk_level'],
+            $attackResult['total_score'],
+            $attackResult['encoding_depth'],
+            $attackResult['hit_count'],
+            $attackResult['learned_hits'],
+            !empty($attackResult['double_encoding']) ? ', dbl_enc=1' : '',
+            $scorerResult['total_score'],
+            $scorerResult['entropy_score'],
+            $scorerResult['semantic_score'],
+            $scorerResult['compiler_score'],
+            $scorerResult['deviation_score'],
+            $isVerifiedSearchEngine ? ' | SE_THRESHOLD=' . $blockThreshold : ''
+        );
+        waf_block('Attack detected - ' . $riskInfo);
+    }
 }
 
 // 记录正常请求模式到自适应学习系统
