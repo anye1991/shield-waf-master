@@ -107,14 +107,35 @@ function waf_block($msg = '') {
     if (defined('WAF_TEST_MODE') && WAF_TEST_MODE) {
         @header('X-ShieldWAF-TestMode: 1');
     }
+
+    // 清除所有输出缓冲区（WordPress/插件可能已启动多层 ob_start）
+    // 避免美化403页面被附加到已有输出后面，导致页面变形
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+
+    // 确保响应头未被发送（WordPress 可能已发送 header）
+    if (!headers_sent()) {
+        http_response_code(403);
+        header('Content-Type: text/html; charset=utf-8');
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+        if (defined('WAF_TEST_MODE') && WAF_TEST_MODE) {
+            @header('X-ShieldWAF-TestMode: 1');
+        }
+    }
+
     if (defined('WAF_403_TEMPLATE') && is_file(WAF_403_TEMPLATE)) {
         $waf_msg = $msg;
         $waf_ip  = waf_get_real_ip();
         $waf_uri = $_SERVER['REQUEST_URI'] ?? '';
         include WAF_403_TEMPLATE;
     } else {
-        header('Content-Type: text/html; charset=utf-8');
-        die('403 Forbidden - Your request has been blocked.');
+        echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>403 Forbidden</title>'
+           . '<style>body{font-family:sans-serif;text-align:center;padding:50px;color:#333}'
+           . 'h1{font-size:48px;color:#c00;margin-bottom:10px}'
+           . 'p{font-size:16px;line-height:1.6}</style></head>'
+           . '<body><h1>403</h1><p>Your request has been blocked by Shield WAF.</p>'
+           . '</body></html>';
     }
     exit;
 }
