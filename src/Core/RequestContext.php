@@ -45,15 +45,23 @@ class RequestContext
         'login', 'signin', 'sign-in', 'sign_up', 'signup', 'sign-up',
         'register', 'registration', 'auth', 'my-account', 'account',
         'lostpassword', 'lost-password', 'resetpassword', 'reset-password',
-        'wp-login.php',
+        'wp-login.php', 'user-login', 'member-login', 'customer-login',
         // 支付回调（电商/订阅通用）
         'payment', 'pay', 'checkout', 'callback', 'notify', 'return_url',
         'alipay', 'wechat', 'wechatpay', 'wxpay', 'paypal', 'stripe',
         'notify_url', 'callback_url', 'ipn', 'webhook',
+        // WooCommerce 特有
+        'wc-api', 'wc-ajax', 'wc_order', 'order-pay', 'order-received',
+        'add_payment_method', 'add-payment-method', 'payment-method', 'cart',
+        // 易支付/码支付/虎皮椒等第三方支付
+        'epay', 'payjs', 'payapi', 'payepay', 'hupijiao',
         // OAuth/SSO 回调
         'oauth', 'oauth2', 'oauth2callback', 'sso', 'saml',
         // 表单提交
         'contact', 'feedback', 'subscribe', 'newsletter',
+        // 常见API端点（支付/登录相关）
+        'api/pay', 'api/order', 'api/callback', 'api/notify',
+        'api/login', 'api/auth',
     ];
 
     /** @var array 敏感输入场景路径关键字 */
@@ -118,10 +126,17 @@ class RequestContext
             }
         }
 
-        // 高可信场景：只在 POST/PUT 时才视为 hard_skip
-        // GET /login 只是显示登录页，本身没有敏感输入，走完整检测也安全
-        if ($isHard && in_array($method, ['POST', 'PUT', 'PATCH'])) {
-            self::$scene = self::SCENE_HARD_SKIP;
+        // 高可信场景：
+        //   POST/PUT/PATCH → hard_skip（跳过所有特征检测）
+        //   GET/HEAD/OPTIONS → soft_skip（仅跳过关键字黑名单检测，保留CSRF/Bot等）
+        // 为什么GET也soft_skip？因为登录/支付页面可能带 redirect_to 等参数，
+        // 容易被 OpenRedirect/特征检测误判，且这些页面本身没有敏感数据
+        if ($isHard) {
+            if (in_array($method, ['POST', 'PUT', 'PATCH'])) {
+                self::$scene = self::SCENE_HARD_SKIP;
+            } else {
+                self::$scene = self::SCENE_SOFT_SKIP;
+            }
         } elseif ($isSoft) {
             self::$scene = self::SCENE_SOFT_SKIP;
         } else {
