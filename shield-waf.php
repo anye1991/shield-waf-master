@@ -199,7 +199,7 @@ if (($botResult['category'] ?? '') === 'search_engine' && ($botResult['confidenc
     $isVerifiedSearchEngine = true;
 }
 
-if ($botResult['action'] === 'block') {
+if ($botResult['action'] === 'block' && !$isLoginPage) {
     waf_block('Malicious bot detected - ' . ($botResult['reason'] ?? ''));
 }
 
@@ -228,7 +228,7 @@ if (!empty($body) && !empty($contentType)) {
         'text/xml',
         '',
     ];
-    if (!in_array($type_clean, $valid_types)) {
+    if (!in_array($type_clean, $valid_types) && !$isLoginPage) {
         waf_block('不允许的 Content-Type: ' . $type_clean);
     }
 
@@ -240,7 +240,7 @@ if (!empty($body) && !empty($contentType)) {
 }
 
 // ====================== HTTP 参数污染检测 ======================
-if (!empty($_SERVER['QUERY_STRING'])) {
+if (!empty($_SERVER['QUERY_STRING']) && !$isLoginPage) {
     parse_str($_SERVER['QUERY_STRING'], $query_params);
     $seen = [];
     foreach (explode('&', $_SERVER['QUERY_STRING']) as $pair) {
@@ -255,32 +255,48 @@ if (!empty($_SERVER['QUERY_STRING'])) {
 
 // ====================== GraphQL 注入检测 ======================
 require_once __DIR__ . '/src/Defense/GraphQLDefender.php';
-GraphQLDefender::check();
+if (!$isLoginPage) {
+    GraphQLDefender::check();
+}
 
 // ====================== 高级防护模块 ======================
 require_once __DIR__ . '/src/Defense/SsrfDefender.php';
-SsrfDefender::check();
+if (!$isLoginPage) {
+    SsrfDefender::check();
+}
 
 require_once __DIR__ . '/src/Defense/NoSqlInjection.php';
-NoSqlInjection::check();
+if (!$isLoginPage) {
+    NoSqlInjection::check();
+}
 
 require_once __DIR__ . '/src/Defense/RequestSmuggling.php';
 RequestSmuggling::check();
 
 require_once __DIR__ . '/src/Defense/JwtSecurity.php';
-JwtSecurity::check();
+if (!$isLoginPage) {
+    JwtSecurity::check();
+}
 
 require_once __DIR__ . '/src/Defense/TemplateInjection.php';
-TemplateInjection::check();
+if (!$isLoginPage) {
+    TemplateInjection::check();
+}
 
 require_once __DIR__ . '/src/Defense/ApiSecurity.php';
-ApiSecurity::check();
+if (!$isLoginPage) {
+    ApiSecurity::check();
+}
 
 require_once __DIR__ . '/src/Defense/CrlfInjection.php';
-CrlfInjection::check();
+if (!$isLoginPage) {
+    CrlfInjection::check();
+}
 
 require_once __DIR__ . '/src/Defense/CachePoisoning.php';
-CachePoisoning::check();
+if (!$isLoginPage) {
+    CachePoisoning::check();
+}
 
 require_once __DIR__ . '/src/Defense/LdapInjection.php';
 require_once __DIR__ . '/src/Defense/XPathInjection.php';
@@ -295,31 +311,40 @@ require_once __DIR__ . '/src/Defense/RaceCondition.php';
 
 $waf_inputs = array_merge($_GET, $_POST, $_COOKIE);
 
-$ldapResult = LdapInjection::detect($waf_inputs);
-if ($ldapResult['detected']) {
-    waf_block('LDAP Injection attack detected - ' . json_encode($ldapResult['details']));
+// 登录页面：跳过基于输入的注入检测（密码字段含特殊字符易误判，多用户网站登录必须正常）
+if (!$isLoginPage) {
+    $ldapResult = LdapInjection::detect($waf_inputs);
+    if ($ldapResult['detected']) {
+        waf_block('LDAP Injection attack detected - ' . json_encode($ldapResult['details']));
+    }
+
+    $xpathResult = XPathInjection::detect($waf_inputs);
+    if ($xpathResult['detected']) {
+        waf_block('XPath Injection attack detected - ' . json_encode($xpathResult['details']));
+    }
+
+    $xxeResult = XxeInjection::detect(WAF_RAW_BODY, $waf_inputs);
+    if ($xxeResult['detected']) {
+        waf_block('XXE Injection attack detected - ' . json_encode($xxeResult['details']));
+    }
+
+    $deserResult = Deserialization::detect($waf_inputs, WAF_RAW_BODY);
+    if ($deserResult['detected']) {
+        waf_block('Deserialization attack detected - ' . json_encode($deserResult['details']));
+    }
+
+    $fiResult = FileInclusion::detect($waf_inputs);
+    if ($fiResult['detected']) {
+        waf_block('File Inclusion attack detected - ' . json_encode($fiResult['details']));
+    }
+
+    $idorResult = IdorDetection::detect($waf_inputs);
+    if ($idorResult['detected']) {
+        waf_block('IDOR attack detected - ' . json_encode($idorResult['details']));
+    }
 }
 
-$xpathResult = XPathInjection::detect($waf_inputs);
-if ($xpathResult['detected']) {
-    waf_block('XPath Injection attack detected - ' . json_encode($xpathResult['details']));
-}
-
-$xxeResult = XxeInjection::detect(WAF_RAW_BODY, $waf_inputs);
-if ($xxeResult['detected']) {
-    waf_block('XXE Injection attack detected - ' . json_encode($xxeResult['details']));
-}
-
-$deserResult = Deserialization::detect($waf_inputs, WAF_RAW_BODY);
-if ($deserResult['detected']) {
-    waf_block('Deserialization attack detected - ' . json_encode($deserResult['details']));
-}
-
-$fiResult = FileInclusion::detect($waf_inputs);
-if ($fiResult['detected']) {
-    waf_block('File Inclusion attack detected - ' . json_encode($fiResult['details']));
-}
-
+// Session 相关检测保留（登录页面也需要防会话固定/劫持）
 $sfResult = SessionFixation::detect();
 if ($sfResult['detected']) {
     waf_block('Session Fixation attack detected - ' . json_encode($sfResult['details']));
@@ -334,11 +359,6 @@ $orResult = OpenRedirect::detect($waf_inputs);
 // 登录页面的 redirect_to 参数不拦截（多用户网站正常跳转）
 if ($orResult['detected'] && !$isLoginPage) {
     waf_block('Open Redirect attack detected - ' . json_encode($orResult['details']));
-}
-
-$idorResult = IdorDetection::detect($waf_inputs);
-if ($idorResult['detected']) {
-    waf_block('IDOR attack detected - ' . json_encode($idorResult['details']));
 }
 
 $rcResult = RaceCondition::detect();
