@@ -484,43 +484,11 @@ require_once __DIR__ . '/src/Admin/DarkGate.php';
 $is_admin = (strpos($requestPath, 'wp-admin') !== false);
 
 if ($is_admin) {
-    // 如果用户已经通过 WordPress 登录，直接放行
-    $logged_in = false;
-
-    // 优先使用 WordPress 原生函数判断（最可靠）
-    if (function_exists('is_user_logged_in')) {
-        $logged_in = is_user_logged_in();
-    } elseif (!empty($_COOKIE)) {
-        // 回退方案：手动验证 WordPress 登录 Cookie 的格式和有效性
-        foreach ($_COOKIE as $name => $val) {
-            if (strpos($name, 'wordpress_logged_in_') === 0) {
-                // Cookie 值格式：username|expiration|hmac_hash
-                $parts = explode('|', $val);
-                if (count($parts) === 3) {
-                    list($username, $expiration, $hash) = $parts;
-                    // 基本格式校验：用户名非空、过期时间是有效数字、哈希是 32+ 位十六进制
-                    if (!empty($username) && !empty($hash) &&
-                        is_numeric($expiration) && $expiration > time() &&
-                        preg_match('/^[a-f0-9]{32,}$/i', $hash)) {
-                        $logged_in = true;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    if ($logged_in) {
-        return;
-    }
-
-    // 未登录 → 暗门验证
     $magic = $_GET['magic'] ?? '';
     if (!empty($magic)) {
         if (hash_equals(WAF_MAGIC_KEY, $magic)) {
             $_SESSION['waf_ok1'] = time() + WAF_MAGIC_EXPIRE;
             $_SESSION['waf_ip']  = waf_get_real_ip();
-            // 安全重定向：用 SERVER_NAME 而非 HTTP_HOST 防止开放重定向
             $scheme = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? 'https://' : 'http://';
             $host = $_SERVER['SERVER_NAME'] ?? $_SERVER['HTTP_HOST'];
             if (!preg_match('/^[a-zA-Z0-9.\-]+$/', $host)) {
