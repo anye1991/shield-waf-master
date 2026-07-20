@@ -43,19 +43,22 @@ class CorsPolicy {
         if ($allowed) {
             // 校验 Origin 格式，防止 malformed origin 写入响应头
             if (!preg_match('#^https?://[a-zA-Z0-9.\-]+(?::\d+)?$#', $origin)) {
-                waf_block('CORS policy violation: malformed origin');
+                // 格式错误的 Origin 只记录日志，不拦截（避免误拦合法请求）
+                error_log('[ShieldWAF] Malformed CORS origin: ' . $origin);
+                return;
             }
             header('Access-Control-Allow-Origin: ' . $origin);
             header('Access-Control-Allow-Credentials: true');
             header('Vary: Origin');
             if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-                header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
-                header('Access-Control-Allow-Headers: Content-Type, Authorization');
+                header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
+                header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With');
                 http_response_code(204);
                 exit;
             }
-        } else {
-            waf_block('CORS policy violation: ' . $origin);
         }
+        // 非白名单 Origin：不设置 CORS 头，浏览器会阻止跨域请求
+        // 但不拦截请求本身（可能是直接访问或其他合法场景）
+        // 浏览器同源策略会自动保护，无需服务端拦截
     }
 }

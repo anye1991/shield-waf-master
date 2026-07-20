@@ -159,7 +159,9 @@ if (waf_is_banned()) {
 }
 
 // ====================== 请求方法限制 ======================
-$allowed_methods = ['GET', 'POST', 'HEAD'];
+// OPTIONS 预检请求必须放行（跨域 AJAX 需要）
+// 否则 CorsPolicy 之前就被拦截，导致跨域功能失效
+$allowed_methods = ['GET', 'POST', 'HEAD', 'OPTIONS'];
 if (!in_array($_SERVER['REQUEST_METHOD'], $allowed_methods)) {
     waf_block('不允许的请求方法: ' . $_SERVER['REQUEST_METHOD']);
 }

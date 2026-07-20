@@ -225,7 +225,10 @@ if (!defined('WAF_SOFTSKIP_PATHS')) {
 define('WAF_BOT_VERIFY_DNS', getenv('WAF_BOT_VERIFY_DNS') !== false ? (getenv('WAF_BOT_VERIFY_DNS') === 'true') : false);
 
 // ======================== CC 攻击防护 ========================
-define('WAF_CC_LIMIT',  getenv('WAF_CC_LIMIT')  !== false ? (int)getenv('WAF_CC_LIMIT')  : 60);
+// 默认 120 次/分钟（静态资源已在 shield-waf.php 顶部放行，此处仅计动态请求）
+// AJAX 请求（WordPress heartbeat/wp-json/admin-ajax）阈值更高（240 次/分钟）
+// 可通过环境变量 WAF_CC_LIMIT 自定义
+define('WAF_CC_LIMIT',  getenv('WAF_CC_LIMIT')  !== false ? (int)getenv('WAF_CC_LIMIT')  : 120);
 define('WAF_CC_WINDOW', getenv('WAF_CC_WINDOW') !== false ? (int)getenv('WAF_CC_WINDOW') : 60);
 define('WAF_CC_LOG',    WAF_LOG_PATH . '/cc_counter.txt');
 
@@ -282,11 +285,35 @@ define('WAF_SANDBOX_LEARN_COUPLING', getenv('WAF_SANDBOX_LEARN_COUPLING') !== fa
 // 是否启用文件上传检测
 define('WAF_UPLOAD_DETECTION', getenv('WAF_UPLOAD_DETECTION') !== false ? (getenv('WAF_UPLOAD_DETECTION') === 'true') : true);
 // 允许上传的文件扩展名白名单（PHP 数组）
-define('WAF_UPLOAD_ALLOWED_EXT', ['jpg','jpeg','png','gif','webp','bmp','ico','svg']);
+// 默认包含常见图片 + 文档 + 压缩包，覆盖大多数网站需求
+// 注意：这只是一个宽松的默认值，高危扩展名（php/asp/jsp/exe）无论如何都不会放行
+define('WAF_UPLOAD_ALLOWED_EXT', [
+    // 图片
+    'jpg','jpeg','png','gif','webp','bmp','ico','svg',
+    // 文档
+    'pdf','doc','docx','xls','xlsx','ppt','pptx','txt','rtf','odt','ods','odp',
+    // 压缩包
+    'zip','rar','7z','tar','gz','bz2',
+    // 音视频（如果网站允许）
+    'mp3','mp4','wav','webm','ogg','avi','mov',
+]);
 // 允许的 MIME 类型（PHP 数组）
 define('WAF_UPLOAD_ALLOWED_MIME', [
+    // 图片
     'image/jpeg', 'image/png', 'image/gif', 'image/webp',
     'image/bmp', 'image/x-icon', 'image/svg+xml',
+    // 文档
+    'application/pdf',
+    'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'text/plain', 'application/rtf',
+    // 压缩包
+    'application/zip', 'application/x-rar-compressed', 'application/x-7z-compressed',
+    'application/x-tar', 'application/gzip', 'application/x-bzip2',
+    // 音视频
+    'audio/mpeg', 'audio/wav', 'audio/ogg',
+    'video/mp4', 'video/webm', 'video/ogg', 'video/quicktime',
 ]);
 // 是否使用 GD 库验证图像真实性（比 finfo 更严格，能识别图像马）
 define('WAF_UPLOAD_GD_VERIFY', getenv('WAF_UPLOAD_GD_VERIFY') !== false ? (getenv('WAF_UPLOAD_GD_VERIFY') === 'true') : true);

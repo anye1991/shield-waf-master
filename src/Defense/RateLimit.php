@@ -8,6 +8,7 @@ if (!defined('WAF_CC_LOG')) {
 if (!defined('WAF_CC_WINDOW')) define('WAF_CC_WINDOW', 60);
 // 默认 120 次/分钟（静态资源已提前放行，此处仅计动态请求）
 // WordPress heartbeat、AJAX、前端轮询等正常场景需要更高阈值
+// 通过 config.php 的 WAF_CC_LIMIT 可自定义，此处仅作兜底
 if (!defined('WAF_CC_LIMIT')) define('WAF_CC_LIMIT', 120);
 // AJAX/已登录用户可配置更高阈值（通过 RequestContext 动态判断）
 if (!defined('WAF_CC_LIMIT_AJAX')) define('WAF_CC_LIMIT_AJAX', 240);

@@ -11,9 +11,11 @@ class SecurityHeaders {
         'connect-src' => ["'self'", '*'],
         'object-src' => ["'none'"],
         'base-uri' => ["'self'"],
-        'form-action' => ["'self'"],
+        // form-action 放宽为 *，允许表单提交到支付网关、OAuth 回调等第三方域名
+        'form-action' => ['*'],
         'frame-ancestors' => ["'self'"],
-        'upgrade-insecure-requests' => [],
+        // 移除 upgrade-insecure-requests：老网站可能还有 HTTP 图片资源，强制升级会导致 404
+        // 'upgrade-insecure-requests' => [],
     ];
 
     private static $defaultPermissions = [
@@ -129,7 +131,13 @@ class SecurityHeaders {
             self::setHeader("Cross-Origin-Embedder-Policy: $coep");
         }
 
-        if (!self::isStaticResource()) {
+        // Cache-Control：仅对后台路径设置 no-store，避免破坏前端页面缓存
+        // 前端页面正常缓存可提升性能、降低服务器负载
+        $uri = $_SERVER['REQUEST_URI'] ?? '';
+        $isAdminPath = strpos($uri, '/wp-admin') !== false ||
+                       strpos($uri, '/admin') !== false ||
+                       strpos($uri, '/waf-dashboard') !== false;
+        if ($isAdminPath && !self::isStaticResource()) {
             self::setHeader('Cache-Control: no-cache, no-store, must-revalidate');
             self::setHeader('Pragma: no-cache');
             self::setHeader('Expires: Thu, 01 Jan 1970 00:00:00 GMT');
