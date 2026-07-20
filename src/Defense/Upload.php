@@ -24,6 +24,8 @@ function waf_check_upload() {
 
     foreach ($_FILES as $file) {
         if (!isset($file['tmp_name']) || !is_uploaded_file($file['tmp_name'])) continue;
+        // 校验上传错误码，非 UPLOAD_ERR_OK 的不处理
+        if (!isset($file['error']) || $file['error'] !== UPLOAD_ERR_OK) continue;
 
         $filename = $file['name'] ?? '';
         $filesize = $file['size'] ?? 0;
@@ -38,7 +40,7 @@ function waf_check_upload() {
             $allowedExt = ['jpg','jpeg','png','gif','webp','bmp','ico','svg'];
         }
 
-        if (!in_array($ext, $allowedExt)) {
+        if (!in_array($ext, $allowedExt, true)) {
             waf_upload_block($file, "禁止上传的文件类型: .$ext", 'extension_denied');
             return;
         }
@@ -54,7 +56,7 @@ function waf_check_upload() {
         $parts = explode('.', $filenameLower);
         if (count($parts) >= 3) {
             for ($i = 0; $i < count($parts) - 1; $i++) {
-                if (in_array($parts[$i], $dangerousDoubleExts)) {
+                if (in_array($parts[$i], $dangerousDoubleExts, true)) {
                     waf_upload_block($file, "检测到危险双扩展名: {$parts[$i]}.$ext", 'double_extension');
                     return;
                 }
@@ -67,9 +69,9 @@ function waf_check_upload() {
             return;
         }
 
-        // SVG 单独处理
-        if ($ext === 'svg' && defined('WAF_UPLOAD_ALLOW_SVG') && !WAF_UPLOAD_ALLOW_SVG) {
-            waf_upload_block($file, 'SVG 上传已被禁用', 'svg_disabled');
+        // SVG 默认禁用（常量未定义或为 false 时均拦截，避免 SVG XSS/XXE 风险）
+        if ($ext === 'svg' && (!defined('WAF_UPLOAD_ALLOW_SVG') || !WAF_UPLOAD_ALLOW_SVG)) {
+            waf_upload_block($file, 'SVG 上传已被禁用（默认安全策略）', 'svg_disabled');
             return;
         }
 
@@ -88,14 +90,14 @@ function waf_check_upload() {
             finfo_close($finfo);
         }
 
-        if (!empty($actualMime) && !in_array($actualMime, $allowedMime)) {
+        if (!empty($actualMime) && !in_array($actualMime, $allowedMime, true)) {
             waf_upload_block($file, "文件真实类型不符: $actualMime", 'mime_mismatch');
             return;
         }
 
         // ========== 第3层：GD 库图像真实验证（图像马/图种检测） ==========
         $imageExts = ['jpg','jpeg','png','gif','webp','bmp'];
-        if (in_array($ext, $imageExts) && defined('WAF_UPLOAD_GD_VERIFY') && WAF_UPLOAD_GD_VERIFY && function_exists('getimagesize')) {
+        if (in_array($ext, $imageExts, true) && defined('WAF_UPLOAD_GD_VERIFY') && WAF_UPLOAD_GD_VERIFY && function_exists('getimagesize')) {
             $imgInfo = @getimagesize($tmpPath);
             if ($imgInfo === false) {
                 // getimagesize 无法解析 → 不是真图片 → 可能是图种
@@ -107,7 +109,15 @@ function waf_check_upload() {
         // ========== 第4层：读取文件内容 ==========
         $maxScanSize = defined('WAF_UPLOAD_SCAN_MAX_SIZE') ? WAF_UPLOAD_SCAN_MAX_SIZE : 5 * 1024 * 1024;
         $content = waf_upload_read_content($tmpPath, $filesize, $maxScanSize);
-        if ($content === false || $content === '') continue;
+        // 读取失败不能静默放行：可能是 open_basedir、权限或符号链接攻击
+        if ($content === false) {
+            $blockThreshold = defined('WAF_UPLOAD_BLOCK_THRESHOLD') ? WAF_UPLOAD_BLOCK_THRESHOLD : 60;
+            if ($blockThreshold >= 50) {
+                waf_upload_block($file, '文件内容读取失败，无法完成安全扫描', 'read_failed');
+            }
+            continue;
+        }
+        if ($content === '') continue;
 
         // ========== 第5层：SVG 专用检测 ==========
         if ($ext === 'svg') {
@@ -521,9 +531,8 @@ function waf_upload_svg_check($content) {
         $result['details'][] = '包含 CSS 表达式或行为（XSS 风险）';
     }
 
-    // 10. <use> 标签引用外部资源
-    if (preg_match('/<use[^>]*href\s*=\s*["\'][^"\']*#/i', $cleanContent) &&
-        preg_match('/<use[^>]*href\s*=\s*["\']https?:\/\//i', $cleanContent)) {
+    // 10. <use> 标签引用外部资源（合并为单一正则，避免原互斥条件永不命中）
+    if (preg_match('/<use[^>]*href\s*=\s*["\']https?:\/\/[^"\']*#/i', $cleanContent)) {
         $score += 15;
         $result['details'][] = '<use> 标签引用外部资源（可能存在 XSS 风险）';
     }
@@ -726,10 +735,17 @@ function waf_upload_read_content($tmpPath, $filesize, $maxSize) {
 function waf_upload_block($file, $reason, $code = '', $detail = []) {
     $filename = $file['name'] ?? 'unknown';
 
+    // 净化 IP 与文件名，防止日志注入（去除换行/竖线等控制字符）
+    $rawIp = waf_get_real_ip();
+    $safeIp = is_string($rawIp) ? str_replace(["\n", "\r", "|", "\t"], '', $rawIp) : '';
+    $safeFilename = is_string($filename) ? str_replace(["\n", "\r", "|", "\t"], '', $filename) : 'unknown';
+    $safeCode = is_string($code) ? str_replace(["\n", "\r", "|", "\t"], '', $code) : '';
+    $safeReason = is_string($reason) ? str_replace(["\n", "\r"], '', $reason) : '';
+
     // 记录上传拦截日志
     $logDir = WAF_LOG_PATH;
     $logFile = $logDir . 'upload_block_' . date('Y-m-d') . '.log';
-    $logLine = date('Y-m-d H:i:s') . ' | ' . waf_get_real_ip() . ' | ' . $code . ' | ' . $filename . ' | ' . $reason . "\n";
+    $logLine = date('Y-m-d H:i:s') . ' | ' . $safeIp . ' | ' . $safeCode . ' | ' . $safeFilename . ' | ' . $safeReason . "\n";
     if (!empty($detail)) {
         $logLine .= '  detail: ' . json_encode($detail, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
     }
@@ -737,15 +753,15 @@ function waf_upload_block($file, $reason, $code = '', $detail = []) {
 
     // 累进封禁
     if (defined('WAF_UPLOAD_BAN_ON_BLOCK') && WAF_UPLOAD_BAN_ON_BLOCK) {
-        waf_smart_ban(waf_get_real_ip());
+        waf_smart_ban($rawIp);
     }
 
     // Webhook 告警
     if (function_exists('waf_webhook_notify') && defined('WAF_WEBHOOK_URL') && WAF_WEBHOOK_URL) {
-        $msg = "盾甲WAF上传拦截: $code\n";
-        $msg .= "文件: $filename\n";
-        $msg .= "原因: $reason\n";
-        $msg .= "IP: " . waf_get_real_ip() . "\n";
+        $msg = "盾甲WAF上传拦截: $safeCode\n";
+        $msg .= "文件: $safeFilename\n";
+        $msg .= "原因: $safeReason\n";
+        $msg .= "IP: " . $safeIp . "\n";
         if (!empty($detail['score'])) $msg .= "评分: {$detail['score']}\n";
         $msg .= "时间: " . date('Y-m-d H:i:s');
         waf_webhook_notify($msg);
@@ -759,9 +775,15 @@ function waf_upload_block($file, $reason, $code = '', $detail = []) {
  */
 function waf_upload_log($file, $reason, $detail = []) {
     $filename = $file['name'] ?? 'unknown';
+    // 净化 IP 与文件名，防止日志注入
+    $rawIp = waf_get_real_ip();
+    $safeIp = is_string($rawIp) ? str_replace(["\n", "\r", "|", "\t"], '', $rawIp) : '';
+    $safeFilename = is_string($filename) ? str_replace(["\n", "\r", "|", "\t"], '', $filename) : 'unknown';
+    $safeReason = is_string($reason) ? str_replace(["\n", "\r"], '', $reason) : '';
+
     $logDir = WAF_LOG_PATH;
     $logFile = $logDir . 'upload_suspicious_' . date('Y-m-d') . '.log';
-    $logLine = date('Y-m-d H:i:s') . ' | ' . waf_get_real_ip() . ' | ' . $filename . ' | ' . $reason . "\n";
+    $logLine = date('Y-m-d H:i:s') . ' | ' . $safeIp . ' | ' . $safeFilename . ' | ' . $safeReason . "\n";
     if (!empty($detail)) {
         $logLine .= '  detail: ' . json_encode($detail, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
     }

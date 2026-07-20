@@ -5,7 +5,7 @@ class SecurityHeaders {
     private static $defaultCsp = [
         'default-src' => ["'self'"],
         'script-src' => ["'self'", "'strict-dynamic'", 'https://cdn.jsdelivr.net'],
-        'style-src' => ["'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net', 'https://cdn.staticfile.org'],
+        'style-src' => ["'self'", 'https://cdn.jsdelivr.net', 'https://cdn.staticfile.org'],
         'img-src' => ["'self'", 'data:', 'https://*.gravatar.com'],
         'font-src' => ["'self'", 'data:', 'https://cdn.staticfile.org'],
         'connect-src' => ["'self'", 'https://cdn.jsdelivr.net'],
@@ -60,44 +60,53 @@ class SecurityHeaders {
     }
 
     private static function applyBaseHeaders() {
-        header('X-Content-Type-Options: nosniff');
-        header('X-Frame-Options: SAMEORIGIN');
-        header('X-XSS-Protection: 1; mode=block');
-        
+        self::setHeader('X-Content-Type-Options: nosniff');
+        self::setHeader('X-Frame-Options: SAMEORIGIN');
+        self::setHeader('X-XSS-Protection: 0');
+
         if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
-            header('Strict-Transport-Security: max-age=31536000; includeSubDomains; preload');
+            self::setHeader('Strict-Transport-Security: max-age=31536000; includeSubDomains; preload');
         }
-        
-        header('Referrer-Policy: strict-origin-when-cross-origin');
-        header('X-Permitted-Cross-Domain-Policies: none');
-        header('X-Download-Options: noopen');
-        header('X-Robots-Tag: noindex, nofollow, nosnippet, noarchive');
+
+        self::setHeader('Referrer-Policy: strict-origin-when-cross-origin');
+        self::setHeader('X-Permitted-Cross-Domain-Policies: none');
+        self::setHeader('X-Download-Options: noopen');
+        self::setHeader('X-Robots-Tag: noindex, nofollow, nosnippet, noarchive');
     }
 
-    private static function applyCsp() {
+    public static function applyCsp() {
         $csp = self::$defaultCsp;
-        
-        $cspConfig = self::getConfig('CSP', []);
-        if (!empty($cspConfig)) {
-            $csp = array_merge($csp, $cspConfig);
-        }
+        $cspConfig = self::getConfig('SHIELD_WAF_CSP', []);
+        if (!is_array($cspConfig)) $cspConfig = [];
+        $csp = array_merge_recursive($csp, $cspConfig);
 
+        // 生成 nonce 并注入 CSP
+        $nonce = self::generateNonce();
+        if (!isset($csp['script-src'])) $csp['script-src'] = ["'self'"];
+        $csp['script-src'][] = "'nonce-$nonce'";
+        if (!isset($csp['style-src'])) $csp['style-src'] = ["'self'"];
+        $csp['style-src'][] = "'nonce-$nonce'";
+
+        // 构造 CSP 字符串
         $cspString = '';
         foreach ($csp as $directive => $sources) {
-            $cspString .= $directive . ' ';
-            foreach ($sources as $source) {
-                $cspString .= $source . ' ';
-            }
-            $cspString .= '; ';
+            $cspString .= $directive . ' ' . implode(' ', $sources) . '; ';
         }
+        $cspString = rtrim($cspString);
 
-        header("Content-Security-Policy: {$cspString}");
+        if (!headers_sent()) {
+            header("Content-Security-Policy: {$cspString}");
+        }
+        // 把 nonce 存入全局变量供模板使用
+        $GLOBALS['WAF_CSP_NONCE'] = $nonce;
+        // 不再发 X-Nonce 头（浏览器不识别）
     }
 
     private static function applyPermissionsPolicy() {
         $permissions = self::$defaultPermissions;
-        
-        $permConfig = self::getConfig('PERMISSIONS_POLICY', []);
+
+        $permConfig = self::getConfig('SHIELD_WAF_PERMISSIONS_POLICY', []);
+        if (!is_array($permConfig)) $permConfig = [];
         if (!empty($permConfig)) {
             $permissions = array_merge($permissions, $permConfig);
         }
@@ -108,28 +117,41 @@ class SecurityHeaders {
         }
         $permString = rtrim($permString, ', ');
 
-        header("Permissions-Policy: {$permString}");
+        self::setHeader("Permissions-Policy: {$permString}");
     }
 
     private static function applyAdditionalHeaders() {
-        $nonce = self::generateNonce();
-        header("X-Nonce: {$nonce}");
-        
-        header('Cross-Origin-Opener-Policy: same-origin');
-        header('Cross-Origin-Resource-Policy: same-origin');
-        header('Cross-Origin-Embedder-Policy: require-corp');
+        self::setHeader('Cross-Origin-Opener-Policy: same-origin');
+
+        // 默认改为 same-site，避免阻断合法跨域
+        $corp = self::getConfig('SHIELD_WAF_CORP', 'same-site');
+        if ($corp && $corp !== 'off') {
+            self::setHeader("Cross-Origin-Resource-Policy: $corp");
+        }
+
+        // 默认不发送 COEP，仅在配置启用时才发送
+        $coep = self::getConfig('SHIELD_WAF_COEP', '');
+        if ($coep && $coep !== 'off') {
+            self::setHeader("Cross-Origin-Embedder-Policy: $coep");
+        }
 
         if (!self::isStaticResource()) {
-            header('Cache-Control: no-cache, no-store, must-revalidate');
-            header('Pragma: no-cache');
-            header('Expires: Thu, 01 Jan 1970 00:00:00 GMT');
+            self::setHeader('Cache-Control: no-cache, no-store, must-revalidate');
+            self::setHeader('Pragma: no-cache');
+            self::setHeader('Expires: Thu, 01 Jan 1970 00:00:00 GMT');
         }
-        
+
         if (self::isApiRequest()) {
-            header('Access-Control-Allow-Origin: *');
-            header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
-            header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With');
-            header('Access-Control-Max-Age: 86400');
+            self::setHeader('Access-Control-Allow-Origin: *');
+            self::setHeader('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
+            self::setHeader('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With');
+            self::setHeader('Access-Control-Max-Age: 86400');
+        }
+    }
+
+    private static function setHeader($headerLine) {
+        if (!headers_sent()) {
+            header($headerLine);
         }
     }
 
@@ -137,12 +159,13 @@ class SecurityHeaders {
         return bin2hex(random_bytes(16));
     }
 
-    private static function getConfig($key, $default) {
-        $configKey = 'SHIELD_WAF_' . $key;
+    private static function getConfig($configKey, $default) {
         if (defined($configKey)) {
             $value = constant($configKey);
-            if (is_array($value)) {
-                return $value;
+            if (is_array($value)) return $value;
+            if (is_string($value)) {
+                $decoded = json_decode($value, true);
+                if (is_array($decoded)) return $decoded;
             }
         }
         return $default;

@@ -9,8 +9,7 @@ class RequestSmuggling {
 
     private static $chunkedEncodingPatterns = [
         '/^[0-9a-fA-F]+(?:\r\n|\n)/',
-        '/0\r\n\r\n$/',
-        '/0\n\n$/',
+        '/0(?:\r\n\r\n|\n\n|\r\n)$/m',
     ];
 
     public static function check() {
@@ -47,12 +46,9 @@ class RequestSmuggling {
 
         if ($hasTe) {
             $teValue = $headers['transfer-encoding'];
-            if (preg_match('/(?:\s*,\s*)?(?:chunked\s*,)?\s*chunked/i', $teValue)) {
+            // 仅当 TE 中出现 2 个或以上 chunked 时才告警；单个 chunked 是合法的，chunked+identity 也是合法组合
+            if (preg_match('/chunked[\s,]+[^,]*chunked/i', $teValue)) {
                 return ['is_smuggling' => true, 'reason' => 'Multiple chunked values in Transfer-Encoding'];
-            }
-
-            if (preg_match('/chunked(?:\s*,\s*identity)?/i', $teValue)) {
-                return ['is_smuggling' => true, 'reason' => 'Transfer-Encoding chunked with identity'];
             }
         }
 
@@ -64,10 +60,6 @@ class RequestSmuggling {
 
             if (preg_match('/^\s*\+?\d+\s*$/', $clValue) === false) {
                 return ['is_smuggling' => true, 'reason' => 'Invalid Content-Length format'];
-            }
-
-            if ($clValue !== (string)(int)$clValue) {
-                return ['is_smuggling' => true, 'reason' => 'Content-Length with leading zeros or invalid format'];
             }
         }
 
@@ -88,10 +80,9 @@ class RequestSmuggling {
             $body = defined('WAF_RAW_BODY') ? WAF_RAW_BODY : file_get_contents('php://input');
             $actualSize = strlen($body);
 
-            if ($actualSize !== $expectedSize) {
-                if (abs($actualSize - $expectedSize) > 1024) {
-                    return ['is_smuggling' => true, 'reason' => "Content-Length mismatch: expected $expectedSize, got $actualSize"];
-                }
+            // 仅当 body 比 CL 长（差异 > 1024）才告警；body 比 CL 短是常态（连接中断、代理截断、php://input 被上游消费等）
+            if ($actualSize > $expectedSize + 1024) {
+                return ['is_smuggling' => true, 'reason' => "Content-Length mismatch: expected $expectedSize, got $actualSize"];
             }
         }
 
@@ -108,7 +99,7 @@ class RequestSmuggling {
 
         foreach ($headers as $name => $value) {
             if (preg_match('/[\r\n]/', $value)) {
-                return ['is_smuggling' => true, "Header '$name' contains newline characters"];
+                return ['is_smuggling' => true, 'reason' => "Header '$name' contains newline characters"];
             }
         }
 

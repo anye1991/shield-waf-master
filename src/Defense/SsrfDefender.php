@@ -31,13 +31,18 @@ class SsrfDefender {
         '100.124.', '100.125.', '100.126.', '100.127.',
     ];
 
+    // localhostKeywords 改为用于精确匹配 host 的关键字（不再做子串匹配）
     private static $localhostKeywords = [
-        'localhost', 'localhost:', '127.0.0.1', '0.0.0.0',
-        '::1', '0:0:0:0:0:0:0:1',
-        'internal', 'internal.', 'localhost.localdomain',
+        'localhost', 'localhost.localdomain',
         'localhost6.localdomain6', 'ip6-localhost', 'ip6-loopback',
         'ip6-localnet', 'ip6-mcastprefix', 'ip6-allnodes',
         'ip6-allrouters', 'ip6-allhosts',
+        'metadata.google.internal',
+    ];
+
+    // 必须按 host 完全相等判定的 IP 字面量
+    private static $loopbackIpLiterals = [
+        '127.0.0.1', '0.0.0.0', '::1', '0:0:0:0:0:0:0:1',
     ];
 
     private static $cloudMetadataEndpoints = [
@@ -90,7 +95,34 @@ class SsrfDefender {
             }
         }
 
+        // 读取原始 POST Body，覆盖 JSON/XML 体的 SSRF 检测
+        $body = defined('WAF_RAW_BODY') ? WAF_RAW_BODY : @file_get_contents('php://input');
+        if (!empty($body)) {
+            $inputs['body'] = $body;
+            $json = json_decode($body, true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($json)) {
+                self::extractJsonValues($json, $inputs);
+            }
+        }
+
         return $inputs;
+    }
+
+    /**
+     * 递归从 JSON 体中提取 URL/path 字符串，按字段名作为 key 入 inputs
+     */
+    private static function extractJsonValues($data, &$inputs, $prefix = '') {
+        if (!is_array($data)) {
+            return;
+        }
+        foreach ($data as $k => $v) {
+            $key = $prefix === '' ? (string)$k : $prefix . '.' . (string)$k;
+            if (is_array($v)) {
+                self::extractJsonValues($v, $inputs, $key);
+            } elseif (is_string($v) && !empty($v)) {
+                $inputs[strtolower($key)] = $v;
+            }
+        }
     }
 
     private static function analyzeValue($key, $value) {
@@ -108,16 +140,19 @@ class SsrfDefender {
                 }
             }
 
-            foreach (self::$localhostKeywords as $keyword) {
-                if (strpos($lowerValue, $keyword) !== false) {
-                    $host = self::extractHost($value);
-                    if (self::isPrivateIP($host)) {
-                        return ['is_ssrf' => true, 'reason' => "Localhost/Private IP access: $host"];
-                    }
-                }
+            $host = self::extractHost($value);
+            $lowerHost = $host === '' ? '' : strtolower($host);
+
+            // localhost 关键字精确匹配 host（避免误伤 internal-api 等合法域名）
+            if ($host !== '' && in_array($lowerHost, self::$localhostKeywords, true)) {
+                return ['is_ssrf' => true, 'reason' => "Localhost keyword access: $host"];
             }
 
-            $host = self::extractHost($value);
+            // 回环 IP 字面量精确匹配
+            if ($host !== '' && in_array($lowerHost, self::$loopbackIpLiterals, true)) {
+                return ['is_ssrf' => true, 'reason' => "Loopback IP access: $host"];
+            }
+
             if (!empty($host) && self::isPrivateIP($host)) {
                 return ['is_ssrf' => true, 'reason' => "Private IP access: $host"];
             }
@@ -126,8 +161,19 @@ class SsrfDefender {
                 return ['is_ssrf' => true, 'reason' => "IPv6 loopback: $host"];
             }
 
-            if (self::isNumericIP($value)) {
-                return ['is_ssrf' => true, 'reason' => "Direct IP address used: $value"];
+            // 只对私网/保留 IP 触发，公网 IP 不拦截
+            if (self::isNumericIP($value) && self::isPrivateIP($value)) {
+                return ['is_ssrf' => true, 'reason' => "Private IP access: $value"];
+            }
+
+            // DNS Rebinding 防护：对非 IP 字面量的域名做 DNS 解析，命中私网则拦截
+            if (!empty($host) && !self::isNumericIP($host)) {
+                $resolvedIp = @gethostbyname($host);
+                if ($resolvedIp && $resolvedIp !== $host) {
+                    if (self::isPrivateIP($resolvedIp)) {
+                        return ['is_ssrf' => true, 'reason' => "DNS resolves to private IP: $host -> $resolvedIp"];
+                    }
+                }
             }
         }
 
@@ -135,39 +181,76 @@ class SsrfDefender {
     }
 
     private static function extractHost($url) {
-        if (preg_match('/^(?:https?:\/\/)?([^\/:?#]+)/', $url, $matches)) {
+        // 优先 parse_url，正确处理 userinfo 和 IPv6
+        $parsed = parse_url($url, PHP_URL_HOST);
+        if ($parsed) {
+            return $parsed;
+        }
+        // 降级：正则匹配，处理 userinfo (user:pass@host) 和裸 host
+        // 使用 ~ 作为分隔符，避免与 URL 中的 # 冲突
+        if (preg_match('~^(?:[a-zA-Z][a-zA-Z0-9+.\-]*://)?(?:[^/@]*@)?([^/:?#]+)~', $url, $matches)) {
             return $matches[1];
         }
-        return $url;
+        return '';
     }
 
     private static function isPrivateIP($host) {
         if (empty($host)) return false;
 
-        foreach (self::$privateRanges as $prefix) {
-            if (strpos($host, $prefix) === 0) {
-                return true;
-            }
+        $ip = filter_var($host, FILTER_VALIDATE_IP);
+        if (!$ip) {
+            // 非 IP 格式，可能是域名
+            return false;
         }
 
-        if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
-            $ip = ip2long($host);
-            if ($ip !== false) {
-                if (($ip >= ip2long('10.0.0.0') && $ip <= ip2long('10.255.255.255')) ||
-                    ($ip >= ip2long('172.16.0.0') && $ip <= ip2long('172.31.255.255')) ||
-                    ($ip >= ip2long('192.168.0.0') && $ip <= ip2long('192.168.255.255')) ||
-                    ($ip >= ip2long('127.0.0.0') && $ip <= ip2long('127.255.255.255'))) {
-                    return true;
-                }
+        // IPv4 私网/保留段检测
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            $long = ip2long($ip);
+            if ($long === false) return false;
+            $privateRanges = [
+                [0, 16777215],           // 0.0.0.0/8
+                [167772160, 184549375],   // 10.0.0.0/8
+                [1681915904, 1686110207], // 100.64.0.0/10 CGNAT
+                [2130706432, 2147483647], // 127.0.0.0/8
+                [2851995648, 2852061183], // 169.254.0.0/16 链路本地
+                [2886729728, 2887778303], // 172.16.0.0/12
+                [3221225472, 3221225727], // 192.0.0.0/24
+                [3221225984, 3221226239], // 192.0.2.0/24 (TEST-NET-1)
+                [3227017984, 3227018239], // 198.51.100.0/24 (TEST-NET-2)
+                [3232235520, 3232301055], // 192.168.0.0/16
+                [3323068416, 3323199487], // 198.18.0.0/15
+                [3325256704, 3325256959], // 203.0.113.0/24 (TEST-NET-3)
+            ];
+            foreach ($privateRanges as $range) {
+                if ($long >= $range[0] && $long <= $range[1]) return true;
             }
+            return false;
+        }
+
+        // IPv6 私网检测
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+            // ::1 回环
+            if ($ip === '::1') return true;
+            $bin = @inet_pton($ip);
+            if ($bin !== false && strlen($bin) === 16) {
+                $firstByte = ord($bin[0]);
+                // fc00::/7 ULA
+                if (($firstByte & 0xFE) === 0xFC) return true;
+                // fe80::/10 链路本地
+                if ($firstByte === 0xFE && (ord($bin[1]) & 0xC0) === 0x80) return true;
+            }
+            return false;
         }
 
         return false;
     }
 
     private static function isIPV6Loopback($host) {
+        if (empty($host)) return false;
         $host = strtolower($host);
-        return $host === '::1' || strpos($host, '0:0:0:0:0:0:0:1') !== false;
+        if ($host === '::1') return true;
+        // 仅做严格匹配，避免误伤含 0:0:0:0:0:0:0:1 子串的合法内容
+        return $host === '0:0:0:0:0:0:0:1';
     }
 
     private static function isNumericIP($value) {

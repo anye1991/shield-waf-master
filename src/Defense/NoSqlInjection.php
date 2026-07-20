@@ -35,17 +35,6 @@ class NoSqlInjection {
         '$month', '$second', '$week', '$year',
     ];
 
-    private static $redisCommands = [
-        'eval', 'evalsha', 'lua',
-        'config get', 'config set', 'config rewrite',
-        'slaveof', 'replicaof', 'module',
-        'flushall', 'flushdb', 'debug',
-        'shutdown', 'info', 'client',
-        'keys', 'scan', 'hgetall',
-        'script', 'time', 'ping',
-        'save', 'bgsave', 'lastsave',
-    ];
-
     private static $nosqlParamNames = [
         'username', 'user', 'email', 'password', 'pass',
         'id', '_id', 'uid', 'user_id', 'session_id',
@@ -76,7 +65,6 @@ class NoSqlInjection {
         ['pattern' => '/\{\s*\$size\s*:/i', 'severity' => 65, 'name' => 'MongoDB $size operator'],
         ['pattern' => '/\beval\s*\(/i', 'severity' => 95, 'name' => 'MongoDB eval'],
         ['pattern' => '/\bthis\.\w+\s*[=><]/i', 'severity' => 85, 'name' => 'MongoDB this reference'],
-        ['pattern' => '/\bfunction\s*\(\s*\)\s*\{/i', 'severity' => 90, 'name' => 'JavaScript function'],
         ['pattern' => '/\bnew\s+Date\s*\(/i', 'severity' => 70, 'name' => 'JavaScript Date object'],
         ['pattern' => '/\bnew\s+RegExp\s*\(/i', 'severity' => 80, 'name' => 'JavaScript RegExp object'],
         ['pattern' => '/\bJSON\.parse\s*\(/i', 'severity' => 80, 'name' => 'JSON.parse'],
@@ -88,8 +76,8 @@ class NoSqlInjection {
         ['pattern' => '/\bdelete\s+\w+/i', 'severity' => 85, 'name' => 'JavaScript delete'],
         ['pattern' => '/\btypeof\s+\w+/i', 'severity' => 70, 'name' => 'JavaScript typeof'],
         ['pattern' => '/\binstanceof\s+\w+/i', 'severity' => 70, 'name' => 'JavaScript instanceof'],
-        ['pattern' => '/\bconstructor\b/i', 'severity' => 95, 'name' => 'JavaScript constructor'],
-        ['pattern' => '/\bprototype\b/i', 'severity' => 90, 'name' => 'JavaScript prototype'],
+        ['pattern' => '/\bconstructor\s*[\[.]/i', 'severity' => 95, 'name' => 'JavaScript constructor access'],
+        ['pattern' => '/\bprototype\s*\./i', 'severity' => 90, 'name' => 'JavaScript prototype access'],
         ['pattern' => '/\b__proto__\b/i', 'severity' => 95, 'name' => 'JavaScript __proto__'],
         ['pattern' => '/\b__defineGetter__\b/i', 'severity' => 95, 'name' => 'JavaScript defineGetter'],
         ['pattern' => '/\b__defineSetter__\b/i', 'severity' => 95, 'name' => 'JavaScript defineSetter'],
@@ -117,10 +105,21 @@ class NoSqlInjection {
         $inputs = [];
 
         foreach ($_GET as $k => $v) {
-            $inputs[strtolower($k)] = (string)$v;
+            if (is_array($v)) {
+                // 检查数组键是否含 MongoDB 操作符，保留结构以供后续检测
+                $serialized = json_encode($v);
+                $inputs[strtolower($k)] = $serialized;
+            } else {
+                $inputs[strtolower($k)] = (string)$v;
+            }
         }
         foreach ($_POST as $k => $v) {
-            $inputs[strtolower($k)] = (string)$v;
+            if (is_array($v)) {
+                $serialized = json_encode($v);
+                $inputs[strtolower($k)] = $serialized;
+            } else {
+                $inputs[strtolower($k)] = (string)$v;
+            }
         }
 
         $body = defined('WAF_RAW_BODY') ? WAF_RAW_BODY : file_get_contents('php://input');
@@ -139,7 +138,7 @@ class NoSqlInjection {
     private static function extractJsonValues($data, &$inputs, $prefix = '') {
         if (is_array($data)) {
             foreach ($data as $k => $v) {
-                $key = $prefix . (empty($prefix) ? '' : '.') . $k;
+                $key = $prefix . (($prefix === '' || $prefix === null) ? '' : '.') . $k;
                 if (is_array($v) || is_object($v)) {
                     self::extractJsonValues($v, $inputs, $key);
                 } else {
@@ -172,12 +171,6 @@ class NoSqlInjection {
                 }
             }
 
-            foreach (self::$redisCommands as $cmd) {
-                if (strpos($lowerValue, $cmd) !== false) {
-                    return ['is_attack' => true, 'reason' => "Redis command: $cmd"];
-                }
-            }
-
             if (preg_match('/\{\s*\$[\w]+\s*:/', $value)) {
                 return ['is_attack' => true, 'reason' => 'MongoDB operator injection pattern'];
             }
@@ -187,7 +180,10 @@ class NoSqlInjection {
             }
 
             if (preg_match('/\b(function\s*\(\s*\)\s*\{)/', $value)) {
-                return ['is_attack' => true, 'reason' => 'JavaScript function injection'];
+                // 仅在与 this. 或 $where 同时出现时才视为注入，避免误报合法 JS 代码
+                if (preg_match('/\$where/i', $value) || preg_match('/\bthis\.\w+/i', $value)) {
+                    return ['is_attack' => true, 'reason' => 'JavaScript function injection'];
+                }
             }
         }
 

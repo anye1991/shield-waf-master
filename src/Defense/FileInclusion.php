@@ -62,6 +62,14 @@ class FileInclusion {
         'link', 'target', 'dest', 'destination', 'forward',
     ];
 
+    // RFI 强相关参数：仅这些参数启用 RFI 高分，避免对 URL 类参数（如 redirect_url）误报
+    private static $rfiParamNames = [
+        'file', 'include', 'require', 'page', 'template',
+        'view', 'layout', 'module', 'doc', 'document',
+        'load', 'open', 'read', 'readfile', 'path', 'filepath',
+        'include_once', 'require_once',
+    ];
+
     public static function detect($inputs) {
         $score = 0;
         $details = [];
@@ -72,25 +80,13 @@ class FileInclusion {
         }
 
         foreach ($inputs as $key => $value) {
-            if (is_array($value)) {
-                foreach ($value as $v) {
-                    $result = self::analyzeValue((string)$key, (string)$v);
-                    if ($result['score'] > 0) {
-                        $score = max($score, $result['score']);
-                        $details[] = $result;
-                        if ($result['detected']) {
-                            $detected = true;
-                        }
-                    }
-                }
-            } else {
-                $result = self::analyzeValue((string)$key, (string)$value);
-                if ($result['score'] > 0) {
-                    $score = max($score, $result['score']);
-                    $details[] = $result;
-                    if ($result['detected']) {
-                        $detected = true;
-                    }
+            // 递归遍历任意深度的嵌套数组
+            $result = self::analyzeValueRecursive((string)$key, $value);
+            if ($result['score'] > 0) {
+                $score = max($score, $result['score']);
+                $details[] = $result;
+                if (!empty($result['detected'])) {
+                    $detected = true;
                 }
             }
         }
@@ -102,10 +98,35 @@ class FileInclusion {
         ];
     }
 
+    /**
+     * 递归分析任意深度嵌套的数组结构
+     */
+    private static function analyzeValueRecursive($key, $value) {
+        if (is_array($value)) {
+            $score = 0;
+            $findings = [];
+            $detected = false;
+            foreach ($value as $v) {
+                $sub = self::analyzeValueRecursive($key, $v);
+                if ($sub['score'] > 0) {
+                    $score = max($score, $sub['score']);
+                    $findings = array_merge($findings, $sub['findings'] ?? []);
+                    if (!empty($sub['detected'])) $detected = true;
+                }
+            }
+            return [
+                'detected' => $detected,
+                'score' => $score,
+                'findings' => $findings,
+                'key' => $key,
+            ];
+        }
+        return self::analyzeValue($key, (string)$value);
+    }
+
     private static function analyzeValue($key, $value) {
         $value = trim($value);
         $lowerKey = strtolower($key);
-        $lowerValue = strtolower($value);
         $score = 0;
         $findings = [];
 
@@ -113,61 +134,22 @@ class FileInclusion {
             return ['detected' => false, 'score' => 0, 'findings' => [], 'key' => $key];
         }
 
-        $isIncludeParam = in_array($lowerKey, self::$includeParamNames);
+        $isIncludeParam = in_array($lowerKey, self::$includeParamNames, true);
+        $isRfiParam = in_array($lowerKey, self::$rfiParamNames, true);
         $paramMultiplier = $isIncludeParam ? 1.0 : 0.55;
 
-        foreach (self::$lfiPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
-            }
-        }
+        // 原始值扫描（全部 4 类模式）
+        $score = self::scanWithPatterns($value, $isRfiParam, $paramMultiplier, 1.0, $findings, $score, false);
 
-        foreach (self::$traversalPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
-            }
-        }
-
-        foreach (self::$rfiPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
-            }
-        }
-
-        foreach (self::$targetFilePatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
-                $score = max($score, $adjustedScore);
-                $findings[] = $pattern['name'];
-            }
-        }
-
-        $decodedValue = urldecode($value);
-        if ($decodedValue !== $value) {
-            foreach (self::$lfiPatterns as $pattern) {
-                if (preg_match($pattern['pattern'], $decodedValue)) {
-                    $adjustedScore = (int)($pattern['severity'] * 0.85 * $paramMultiplier);
-                    if ($score < $adjustedScore) {
-                        $score = $adjustedScore;
-                    }
-                    $findings[] = 'URL-decoded: ' . $pattern['name'];
-                }
-            }
-            foreach (self::$traversalPatterns as $pattern) {
-                if (preg_match($pattern['pattern'], $decodedValue)) {
-                    $adjustedScore = (int)($pattern['severity'] * 0.8 * $paramMultiplier);
-                    if ($score < $adjustedScore) {
-                        $score = $adjustedScore;
-                    }
-                    $findings[] = 'URL-decoded: ' . $pattern['name'];
-                }
-            }
+        // 多层 URL 解码（最多 3 次），使用 rawurldecode 避免 + 被错误转为空格
+        $decoded = $value;
+        for ($i = 0; $i < 3; $i++) {
+            $next = rawurldecode($decoded);
+            if ($next === $decoded) break;
+            $decoded = $next;
+            // 每层解码后对全部 4 类模式重新扫描，按层降低权重避免无限放大
+            $layerFactor = max(0.7, 0.85 - $i * 0.05);
+            $score = self::scanWithPatterns($decoded, $isRfiParam, $paramMultiplier, $layerFactor, $findings, $score, true);
         }
 
         return [
@@ -177,5 +159,52 @@ class FileInclusion {
             'key' => $key,
             'is_include_param' => $isIncludeParam,
         ];
+    }
+
+    /**
+     * 用全部 4 类模式（LFI/RFI/traversal/target）扫描给定内容
+     * RFI 模式仅在 RFI 强相关参数中才给予高分，避免对 URL 类参数误报
+     */
+    private static function scanWithPatterns($value, $isRfiParam, $paramMultiplier, $layerFactor, &$findings, $score, $isDecoded) {
+        $prefix = $isDecoded ? 'URL-decoded: ' : '';
+
+        foreach (self::$lfiPatterns as $pattern) {
+            if (preg_match($pattern['pattern'], $value)) {
+                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier * $layerFactor);
+                if ($score < $adjustedScore) $score = $adjustedScore;
+                $findings[] = $prefix . $pattern['name'];
+            }
+        }
+
+        foreach (self::$traversalPatterns as $pattern) {
+            if (preg_match($pattern['pattern'], $value)) {
+                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier * $layerFactor);
+                if ($score < $adjustedScore) $score = $adjustedScore;
+                $findings[] = $prefix . $pattern['name'];
+            }
+        }
+
+        // RFI 模式：仅 RFI 强相关参数启用高分，其他参数大幅降权
+        foreach (self::$rfiPatterns as $pattern) {
+            if (preg_match($pattern['pattern'], $value)) {
+                if ($isRfiParam) {
+                    $adjustedScore = (int)($pattern['severity'] * $paramMultiplier * $layerFactor);
+                } else {
+                    $adjustedScore = (int)($pattern['severity'] * 0.3 * $paramMultiplier * $layerFactor);
+                }
+                if ($score < $adjustedScore) $score = $adjustedScore;
+                $findings[] = $prefix . $pattern['name'];
+            }
+        }
+
+        foreach (self::$targetFilePatterns as $pattern) {
+            if (preg_match($pattern['pattern'], $value)) {
+                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier * $layerFactor);
+                if ($score < $adjustedScore) $score = $adjustedScore;
+                $findings[] = $prefix . $pattern['name'];
+            }
+        }
+
+        return $score;
     }
 }

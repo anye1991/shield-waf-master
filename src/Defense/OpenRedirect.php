@@ -22,7 +22,7 @@ class OpenRedirect {
         ['pattern' => '/^ftp:\/\//i', 'severity' => 65, 'name' => 'Absolute FTP URL', 'category' => 'external'],
         ['pattern' => '/javascript:/i', 'severity' => 90, 'name' => 'JavaScript URI scheme', 'category' => 'external'],
         ['pattern' => '/data:/i', 'severity' => 85, 'name' => 'Data URI scheme', 'category' => 'external'],
-        ['pattern' => '/^[a-zA-Z][a-zA-Z0-9+.\-]*:/i', 'severity' => 50, 'name' => 'Generic URI scheme', 'category' => 'external'],
+        ['pattern' => '/^(?:file|jar|netdoc|vbscript|ldap|php|expect|phar):\/\//i', 'severity' => 60, 'name' => 'Dangerous URI scheme', 'category' => 'external'],
     ];
 
     private static $encodedUrlPatterns = [
@@ -43,7 +43,7 @@ class OpenRedirect {
         ['pattern' => '/@/', 'severity' => 75, 'name' => '@ symbol (potential auth bypass)', 'category' => 'suspicious'],
         ['pattern' => '/%40/i', 'severity' => 70, 'name' => 'URL-encoded @ symbol', 'category' => 'suspicious'],
         ['pattern' => '/\.\./', 'severity' => 65, 'name' => 'Path traversal in redirect', 'category' => 'suspicious'],
-        ['pattern' => '/\\\/', 'severity' => 60, 'name' => 'Backslash in URL', 'category' => 'suspicious'],
+        ['pattern' => '/\\\\/', 'severity' => 60, 'name' => 'Backslash in URL', 'category' => 'suspicious'],
     ];
 
     public static function detect($inputs) {
@@ -56,19 +56,10 @@ class OpenRedirect {
         }
 
         foreach ($inputs as $key => $value) {
-            if (is_array($value)) {
-                foreach ($value as $v) {
-                    $result = self::analyzeValue((string)$key, (string)$v);
-                    if ($result['score'] > 0) {
-                        $score = max($score, $result['score']);
-                        $details[] = $result;
-                        if ($result['detected']) {
-                            $detected = true;
-                        }
-                    }
-                }
-            } else {
-                $result = self::analyzeValue((string)$key, (string)$value);
+            // 递归展开任意深度的数组，避免对数组参数触发 (string) 转换告警
+            $flatValues = self::flattenValues($value);
+            foreach ($flatValues as $v) {
+                $result = self::analyzeValue((string)$key, (string)$v);
                 if ($result['score'] > 0) {
                     $score = max($score, $result['score']);
                     $details[] = $result;
@@ -132,7 +123,13 @@ class OpenRedirect {
             }
         }
 
-        $decodedValue = urldecode($value);
+        // 循环解码最多 3 次，防止双重/三重编码绕过
+        $decodedValue = $value;
+        for ($i = 0; $i < 3; $i++) {
+            $next = rawurldecode($decodedValue);
+            if ($next === $decodedValue) break;
+            $decodedValue = $next;
+        }
         if ($decodedValue !== $value) {
             foreach (self::$externalUrlPatterns as $pattern) {
                 if (preg_match($pattern['pattern'], $decodedValue)) {
@@ -174,11 +171,31 @@ class OpenRedirect {
 
     private static function isRedirectParam($key) {
         foreach (self::$redirectParamNames as $param) {
-            if ($key === $param || strpos($key, $param) !== false) {
+            if ($key === $param) {
+                return true;
+            }
+            // 使用边界匹配，避免 curlpage、nextpage 等误报
+            if (preg_match('/(^|_|-)' . preg_quote($param, '/') . '($|_|-)/', $key)) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static function flattenValues($value) {
+        if (is_array($value)) {
+            $out = [];
+            foreach ($value as $v) {
+                foreach (self::flattenValues($v) as $fv) {
+                    $out[] = $fv;
+                }
+            }
+            return $out;
+        }
+        if (is_scalar($value) || (is_object($value) && method_exists($value, '__toString'))) {
+            return [(string)$value];
+        }
+        return [];
     }
 
     private static function looksLikeExternalDomain($value) {

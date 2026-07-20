@@ -4,7 +4,7 @@ defined('ABSPATH') || exit;
 class IdorDetection {
     private static $numericIdPatterns = [
         ['pattern' => '/^uid$/i', 'severity' => 40, 'name' => 'uid parameter', 'category' => 'numeric_id'],
-        ['pattern' => '/^user[_-?id$/i', 'severity' => 45, 'name' => 'user_id parameter', 'category' => 'numeric_id'],
+        ['pattern' => '/^user[_-]?id$/i', 'severity' => 45, 'name' => 'user_id parameter', 'category' => 'numeric_id'],
         ['pattern' => '/^account[_-]?id$/i', 'severity' => 50, 'name' => 'account_id parameter', 'category' => 'numeric_id'],
         ['pattern' => '/^order[_-]?id$/i', 'severity' => 55, 'name' => 'order_id parameter', 'category' => 'numeric_id'],
         ['pattern' => '/^record[_-]?id$/i', 'severity' => 40, 'name' => 'record_id parameter', 'category' => 'numeric_id'],
@@ -21,19 +21,18 @@ class IdorDetection {
     ];
 
     private static $batchParamPatterns = [
-        ['pattern' => '/ids?\[\]$/i', 'severity' => 60, 'name' => 'Batch IDs array (ids[])', 'category' => 'batch'],
-        ['pattern' => '/user[_-]?ids?\[\]$/i', 'severity' => 65, 'name' => 'Batch user IDs', 'category' => 'batch'],
-        ['pattern' => '/order[_-]?ids?\[\]$/i', 'severity' => 70, 'name' => 'Batch order IDs', 'category' => 'batch'],
-        ['pattern' => '/product[_-]?ids?\[\]$/i', 'severity' => 60, 'name' => 'Batch product IDs', 'category' => 'batch'],
+        ['pattern' => '/^ids?$/i', 'severity' => 60, 'name' => 'Batch IDs parameter', 'category' => 'batch'],
+        ['pattern' => '/^user[_-]?ids?$/i', 'severity' => 65, 'name' => 'Batch user IDs', 'category' => 'batch'],
+        ['pattern' => '/^order[_-]?ids?$/i', 'severity' => 70, 'name' => 'Batch order IDs', 'category' => 'batch'],
+        ['pattern' => '/^product[_-]?ids?$/i', 'severity' => 60, 'name' => 'Batch product IDs', 'category' => 'batch'],
         ['pattern' => '/selected[_-]?ids?/i', 'severity' => 55, 'name' => 'Selected IDs batch', 'category' => 'batch'],
         ['pattern' => '/bulk[_-]?ids?/i', 'severity' => 65, 'name' => 'Bulk IDs parameter', 'category' => 'batch'],
-        ['pattern' => '/id\[\d+\]$/i', 'severity' => 60, 'name' => 'ID array indexed array (id[0])', 'category' => 'batch'],
     ];
 
     private static $bypassPatterns = [
         ['pattern' => '/^-1$/', 'severity' => 75, 'name' => 'Negative ID bypass (id=-1)', 'category' => 'bypass'],
         ['pattern' => '/^0$/', 'severity' => 55, 'name' => 'Zero ID (id=0)', 'category' => 'bypass'],
-        ['pattern' => '/^-?\d+$/', 'severity' => 30, 'name' => 'Numeric ID value', 'category' => 'bypass'],
+        ['pattern' => '/^-?\d+$/', 'severity' => 10, 'name' => 'Numeric ID value', 'category' => 'bypass'],
         ['pattern' => '/^null$/i', 'severity' => 50, 'name' => 'Null value', 'category' => 'bypass'],
         ['pattern' => '/^true$/i', 'severity' => 45, 'name' => 'Boolean true value', 'category' => 'bypass'],
         ['pattern' => '/^false$/i', 'severity' => 40, 'name' => 'Boolean false value', 'category' => 'bypass'],
@@ -161,7 +160,7 @@ class IdorDetection {
             }
         }
 
-        $isIdParam = stripos($key, 'id') !== false;
+        $isIdParam = preg_match('/(^|[_-])id($|[_-])/i', $key) === 1;
         if ($isIdParam && is_array($value) && count($value) > 3) {
             $arrayScore = 55;
             if ($score < $arrayScore) {
@@ -230,11 +229,21 @@ class IdorDetection {
 
     private static function isSensitiveEndpoint() {
         $uri = $_SERVER['REQUEST_URI'] ?? '';
-        $path = parse_url($uri, PHP_URL_PATH) ?? $uri;
+        $path = parse_url($uri, PHP_URL_PATH);
+        if ($path === false || $path === null) {
+            $path = $uri;
+        }
         $path = strtolower($path);
 
         foreach (self::$sensitiveEndpoints as $endpoint) {
-            if (strpos($path, $endpoint) !== false) {
+            // 精确匹配或路径段前缀匹配（避免 /admin 匹配 /administrator）
+            if ($path === $endpoint) {
+                return true;
+            }
+            if (strpos($path, $endpoint . '/') === 0) {
+                return true;
+            }
+            if (strpos($path, $endpoint . '?') === 0) {
                 return true;
             }
         }

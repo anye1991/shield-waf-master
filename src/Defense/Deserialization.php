@@ -7,10 +7,13 @@ class Deserialization {
         ['pattern' => '/a:\d+:\{/', 'severity' => 80, 'name' => 'PHP array serialization a:', 'category' => 'php_ser'],
         ['pattern' => '/s:\d+:"/', 'severity' => 60, 'name' => 'PHP string serialization s:', 'category' => 'php_ser'],
         ['pattern' => '/__PHP_Incomplete_Class/i', 'severity' => 95, 'name' => 'PHP incomplete class marker', 'category' => 'php_ser'],
-        ['pattern' => '/i:\d+;/', 'severity' => 40, 'name' => 'PHP integer serialization i:', 'category' => 'php_ser'],
-        ['pattern' => '/b:[01];/', 'severity' => 35, 'name' => 'PHP boolean serialization b:', 'category' => 'php_ser'],
-        ['pattern' => '/d:[\d.eE+-]+;/', 'severity' => 45, 'name' => 'PHP double serialization d:', 'category' => 'php_ser'],
-        ['pattern' => '/N;/', 'severity' => 30, 'name' => 'PHP null serialization N;', 'category' => 'php_ser'],
+        // 要求前导上下文为字符串起始或 } 后续，避免匹配任意 i:N; 文本
+        ['pattern' => '/(?:^|})i:\d+;/', 'severity' => 40, 'name' => 'PHP integer serialization i:', 'category' => 'php_ser'],
+        ['pattern' => '/(?:^|})b:[01];/', 'severity' => 35, 'name' => 'PHP boolean serialization b:', 'category' => 'php_ser'],
+        ['pattern' => '/(?:^|})d:[\d.eE+-]+;/', 'severity' => 45, 'name' => 'PHP double serialization d:', 'category' => 'php_ser'],
+        ['pattern' => '/(?:^|})N;/', 'severity' => 30, 'name' => 'PHP null serialization N;', 'category' => 'php_ser'],
+        // 检测 PHP 序列化中自定义类名前缀 C: (Serializable 接口)
+        ['pattern' => '/C:\d+:"/', 'severity' => 80, 'name' => 'PHP serializable C:', 'category' => 'php_ser'],
     ];
 
     private static $magicMethodPatterns = [
@@ -24,7 +27,8 @@ class Deserialization {
         ['pattern' => '/__set/i', 'severity' => 70, 'name' => 'PHP __set magic method', 'category' => 'magic'],
         ['pattern' => '/__isset/i', 'severity' => 65, 'name' => 'PHP __isset magic method', 'category' => 'magic'],
         ['pattern' => '/__unset/i', 'severity' => 65, 'name' => 'PHP __unset magic method', 'category' => 'magic'],
-        ['pattern' => '/__autoload/i', 'severity' => 75, 'name' => 'PHP __autoload magic method', 'category' => 'magic'],
+        // __autoload 在 PHP 8.0 已移除，降低 severity
+        ['pattern' => '/__autoload/i', 'severity' => 20, 'name' => 'PHP __autoload magic method', 'category' => 'magic'],
         ['pattern' => '/__construct/i', 'severity' => 60, 'name' => 'PHP __construct magic method', 'category' => 'magic'],
         ['pattern' => '/__sleep/i', 'severity' => 75, 'name' => 'PHP __sleep magic method', 'category' => 'magic'],
     ];
@@ -54,7 +58,6 @@ class Deserialization {
 
     private static $pharPatterns = [
         ['pattern' => '/phar:\/\//i', 'severity' => 90, 'name' => 'PHP phar:// wrapper', 'category' => 'phar'],
-        ['pattern' => '/GBMB/', 'severity' => 85, 'name' => 'Phar file signature (GBMB magic)', 'category' => 'phar'],
         ['pattern' => '/__HALT_COMPILER/i', 'severity' => 80, 'name' => 'PHP __HALT_COMPILER', 'category' => 'phar'],
     ];
 
@@ -161,8 +164,13 @@ class Deserialization {
         }
 
         foreach (self::$ysoserialPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
-                $score = max($score, $pattern['severity']);
+            // 仅在 base64/二进制上下文（含 O: 或 \xAC\xED）中才计分，避免英文单词/项目名误报
+            $hasObjectContext = preg_match('/O:\d+:"/', $value)
+                || strpos($value, "\xAC\xED") !== false
+                || strpos($value, "rO0AB") === 0;
+            if ($hasObjectContext && preg_match($pattern['pattern'], $value)) {
+                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
+                $score = max($score, $adjustedScore);
                 $findings[] = $pattern['name'];
             }
         }

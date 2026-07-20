@@ -103,106 +103,170 @@ class JwtSecurity {
             }
 
             $parts = explode('.', $token);
-            if (count($parts) === 3) {
-                $header = $parts[0];
-                $payload = $parts[1];
-                $signature = $parts[2];
+            // 2 段式 JWT 视为 alg=none 攻击
+            if (count($parts) === 2) {
+                return ['is_attack' => true, 'reason' => 'JWT with no signature (alg=none)'];
+            }
+            if (count($parts) !== 3) {
+                // 不是 JWT 结构，跳过检测
+                return ['is_attack' => false, 'reason' => ''];
+            }
 
-                if (strlen($signature) === 0) {
-                    return ['is_attack' => true, 'reason' => 'JWT with empty signature (alg=none attack)'];
+            $header = $parts[0];
+            $payload = $parts[1];
+            $signature = $parts[2];
+
+            if (strlen($signature) === 0) {
+                return ['is_attack' => true, 'reason' => 'JWT with empty signature (alg=none attack)'];
+            }
+
+            $decodedHeader = self::base64UrlDecode($header);
+            $headerJson = null;
+            $alg = null;
+            if (!empty($decodedHeader)) {
+                $headerJson = json_decode($decodedHeader, true);
+                if (json_last_error() === JSON_ERROR_NONE && is_array($headerJson)) {
+                    if (isset($headerJson['alg'])) {
+                        $alg = strtolower($headerJson['alg']);
+                    }
+                    if ($alg === 'none') {
+                        return ['is_attack' => true, 'reason' => 'JWT alg=none algorithm confusion attack'];
+                    }
+
+                    // 放宽 typ 校验，允许 jwt、at+jwt、application/jwt 以及空值（Azure AD 使用 at+jwt）
+                    if (isset($headerJson['typ']) && !empty($headerJson['typ'])) {
+                        $typ = strtolower($headerJson['typ']);
+                        $allowedTyps = ['jwt', 'at+jwt', 'application/jwt'];
+                        if (!in_array($typ, $allowedTyps)) {
+                            return ['is_attack' => true, 'reason' => 'JWT typ header has abnormal value: ' . $headerJson['typ']];
+                        }
+                    }
+
+                    if (isset($headerJson['kid']) && strlen($headerJson['kid']) > 255) {
+                        return ['is_attack' => true, 'reason' => 'JWT kid header too long'];
+                    }
                 }
+            }
 
-                $decodedHeader = self::base64UrlDecode($header);
-                if (!empty($decodedHeader)) {
-                    $headerJson = json_decode($decodedHeader, true);
-                    if (json_last_error() === JSON_ERROR_NONE && is_array($headerJson)) {
-                        if (isset($headerJson['alg']) && strtolower($headerJson['alg']) === 'none') {
-                            return ['is_attack' => true, 'reason' => 'JWT alg=none algorithm confusion attack'];
+            // 根据声明的 alg 校验签名最小长度
+            if ($alg !== null) {
+                $minSignatureLen = self::minSignatureLength($alg);
+                if ($minSignatureLen > 0 && strlen($signature) < $minSignatureLen) {
+                    return ['is_attack' => true, 'reason' => "JWT signature too short for alg={$alg}"];
+                }
+            }
+
+            $decodedPayload = self::base64UrlDecode($payload);
+            if (!empty($decodedPayload)) {
+                $payloadJson = json_decode($decodedPayload, true);
+                if (json_last_error() === JSON_ERROR_NONE && is_array($payloadJson)) {
+                    // 强制要求 exp 字段，缺失即可疑（永不过期令牌）
+                    if (!isset($payloadJson['exp'])) {
+                        return ['is_attack' => true, 'reason' => 'JWT missing exp claim (never expires)'];
+                    }
+
+                    if (isset($payloadJson['exp'])) {
+                        if (!is_numeric($payloadJson['exp'])) {
+                            return ['is_attack' => true, 'reason' => 'JWT exp claim is not numeric'];
                         }
 
-                        if (isset($headerJson['typ']) && strtolower($headerJson['typ']) !== 'jwt') {
-                            return ['is_attack' => true, 'reason' => 'JWT typ header not set to JWT'];
+                        if ($payloadJson['exp'] < time()) {
+                            return ['is_attack' => true, 'reason' => 'JWT token expired'];
+                        }
+                    }
+
+                    if (isset($payloadJson['nbf'])) {
+                        if (!is_numeric($payloadJson['nbf'])) {
+                            return ['is_attack' => true, 'reason' => 'JWT nbf claim is not numeric'];
                         }
 
-                        if (isset($headerJson['kid']) && strlen($headerJson['kid']) > 255) {
-                            return ['is_attack' => true, 'reason' => 'JWT kid header too long'];
+                        if ($payloadJson['nbf'] > time()) {
+                            return ['is_attack' => true, 'reason' => 'JWT token not yet valid'];
+                        }
+                    }
+
+                    if (isset($payloadJson['iat'])) {
+                        if (!is_numeric($payloadJson['iat'])) {
+                            return ['is_attack' => true, 'reason' => 'JWT iat claim is not numeric'];
+                        }
+                    }
+
+                    if (isset($payloadJson['sub'])) {
+                        if (is_array($payloadJson['sub'])) {
+                            return ['is_attack' => true, 'reason' => 'JWT sub claim is an array'];
+                        }
+                    }
+
+                    if (isset($payloadJson['aud'])) {
+                        if (!is_string($payloadJson['aud']) && !is_array($payloadJson['aud'])) {
+                            return ['is_attack' => true, 'reason' => 'JWT aud claim is invalid type'];
+                        }
+                    }
+
+                    if (isset($payloadJson['iss'])) {
+                        if (!is_string($payloadJson['iss'])) {
+                            return ['is_attack' => true, 'reason' => 'JWT iss claim is not a string'];
+                        }
+                    }
+
+                    foreach ($payloadJson as $claim => $claimValue) {
+                        if (!in_array($claim, self::$jwtClaims) && strpos($claim, '_') !== 0) {
+                            if (is_array($claimValue) && count($claimValue) > 100) {
+                                return ['is_attack' => true, 'reason' => 'JWT payload contains oversized custom claim'];
+                            }
                         }
                     }
                 }
+            }
 
-                $decodedPayload = self::base64UrlDecode($payload);
-                if (!empty($decodedPayload)) {
-                    $payloadJson = json_decode($decodedPayload, true);
-                    if (json_last_error() === JSON_ERROR_NONE && is_array($payloadJson)) {
-                        if (isset($payloadJson['exp'])) {
-                            if (!is_numeric($payloadJson['exp'])) {
-                                return ['is_attack' => true, 'reason' => 'JWT exp claim is not numeric'];
-                            }
+            if (!self::isValidBase64Url($header)) {
+                return ['is_attack' => true, 'reason' => 'JWT header is not valid base64url'];
+            }
 
-                            if ($payloadJson['exp'] < time()) {
-                                return ['is_attack' => true, 'reason' => 'JWT token expired'];
-                            }
-                        }
+            if (!self::isValidBase64Url($payload)) {
+                return ['is_attack' => true, 'reason' => 'JWT payload is not valid base64url'];
+            }
 
-                        if (isset($payloadJson['nbf'])) {
-                            if (!is_numeric($payloadJson['nbf'])) {
-                                return ['is_attack' => true, 'reason' => 'JWT nbf claim is not numeric'];
-                            }
-
-                            if ($payloadJson['nbf'] > time()) {
-                                return ['is_attack' => true, 'reason' => 'JWT token not yet valid'];
-                            }
-                        }
-
-                        if (isset($payloadJson['iat'])) {
-                            if (!is_numeric($payloadJson['iat'])) {
-                                return ['is_attack' => true, 'reason' => 'JWT iat claim is not numeric'];
-                            }
-                        }
-
-                        if (isset($payloadJson['sub'])) {
-                            if (is_array($payloadJson['sub'])) {
-                                return ['is_attack' => true, 'reason' => 'JWT sub claim is an array'];
-                            }
-                        }
-
-                        if (isset($payloadJson['aud'])) {
-                            if (!is_string($payloadJson['aud']) && !is_array($payloadJson['aud'])) {
-                                return ['is_attack' => true, 'reason' => 'JWT aud claim is invalid type'];
-                            }
-                        }
-
-                        if (isset($payloadJson['iss'])) {
-                            if (!is_string($payloadJson['iss'])) {
-                                return ['is_attack' => true, 'reason' => 'JWT iss claim is not a string'];
-                            }
-                        }
-
-                        foreach ($payloadJson as $claim => $claimValue) {
-                            if (!in_array($claim, self::$jwtClaims) && strpos($claim, '_') !== 0) {
-                                if (is_array($claimValue) && count($claimValue) > 100) {
-                                    return ['is_attack' => true, 'reason' => 'JWT payload contains oversized custom claim'];
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (!self::isValidBase64Url($header)) {
-                    return ['is_attack' => true, 'reason' => 'JWT header is not valid base64url'];
-                }
-
-                if (!self::isValidBase64Url($payload)) {
-                    return ['is_attack' => true, 'reason' => 'JWT payload is not valid base64url'];
-                }
-
-                if (strlen($token) > 8192) {
-                    return ['is_attack' => true, 'reason' => 'JWT token exceeds maximum allowed size'];
-                }
+            if (strlen($token) > 8192) {
+                return ['is_attack' => true, 'reason' => 'JWT token exceeds maximum allowed size'];
             }
         }
 
         return ['is_attack' => false, 'reason' => ''];
+    }
+
+    /**
+     * 根据声明的 alg 返回签名应满足的最小 base64url 字符长度
+     * 返回 0 表示不做硬性校验
+     */
+    private static function minSignatureLength($alg) {
+        switch ($alg) {
+            case 'hs256':
+                return 32;
+            case 'hs384':
+                return 48;
+            case 'hs512':
+                return 64;
+            case 'rs256':
+            case 'ps256':
+                return 256;
+            case 'rs384':
+            case 'ps384':
+                return 384;
+            case 'rs512':
+            case 'ps512':
+                return 512;
+            case 'es256':
+                return 64;
+            case 'es384':
+                return 96;
+            case 'es512':
+                return 132;
+            case 'eddsa':
+                return 64;
+            default:
+                return 0;
+        }
     }
 
     private static function base64UrlDecode($data) {
@@ -211,7 +275,8 @@ class JwtSecurity {
         if ($padding > 0) {
             $data .= str_repeat('=', 4 - $padding);
         }
-        return base64_decode($data);
+        // 启用严格模式，避免无效字符被静默丢弃
+        return base64_decode($data, true);
     }
 
     private static function isValidBase64Url($data) {

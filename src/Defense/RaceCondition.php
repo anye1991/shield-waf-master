@@ -32,43 +32,87 @@ class RaceCondition {
         self::initStorage();
 
         $currentRequest = self::getRequestFingerprint();
-        $requestHistory = self::getRequestHistory();
-        $history = self::pruneHistory($requestHistory);
 
-        $rateResult = self::checkRequestRate($currentRequest, $history);
-        if ($rateResult['score'] > 0) {
-            $score = max($score, $rateResult['score']);
-            $details[] = $rateResult;
-            if ($rateResult['detected']) {
-                $detected = true;
-            }
+        // 获取文件锁，贯穿整个读改写周期，避免检测器自身的竞态条件
+        $file = self::getStorageFile();
+        $handle = @fopen($file, 'c+');
+        if ($handle === false) {
+            return ['detected' => false, 'score' => 0, 'details' => []];
         }
 
-        $idempotentResult = self::checkIdempotentPost($currentRequest, $history);
-        if ($idempotentResult['score'] > 0) {
-            $score = max($score, $idempotentResult['score']);
-            $details[] = $idempotentResult;
-            if ($idempotentResult['detected']) {
-                $detected = true;
-            }
+        if (!flock($handle, LOCK_EX)) {
+            fclose($handle);
+            return ['detected' => false, 'score' => 0, 'details' => []];
         }
 
-        $sensitiveResult = self::checkSensitiveOperations($currentRequest, $history);
-        if ($sensitiveResult['score'] > 0) {
-            $score = max($score, $sensitiveResult['score']);
-            $details[] = $sensitiveResult;
-            if ($sensitiveResult['detected']) {
-                $detected = true;
-            }
-        }
+        try {
+            $history = self::readHistoryFromHandle($handle);
+            $history = self::pruneHistory($history);
 
-        self::saveRequest($currentRequest, $history);
+            $rateResult = self::checkRequestRate($currentRequest, $history);
+            if ($rateResult['score'] > 0) {
+                $score = max($score, $rateResult['score']);
+                $details[] = $rateResult;
+                if ($rateResult['detected']) {
+                    $detected = true;
+                }
+            }
+
+            $idempotentResult = self::checkIdempotentPost($currentRequest, $history);
+            if ($idempotentResult['score'] > 0) {
+                $score = max($score, $idempotentResult['score']);
+                $details[] = $idempotentResult;
+                if ($idempotentResult['detected']) {
+                    $detected = true;
+                }
+            }
+
+            $sensitiveResult = self::checkSensitiveOperations($currentRequest, $history);
+            if ($sensitiveResult['score'] > 0) {
+                $score = max($score, $sensitiveResult['score']);
+                $details[] = $sensitiveResult;
+                if ($sensitiveResult['detected']) {
+                    $detected = true;
+                }
+            }
+
+            self::writeHistoryToHandle($handle, $history, $currentRequest);
+        } finally {
+            fflush($handle);
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
 
         return [
             'detected' => $detected,
             'score' => min($score, 100),
             'details' => $details,
         ];
+    }
+
+    private static function readHistoryFromHandle($handle) {
+        $content = stream_get_contents($handle);
+        if ($content === false || $content === '') {
+            return [];
+        }
+        $data = json_decode($content, true);
+        if (is_array($data)) {
+            return $data;
+        }
+        return [];
+    }
+
+    private static function writeHistoryToHandle($handle, $history, $request) {
+        $history[] = $request;
+        $history = self::pruneHistory($history);
+
+        if (count($history) > 500) {
+            $history = array_slice($history, -500);
+        }
+
+        ftruncate($handle, 0);
+        rewind($handle);
+        fwrite($handle, json_encode($history));
     }
 
     private static function initStorage() {
@@ -81,18 +125,11 @@ class RaceCondition {
     }
 
     private static function getClientIp() {
-        $ip = '';
-        $headers = ['HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP', 'HTTP_CLIENT_IP', 'REMOTE_ADDR'];
-        foreach ($headers as $header) {
-            if (!empty($_SERVER[$header])) {
-                $ip = $_SERVER[$header];
-                if (strpos($ip, ',') !== false) {
-                    $ip = trim(explode(',', $ip)[0]);
-                }
-                break;
-            }
+        // 不再信任可伪造的 X-Forwarded-For 等 HTTP 头
+        if (function_exists('waf_get_real_ip')) {
+            return waf_get_real_ip();
         }
-        return $ip ?: '0.0.0.0';
+        return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
     }
 
     private static function getRequestFingerprint() {
@@ -101,14 +138,17 @@ class RaceCondition {
         $path = parse_url($uri, PHP_URL_PATH) ?? $uri;
         $ip = self::getClientIp();
 
+        // 不直接 ksort($_GET)/ksort($_POST)，先复制再排序，避免污染超全局变量
         $params = [];
         if (!empty($_GET)) {
-            ksort($_GET);
-            $params['get'] = $_GET;
+            $get = $_GET;
+            ksort($get);
+            $params['get'] = $get;
         }
         if (!empty($_POST)) {
-            ksort($_POST);
-            $params['post'] = $_POST;
+            $post = $_POST;
+            ksort($post);
+            $params['post'] = $post;
         }
 
         $paramsHash = md5(serialize($params));
@@ -131,20 +171,6 @@ class RaceCondition {
         return self::$storageDir . '/rc_' . $safeIp . '.json';
     }
 
-    private static function getRequestHistory() {
-        $file = self::getStorageFile();
-        if (file_exists($file)) {
-            $content = @file_get_contents($file);
-            if ($content !== false) {
-                $data = json_decode($content, true);
-                if (is_array($data)) {
-                    return $data;
-                }
-            }
-        }
-        return [];
-    }
-
     private static function pruneHistory($history) {
         $now = microtime(true);
         $maxAge = 60;
@@ -157,18 +183,6 @@ class RaceCondition {
         }
 
         return $pruned;
-    }
-
-    private static function saveRequest($request, $history) {
-        $history[] = $request;
-        $history = self::pruneHistory($history);
-
-        if (count($history) > 500) {
-            $history = array_slice($history, -500);
-        }
-
-        $file = self::getStorageFile();
-        @file_put_contents($file, json_encode($history), LOCK_EX);
     }
 
     private static function checkRequestRate($currentRequest, $history) {
@@ -317,7 +331,7 @@ class RaceCondition {
 
         if ($sensitiveCount >= 3) {
             $score = 60;
-            $findings[] = "Multiple sensitive operations: $sensitiveCount in ${window}s";
+            $findings[] = "Multiple sensitive operations: $sensitiveCount in {$window}s";
         }
 
         if ($sameSensitiveCount >= 2) {

@@ -5,15 +5,15 @@ class XxeInjection {
     private static $entityPatterns = [
         ['pattern' => '/<!ENTITY/i', 'severity' => 90, 'name' => 'XML ENTITY declaration', 'category' => 'entity'],
         ['pattern' => '/<!DOCTYPE/i', 'severity' => 75, 'name' => 'DOCTYPE declaration', 'category' => 'entity'],
-        ['pattern' => '/\bSYSTEM\b/i', 'severity' => 85, 'name' => 'SYSTEM entity', 'category' => 'entity'],
-        ['pattern' => '/\bPUBLIC\b/i', 'severity' => 60, 'name' => 'PUBLIC entity', 'category' => 'entity'],
+        ['pattern' => '/SYSTEM\s+["\']/i', 'severity' => 85, 'name' => 'SYSTEM entity', 'category' => 'entity'],
+        ['pattern' => '/PUBLIC\s+["\']/i', 'severity' => 60, 'name' => 'PUBLIC entity', 'category' => 'entity'],
         ['pattern' => '/<!ENTITY\s+%/i', 'severity' => 95, 'name' => 'Parameter entity declaration', 'category' => 'entity'],
-        ['pattern' => '/%\w+;/i', 'severity' => 80, 'name' => 'Parameter entity reference %xxx;', 'category' => 'entity'],
+        // %w+; 仅在同时存在 <!ENTITY % 时才计分，单独出现易误报（URL 编码也包含 %xx）
+        ['pattern' => '/<!ENTITY\s+%.*?%\w+;/is', 'severity' => 80, 'name' => 'Parameter entity reference %xxx;', 'category' => 'entity'],
     ];
 
     private static $xincludePatterns = [
         ['pattern' => '/<xi:include/i', 'severity' => 85, 'name' => 'XInclude xi:include', 'category' => 'xinclude'],
-        ['pattern' => '/xinclude/i', 'severity' => 70, 'name' => 'XInclude reference', 'category' => 'xinclude'],
     ];
 
     private static $svgPatterns = [
@@ -26,13 +26,14 @@ class XxeInjection {
         ['pattern' => '/expect:\/\//i', 'severity' => 95, 'name' => 'PHP expect wrapper', 'category' => 'wrapper'],
         ['pattern' => '/phar:\/\//i', 'severity' => 90, 'name' => 'PHP phar wrapper', 'category' => 'wrapper'],
         ['pattern' => '/php:\/\/input/i', 'severity' => 90, 'name' => 'PHP input wrapper', 'category' => 'wrapper'],
-        ['pattern' => '/data:\/\//i', 'severity' => 80, 'name' => 'Data URI scheme', 'category' => 'wrapper'],
+        ['pattern' => '/data:[\w\/]+/i', 'severity' => 80, 'name' => 'Data URI scheme', 'category' => 'wrapper'],
         ['pattern' => '/zip:\/\//i', 'severity' => 75, 'name' => 'PHP zip wrapper', 'category' => 'wrapper'],
         ['pattern' => '/rar:\/\//i', 'severity' => 75, 'name' => 'PHP rar wrapper', 'category' => 'wrapper'],
         ['pattern' => '/file:\/\//i', 'severity' => 85, 'name' => 'File URI scheme', 'category' => 'wrapper'],
-        ['pattern' => '/http:\/\//i', 'severity' => 80, 'name' => 'Remote DTD via HTTP', 'category' => 'remote'],
-        ['pattern' => '/https:\/\//i', 'severity' => 80, 'name' => 'Remote DTD via HTTPS', 'category' => 'remote'],
-        ['pattern' => '/ftp:\/\//i', 'severity' => 75, 'name' => 'Remote DTD via FTP', 'category' => 'remote'],
+        // http/https/ftp scheme 单独出现不是 XXE 强信号，降级到 30
+        ['pattern' => '/http:\/\//i', 'severity' => 30, 'name' => 'HTTP URL (weak signal)', 'category' => 'remote'],
+        ['pattern' => '/https:\/\//i', 'severity' => 30, 'name' => 'HTTPS URL (weak signal)', 'category' => 'remote'],
+        ['pattern' => '/ftp:\/\//i', 'severity' => 30, 'name' => 'FTP URL (weak signal)', 'category' => 'remote'],
     ];
 
     private static $fileTargetPatterns = [
@@ -108,7 +109,11 @@ class XxeInjection {
 
         $isXmlParam = in_array($lowerKey, self::$xmlParamNames);
         $hasXmlHeader = strpos($lowerValue, '<?xml') !== false;
-        $hasDoctype = stripos($value, '<!DOCTYPE') !== false;
+        // 更精确的 DOCTYPE 判定：要求同时存在 XML 声明、内部 DTD 子集（[）或 SYSTEM 标识
+        $hasDoctype = (stripos($value, '<!DOCTYPE') !== false) &&
+                      (stripos($value, '<?xml') !== false ||
+                       preg_match('/<!DOCTYPE\s+\w+\s+\[/i', $value) ||
+                       preg_match('/<!DOCTYPE\s+\w+\s+SYSTEM/i', $value));
         $contextMultiplier = ($isXmlParam || $hasXmlHeader || $hasDoctype) ? 1.0 : 0.5;
 
         foreach (self::$entityPatterns as $pattern) {
@@ -156,6 +161,16 @@ class XxeInjection {
             if ($score < $comboScore) {
                 $score = $comboScore;
                 $findings[] = 'XML declaration + ENTITY combination';
+            }
+        }
+
+        // 仅在 DOCTYPE/ENTITY 同时存在时，远程 URL 才计高分
+        $hasEntityOrDoctype = preg_match('/<!ENTITY/i', $value) || preg_match('/<!DOCTYPE/i', $value);
+        if ($hasEntityOrDoctype && preg_match('#(https?|ftp)://#i', $value)) {
+            $comboScore = 90;
+            if ($score < $comboScore) {
+                $score = $comboScore;
+                $findings[] = 'DOCTYPE/ENTITY + remote URL combination';
             }
         }
 

@@ -41,6 +41,9 @@ class XPathInjection {
         ['pattern' => '/false\s*\(\s*\)/i', 'severity' => 65, 'name' => 'XPath false() function', 'category' => 'function'],
         ['pattern' => '/position\s*\(\s*\)/i', 'severity' => 55, 'name' => 'XPath position() function', 'category' => 'function'],
         ['pattern' => '/last\s*\(\s*\)/i', 'severity' => 55, 'name' => 'XPath last() function', 'category' => 'function'],
+        // XPath 2.0+ 危险函数 doc() / collection() 可加载外部文档
+        ['pattern' => '/doc\s*\(/i', 'severity' => 75, 'name' => 'XPath 2.0 doc() function', 'category' => 'function'],
+        ['pattern' => '/collection\s*\(/i', 'severity' => 75, 'name' => 'XPath 2.0 collection() function', 'category' => 'function'],
     ];
 
     private static $xpathParamNames = [
@@ -101,10 +104,14 @@ class XPathInjection {
 
         $isXpathParam = in_array($lowerKey, self::$xpathParamNames);
         $paramMultiplier = $isXpathParam ? 1.0 : 0.65;
+        // 检查 XPath 路径上下文：要求出现 / 或 :: 才视为 XPath 上下文
+        $hasXPathContext = (strpos($value, '/') !== false) || (strpos($value, '::') !== false);
 
         foreach (self::$classicInjectionPatterns as $pattern) {
             if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
+                // 或 1=1 等模式与 SQL 注入重叠，仅在有 XPath 路径上下文时才计满分
+                $contextMul = $hasXPathContext ? 1.0 : 0.5;
+                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier * $contextMul);
                 $score = max($score, $adjustedScore);
                 $findings[] = $pattern['name'];
             }
@@ -120,7 +127,10 @@ class XPathInjection {
 
         foreach (self::$functionPatterns as $pattern) {
             if (preg_match($pattern['pattern'], $value)) {
-                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
+                // 函数名过宽，要求前导 / 或 :: 上下文，或与 = 组合
+                $hasFuncContext = $hasXPathContext || (strpos($value, '=') !== false);
+                $contextMul = $hasFuncContext ? 1.0 : 0.5;
+                $adjustedScore = (int)($pattern['severity'] * $paramMultiplier * $contextMul);
                 $score = max($score, $adjustedScore);
                 $findings[] = $pattern['name'];
             }

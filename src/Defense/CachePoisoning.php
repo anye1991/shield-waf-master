@@ -51,8 +51,8 @@ class CachePoisoning {
         ['pattern' => '/(?=.*\r\n)(?=.*Location:)/i', 'name' => 'Potential cache poisoning via Location'],
         ['pattern' => '/(?=.*\r\n)(?=.*Content-Type:)/i', 'name' => 'Potential cache poisoning via Content-Type'],
         ['pattern' => '/X-Custom-IP-Authorization:/i', 'name' => 'IP spoofing for cache poisoning'],
-        ['pattern' => '/X-Forwarded-For:\s*(?:127\.|10\.|172\.(?:1[6-9]|2[0-9]|3[0-1])\.|192\.168\.)/i', 'name' => 'Private IP in X-Forwarded-For'],
-        ['pattern' => '/X-Real-IP:\s*(?:127\.|10\.|172\.(?:1[6-9]|2[0-9]|3[0-1])\.|192\.168\.)/i', 'name' => 'Private IP in X-Real-IP'],
+        ['pattern' => '/X-Forwarded-For:\s*(?:127\.|10\.|172\.(?:1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|169\.254\.)/i', 'name' => 'Private IP at start of X-Forwarded-For'],
+        ['pattern' => '/X-Real-IP:\s*(?:127\.|10\.|172\.(?:1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|169\.254\.)/i', 'name' => 'Private IP in X-Real-IP'],
     ];
 
     private static $varyHeaders = [
@@ -84,9 +84,17 @@ class CachePoisoning {
     private static function checkDangerousHeaderInjection() {
         $inputs = self::collectInputs();
         foreach ($inputs as $key => $value) {
+            if (!is_string($value)) continue;
             foreach (self::$dangerousHeaders as $header) {
-                if (stripos($value, $header . ':') !== false) {
-                    waf_block('Cache poisoning - dangerous header injection: ' . $header);
+                $needle = $header . ':';
+                $pos = stripos($value, $needle);
+                while ($pos !== false) {
+                    // 仅当前面紧邻 CRLF（真正的头部注入）才告警，避免 multipart 表单字段误报
+                    $before = $pos - 2;
+                    if ($before >= 0 && substr($value, $before, 2) === "\r\n") {
+                        waf_block('Cache poisoning - dangerous header injection: ' . $header);
+                    }
+                    $pos = stripos($value, $needle, $pos + 1);
                 }
             }
         }
@@ -116,6 +124,7 @@ class CachePoisoning {
             
             $parts = array_map('trim', explode(',', $varyValue));
             foreach ($parts as $part) {
+                if ($part === '*') continue;
                 if (!in_array($part, self::$varyHeaders) && !empty($part)) {
                     waf_block('Cache poisoning - suspicious Vary header value: ' . $part);
                 }
@@ -132,14 +141,19 @@ class CachePoisoning {
         
         foreach ($params as $key => $value) {
             $key = strtolower($key);
-            
-            if (strpos($key, 'cache') !== false || strpos($key, 'proxy') !== false) {
+
+            // 使用边界匹配避免子串误报（如 mylocation、geolocation 误报）
+            $isCacheParam = preg_match('/(^|[_-])cache($|[_-])/i', $key) === 1
+                          || preg_match('/(^|[_-])proxy($|[_-])/i', $key) === 1;
+            if ($isCacheParam) {
                 if (self::isSuspiciousValue((string)$value)) {
                     waf_block('Cache poisoning - suspicious cache-related parameter: ' . $key);
                 }
             }
-            
-            if (strpos($key, 'set-cookie') !== false || strpos($key, 'location') !== false) {
+
+            $isCookieParam = preg_match('/(^|[_-])set[_-]?cookie($|[_-])/i', $key) === 1;
+            $isLocationParam = preg_match('/(^|[_-])location($|[_-])/i', $key) === 1;
+            if ($isCookieParam || $isLocationParam) {
                 waf_block('Cache poisoning - dangerous parameter name: ' . $key);
             }
         }
@@ -168,15 +182,27 @@ class CachePoisoning {
     private static function collectInputs() {
         $inputs = [];
         foreach ($_GET as $v) {
-            $inputs[] = (string)$v;
+            self::flattenInput($v, $inputs);
         }
         foreach ($_POST as $v) {
-            $inputs[] = (string)$v;
+            self::flattenInput($v, $inputs);
         }
         foreach ($_COOKIE as $v) {
-            $inputs[] = (string)$v;
+            self::flattenInput($v, $inputs);
         }
         return $inputs;
+    }
+
+    private static function flattenInput($value, &$inputs) {
+        if (is_array($value)) {
+            foreach ($value as $item) {
+                self::flattenInput($item, $inputs);
+            }
+        } elseif (is_string($value)) {
+            $inputs[] = $value;
+        } else {
+            $inputs[] = (string)$value;
+        }
     }
 
     private static function isSuspiciousValue($value) {
@@ -186,14 +212,18 @@ class CachePoisoning {
             '/(?:\r\n|\n|\r|%0d%0a|%0a%0d|%0d|%0a)/i',
             '/<script/i',
             '/javascript:/i',
-            '/onload|onerror|onclick/i',
+            // 限定为 <... onload= 组合，避免单词 onload 在合法内容中误报
+            '/<[^>]*\bonload\s*=/i',
+            '/<[^>]*\bonerror\s*=/i',
+            '/<[^>]*\bonclick\s*=/i',
             '/alert\(/i',
             '/document\.cookie/i',
             '/location\.href/i',
             '/eval\(/i',
-            '/base64/i',
+            // 限定为 data:...;base64, 组合，避免 base64 单词误报
+            '/data:[^;]*;base64,/i',
         ];
-        
+
         foreach ($suspiciousPatterns as $pattern) {
             if (preg_match($pattern, $value)) {
                 return true;

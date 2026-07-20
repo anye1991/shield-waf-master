@@ -3,11 +3,11 @@ defined('ABSPATH') || exit;
 
 class TemplateInjection {
     private static $templatePatterns = [
-        ['pattern' => '/\{\{.*?\}\}/', 'name' => 'Jinja2/Twig expression'],
+        // 注意：通用的 /\{\{.*?\}\}/ 不在此处，因为会与 Angular/Vue.js 冲突，
+        // 通用 {{ }} 仅当内含 dunder 或 Python 内建时才在 analyzeValue 中单独判定
         ['pattern' => '/\{\%.*?\%\}/', 'name' => 'Jinja2/Twig statement'],
         ['pattern' => '/\{\#.*?\#\}/', 'name' => 'Jinja2/Twig comment'],
         ['pattern' => '/\{\$.*?\}/', 'name' => 'Smarty variable'],
-        ['pattern' => '/\{\%.*?\%\}/', 'name' => 'Smarty block tag'],
         ['pattern' => '/\{\*.*?\*\}/', 'name' => 'Smarty comment'],
         ['pattern' => '/\{\$smarty\.\w+\}/', 'name' => 'Smarty superglobal'],
         ['pattern' => '/\{\{.*?\.__class__.*?\}\}/', 'name' => 'Template __class__ access'],
@@ -91,11 +91,11 @@ class TemplateInjection {
         ['pattern' => '/\{\{.*?\.__base__.*?\}\}/', 'name' => 'Template __base__ access'],
         ['pattern' => '/\{\{.*?\.__weakref__.*?\}\}/', 'name' => 'Template __weakref__ access'],
         ['pattern' => '/\{\{.*?\.__slots__.*?\}\}/', 'name' => 'Template __slots__ access'],
-        ['pattern' => '/\{\{.*?\|\s*(safe|escape|trim|lower|upper|capitalize|title|replace|default|sort|unique|reverse|random|first|last|length|sum|min|max|round|int|float|string|list|dict|join|split|format|striptags|truncate|raw|e|nl2br|date|url_encode|url_decode|json_encode|json_decode)\s*\|\s*\}\}/', 'name' => 'Template filter injection'],
-        ['pattern' => '/\{\{.*?\|\s*attr\(.*?\)\s*\|\s*\}\}/', 'name' => 'Template attr filter'],
-        ['pattern' => '/\{\{.*?\|\s*method\(.*?\)\s*\|\s*\}\}/', 'name' => 'Template method filter'],
-        ['pattern' => '/\{\{.*?\.__class__\.__bases__\[0\].__subclasses__\(\).*?\}\}/', 'name' => 'Template class chain traversal'],
-        ['pattern' => '/\{\{.*?\.__class__\.__mro__\[1\].__subclasses__\(\).*?\}\}/', 'name' => 'Template mro chain traversal'],
+        ['pattern' => '/\{\{.*?\|\s*(safe|escape|trim|lower|upper|capitalize|title|replace|default|sort|unique|reverse|random|first|last|length|sum|min|max|round|int|float|string|list|dict|join|split|format|striptags|truncate|raw|e|nl2br|date|url_encode|url_decode|json_encode|json_decode)\s*\}\}/', 'name' => 'Template filter injection'],
+        ['pattern' => '/\{\{.*?\|\s*attr\(.*?\)\s*\}\}/', 'name' => 'Template attr filter'],
+        ['pattern' => '/\{\{.*?\|\s*method\(.*?\)\s*\}\}/', 'name' => 'Template method filter'],
+        ['pattern' => '/\{\{.*?\.__class__\.__bases__\[0\]\.__subclasses__\(\).*?\}\}/', 'name' => 'Template class chain traversal'],
+        ['pattern' => '/\{\{.*?\.__class__\.__mro__\[1\]\.__subclasses__\(\).*?\}\}/', 'name' => 'Template mro chain traversal'],
         ['pattern' => '/\{\{.*?\.subclasses\(\).*?\}\}/', 'name' => 'Template subclasses call'],
         ['pattern' => '/\{\{.*?\.__globals__\["__builtins__"\].*?\}\}/', 'name' => 'Template builtins access'],
         ['pattern' => '/\{\{.*?\.__globals__\["os"\].*?\}\}/', 'name' => 'Template os module access'],
@@ -154,46 +154,9 @@ class TemplateInjection {
         ['pattern' => '/\{\{.*?\.path\.getmtime\(.*?\).*?\}\}/', 'name' => 'Template path.getmtime'],
         ['pattern' => '/\{\{.*?\.path\.getctime\(.*?\).*?\}\}/', 'name' => 'Template path.getctime'],
         ['pattern' => '/\{\{.*?\.path\.getatime\(.*?\).*?\}\}/', 'name' => 'Template path.getatime'],
-        ['pattern' => '/\{\{.*?\.path\.getuid\(.*?\).*?\}\}/', 'name' => 'Template path.getuid'],
-        ['pattern' => '/\{\{.*?\.path\.getgid\(.*?\).*?\}\}/', 'name' => 'Template path.getgid'],
-        ['pattern' => '/\{\{.*?\.path\.getpwuid\(.*?\).*?\}\}/', 'name' => 'Template path.getpwuid'],
-        ['pattern' => '/\{\{.*?\.path\.getgrgid\(.*?\).*?\}\}/', 'name' => 'Template path.getgrgid'],
         ['pattern' => '/\{\{.*?\.path\.readlink\(.*?\).*?\}\}/', 'name' => 'Template path.readlink'],
         ['pattern' => '/\{\{.*?\.path\.realpath\(.*?\).*?\}\}/', 'name' => 'Template path.realpath'],
         ['pattern' => '/\{\{.*?\.path\.abspath\(.*?\).*?\}\}/', 'name' => 'Template path.abspath'],
-        ['pattern' => '/\{\{.*?\.path\.normpath\(.*?\).*?\}\}/', 'name' => 'Template path.normpath'],
-        ['pattern' => '/\{\{.*?\.path\.normcase\(.*?\).*?\}\}/', 'name' => 'Template path.normcase'],
-        ['pattern' => '/\{\{.*?\.path\.relpath\(.*?\).*?\}\}/', 'name' => 'Template path.relpath'],
-        ['pattern' => '/\{\{.*?\.path\.samefile\(.*?\).*?\}\}/', 'name' => 'Template path.samefile'],
-        ['pattern' => '/\{\{.*?\.path\.sameopenfile\(.*?\).*?\}\}/', 'name' => 'Template path.sameopenfile'],
-        ['pattern' => '/\{\{.*?\.path\.samestat\(.*?\).*?\}\}/', 'name' => 'Template path.samestat'],
-        ['pattern' => '/\{\{.*?\.path\.walk\(.*?\).*?\}\}/', 'name' => 'Template path.walk'],
-        ['pattern' => '/\{\{.*?\.path\.getsize\(.*?\).*?\}\}/', 'name' => 'Template path.getsize'],
-        ['pattern' => '/\{\{.*?\.path\.getmtime\(.*?\).*?\}\}/', 'name' => 'Template path.getmtime'],
-        ['pattern' => '/\{\{.*?\.path\.getctime\(.*?\).*?\}\}/', 'name' => 'Template path.getctime'],
-        ['pattern' => '/\{\{.*?\.path\.getatime\(.*?\).*?\}\}/', 'name' => 'Template path.getatime'],
-        ['pattern' => '/\{\{.*?\.path\.getuid\(.*?\).*?\}\}/', 'name' => 'Template path.getuid'],
-        ['pattern' => '/\{\{.*?\.path\.getgid\(.*?\).*?\}\}/', 'name' => 'Template path.getgid'],
-        ['pattern' => '/\{\{.*?\.path\.getpwuid\(.*?\).*?\}\}/', 'name' => 'Template path.getpwuid'],
-        ['pattern' => '/\{\{.*?\.path\.getgrgid\(.*?\).*?\}\}/', 'name' => 'Template path.getgrgid'],
-        ['pattern' => '/\{\{.*?\.path\.readlink\(.*?\).*?\}\}/', 'name' => 'Template path.readlink'],
-        ['pattern' => '/\{\{.*?\.path\.realpath\(.*?\).*?\}\}/', 'name' => 'Template path.realpath'],
-        ['pattern' => '/\{\{.*?\.path\.abspath\(.*?\).*?\}\}/', 'name' => 'Template path.abspath'],
-        ['pattern' => '/\{\{.*?\.path\.normpath\(.*?\).*?\}\}/', 'name' => 'Template path.normpath'],
-        ['pattern' => '/\{\{.*?\.path\.normcase\(.*?\).*?\}\}/', 'name' => 'Template path.normcase'],
-        ['pattern' => '/\{\{.*?\.path\.relpath\(.*?\).*?\}\}/', 'name' => 'Template path.relpath'],
-        ['pattern' => '/\{\{.*?\.path\.samefile\(.*?\).*?\}\}/', 'name' => 'Template path.samefile'],
-        ['pattern' => '/\{\{.*?\.path\.sameopenfile\(.*?\).*?\}\}/', 'name' => 'Template path.sameopenfile'],
-        ['pattern' => '/\{\{.*?\.path\.samestat\(.*?\).*?\}\}/', 'name' => 'Template path.samestat'],
-        ['pattern' => '/\{\{.*?\.path\.walk\(.*?\).*?\}\}/', 'name' => 'Template path.walk'],
-        ['pattern' => '/\{\{.*?\.path\.getsize\(.*?\).*?\}\}/', 'name' => 'Template path.getsize'],
-        ['pattern' => '/\{\{.*?\.path\.getmtime\(.*?\).*?\}\}/', 'name' => 'Template path.getmtime'],
-        ['pattern' => '/\{\{.*?\.path\.getctime\(.*?\).*?\}\}/', 'name' => 'Template path.getctime'],
-        ['pattern' => '/\{\{.*?\.path\.getatime\(.*?\).*?\}\}/', 'name' => 'Template path.getatime'],
-        ['pattern' => '/\{\{.*?\.path\.getuid\(.*?\).*?\}\}/', 'name' => 'Template path.getuid'],
-        ['pattern' => '/\{\{.*?\.path\.getgid\(.*?\).*?\}\}/', 'name' => 'Template path.getgid'],
-        ['pattern' => '/\{\{.*?\.path\.getpwuid\(.*?\).*?\}\}/', 'name' => 'Template path.getpwuid'],
-        ['pattern' => '/\{\{.*?\.path\.getgrgid\(.*?\).*?\}\}/', 'name' => 'Template path.getgrgid'],
     ];
 
     private static $templateParamNames = [
@@ -228,19 +191,24 @@ class TemplateInjection {
 
             $json = json_decode($body, true);
             if (json_last_error() === JSON_ERROR_NONE && is_array($json)) {
-                self::extractJsonValues($json, $inputs);
+                self::extractJsonValues($json, $inputs, '', 0);
             }
         }
 
         return $inputs;
     }
 
-    private static function extractJsonValues($data, &$inputs, $prefix = '') {
+    private static function extractJsonValues($data, &$inputs, $prefix = '', $depth = 0) {
+        // 限制递归深度，防止恶意嵌套 JSON 导致栈溢出
+        if ($depth > 20) {
+            return;
+        }
         if (is_array($data)) {
             foreach ($data as $k => $v) {
-                $key = $prefix . (empty($prefix) ? '' : '.') . $k;
+                // 不使用 empty($prefix) 防止 '0' 被误判
+                $key = ($prefix === '' || $prefix === null) ? (string)$k : $prefix . '.' . $k;
                 if (is_array($v) || is_object($v)) {
-                    self::extractJsonValues($v, $inputs, $key);
+                    self::extractJsonValues($v, $inputs, $key, $depth + 1);
                 } else {
                     $inputs[strtolower($key)] = (string)$v;
                 }
@@ -262,8 +230,12 @@ class TemplateInjection {
                 }
             }
 
+            // 通用 {{ }} 模式与 Angular/Vue.js 冲突，仅当内含 dunder 访问或 Python 内建时才判定
             if (preg_match('/\{\{.*?\}\}/', $value)) {
-                return ['is_attack' => true, 'reason' => 'Template expression detected'];
+                if (preg_match('/__\w+__/', $value)
+                    || preg_match('/\b(os|subprocess|sys|importlib|builtins)\b/', $value)) {
+                    return ['is_attack' => true, 'reason' => 'Template expression with dangerous attributes'];
+                }
             }
 
             if (preg_match('/\{\%.*?\%\}/', $value)) {

@@ -14,7 +14,8 @@ class LdapInjection {
         ['pattern' => '/\(\s*\|/i', 'severity' => 70, 'name' => 'LDAP OR operator (|', 'category' => 'operator'],
         ['pattern' => '/\(\s*&/i', 'severity' => 65, 'name' => 'LDAP AND operator (&', 'category' => 'operator'],
         ['pattern' => '/\(\s*!/i', 'severity' => 60, 'name' => 'LDAP NOT operator (!', 'category' => 'operator'],
-        ['pattern' => '/\)\s*\(/i', 'severity' => 55, 'name' => 'LDAP filter concatenation )(', 'category' => 'operator'],
+        // 要求 )( 后跟 LDAP 属性名（uid/cn/objectClass 等），避免与 SQL/数学表达式冲突
+        ['pattern' => '/\)\s*\(\s*(uid|cn|sn|dn|dc|ou|objectClass|memberUid|mail|userPassword)\s*=/i', 'severity' => 55, 'name' => 'LDAP filter concatenation )(attr=', 'category' => 'operator'],
     ];
 
     private static $attributePatterns = [
@@ -30,7 +31,7 @@ class LdapInjection {
         'username', 'user', 'email', 'login', 'dn', 'distinguishedname',
         'uid', 'cn', 'sn', 'ou', 'dc', 'filter', 'ldapfilter',
         'search', 'query', 'q', 'attribute', 'attr', 'base',
-        'bind', 'password', 'pass', 'passwd',
+        'bind',
     ];
 
     public static function detect($inputs) {
@@ -119,8 +120,15 @@ class LdapInjection {
         $unescapedParens = 0;
         $len = strlen($value);
         for ($i = 0; $i < $len; $i++) {
-            if (($value[$i] === '(' || $value[$i] === ')') && ($i === 0 || $value[$i - 1] !== '\\')) {
-                $unescapedParens++;
+            if ($value[$i] === '(' || $value[$i] === ')') {
+                // 统计前置连续反斜杠数量，奇数才视为已转义
+                $bs = 0;
+                $j = $i - 1;
+                while ($j >= 0 && $value[$j] === '\\') { $bs++; $j--; }
+                $isEscaped = ($bs % 2 === 1);
+                if (!$isEscaped) {
+                    $unescapedParens++;
+                }
             }
         }
         if ($unescapedParens >= 4) {

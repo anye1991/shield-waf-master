@@ -27,14 +27,21 @@ function waf_output_filter_start() {
 function waf_is_static_resource($uri) {
     static $staticExtensions = [
         '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico',
-        '.css', '.js', '.woff', '.woff2', '.ttf', '.eot',
+        '.avif', '.apng',
+        '.css', '.js',
+        '.woff', '.woff2', '.ttf', '.eot', '.otf',
         '.pdf', '.zip', '.rar', '.gz', '.tar',
         '.mp3', '.mp4', '.avi', '.mov', '.wav', '.flv', '.webm',
         '.map', '.txt',
+        '.webmanifest', '.xml', '.json',
     ];
 
     $path = parse_url($uri, PHP_URL_PATH);
     if ($path === false) return false;
+
+    // 如果路径中含 .php 中段（如 /index.php/foo.jpg），不视为静态资源
+    // 否则 PHP 动态输出会被错误跳过过滤
+    if (preg_match('#/[^/]*\.php(/|$)#i', $path)) return false;
 
     $lowerPath = strtolower($path);
     foreach ($staticExtensions as $ext) {
@@ -46,19 +53,22 @@ function waf_is_static_resource($uri) {
 }
 
 function waf_is_php_error_output($buffer) {
-    $trimmed = trim($buffer);
-    if ($trimmed === '') return false;
+    if (!is_string($buffer) || strlen($buffer) < 10) return false;
+
+    // 只检查 buffer 开头的 2048 字节，避免误伤正文（论坛/博客讨论 PHP 错误信息时不会被误判）
+    $head = substr($buffer, 0, 2048);
+    $trimmedHead = ltrim($head);
+    if ($trimmedHead === '') return false;
 
     $errorPatterns = [
-        '/<br\s*\/?>\s*<b>Fatal error<\/b>:/i',
-        '/<br\s*\/?>\s*<b>Parse error<\/b>:/i',
-        '/Fatal error:\s*.+?\sin\s+.+?\.php\s+on line\s+\d+/i',
-        '/Parse error:\s*syntax error,\s*.+?\sin\s+.+?\.php\s+on line\s+\d+/i',
-        '/Uncaught\s+\w+Exception[\s\S]{0,200}thrown\s+in\s+.+?\.php\s+on line\s+\d+/i',
+        '/^(?:<br\s*\/?>\s*<b>)?Fatal error(?:<\/b>)?:.+?\sin\s+.+?\.php\s+on line\s+\d+/i',
+        '/^(?:<br\s*\/?>\s*<b>)?Parse error(?:<\/b>)?:.+?\sin\s+.+?\.php\s+on line\s+\d+/i',
+        '/^Uncaught\s+\w+Exception[\s\S]{0,200}thrown\s+in\s+.+?\.php\s+on line\s+\d+/i',
+        '/^Stack trace:[\s\S]{0,500}/i',
     ];
 
     foreach ($errorPatterns as $pattern) {
-        if (@preg_match($pattern, $buffer)) {
+        if (@preg_match($pattern, $trimmedHead)) {
             return true;
         }
     }
