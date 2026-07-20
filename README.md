@@ -291,9 +291,11 @@ $valid = DualPassword::verify('user_password', $hash);
 
 ### 控制台访问
 
-- WordPress: `后台 → 工具 → 盾甲 WAF`
-- 独立模式: `shield-waf.php?page=shield-dashboard`
-- 暗门入口: 访问任意页面携带暗门 Cookie（首次安装自动生成）
+- **WordPress 模式**: `后台 → 工具 → 盾甲 WAF`
+- **独立模式**: 访问 `https://你的域名/waf-dashboard`（需在入口文件引入 shield-waf.php）
+- **暗门入口**: 访问任意页面携带暗门 Cookie（首次安装自动生成，见 `logs/auto_key.php`）
+
+> 💡 独立模式下，确保 `shield-waf.php` 在项目入口文件最顶部引入，然后直接访问 `/waf-dashboard` 路径即可进入控制台。
 
 ---
 
@@ -375,7 +377,30 @@ WAF_ADMIN_IPS=127.0.0.1,192.168.1.100,10.0.0.0/8
 
 完整审计报告：[SECURITY_AUDIT_REPORT.md](SECURITY_AUDIT_REPORT.md)
 
-### 4. 部署检查清单
+### 4. 日志目录文件说明
+
+**正常情况下 logs 目录有多少个文件？**
+
+刚安装时（零攻击）约 **11 个文件 + 1 个子目录**：
+
+| 文件/目录 | 必选 | 说明 |
+|----------|------|------|
+| `block_YYYY-MM-DD.log` | ✅ | 每日拦截日志，每天生成一个新文件 |
+| `ban.txt` | ✅ | 封禁 IP 列表，初始为空 |
+| `cc_counter.txt` | ✅ | 速率限制计数器 |
+| `active_blocks.json` | ✅ | 活跃拦截记录缓存 |
+| `attack_stats.json` | ✅ | 攻击统计数据（控制台大盘） |
+| `security.log` | ✅ | 安全事件日志 |
+| `auto_key.php` | ✅ | 控制台暗门密钥（首次访问自动生成） |
+| `learned_patterns.json` | ✅ | 自学习攻击规则（初始为空） |
+| `normal_patterns.json` | ✅ | 正常请求基线（初始为空） |
+| `admin_ips.txt` | ✅ | 管理员白名单（初始为空） |
+| `test_mode_ban.log` | ⭕ | 测试模式下才生成 |
+| `bot_tracker/` | ✅ | 机器人跟踪数据目录 |
+
+> 💡 验证命令：`ls -la logs/ | wc -l`（含 `.` 和 `..` 会多 2 行，实际文件数减 2）
+
+### 5. 部署检查清单
 
 部署后请逐项确认：
 
@@ -388,6 +413,102 @@ WAF_ADMIN_IPS=127.0.0.1,192.168.1.100,10.0.0.0/8
 - [ ] `logs/ban.txt` 能记录封禁 IP（默认模式）
 - [ ] 配置 `WAF_ADMIN_IPS` 加入办公网段
 - [ ] 测试模式 `WAF_TEST_MODE=true` 仅在测试期间开启
+
+---
+
+## ❓ 常见问题 FAQ
+
+### 1. 图片不显示 / 部分页面 500 错误
+
+**现象**：安装 WAF 后，网站图片加载不出来，或者部分页面返回 500 错误。
+
+**根因**：旧版本 OutputFilter 会对所有输出（包括图片、CSS、JS 等静态资源）做 PHP 错误信息匹配，二进制数据中碰巧命中模式就被替换成 500 页面。
+
+**解决**：v4.1.0+ 已修复，OutputFilter 会自动跳过静态资源（图片/CSS/JS/字体等），只对 HTML 页面生效。
+
+- 如仍有问题，可临时关闭错误掩码功能：
+```php
+// config.php 加入
+define('WAF_ERROR_MASKING', false);
+```
+
+### 2. 如何确认 WAF 正在正常工作？
+
+**方法一：模拟攻击测试**
+```bash
+# 访问带有 SQL 注入特征的 URL
+curl -I "https://你的域名/?id=1' OR 1=1--"
+# 正常应该返回 403 Forbidden
+```
+
+**方法二：查看拦截日志**
+```bash
+# 查看今日拦截日志
+tail -f logs/block_$(date +%Y-%m-%d).log
+
+# 查看封禁 IP 列表
+cat logs/ban.txt
+```
+
+**方法三：查看响应头**
+```bash
+curl -I "https://你的域名/"
+# 正常响应中会包含 X-ShieldWAF 相关响应头
+```
+
+**方法四：登录控制台**
+访问 `/waf-dashboard` 进入控制台，在「安全总览」页面可以看到实时攻击数据和日志流。
+
+### 3. 自学习系统怎么用？机器人怎么学习？
+
+盾甲 WAF 的自学习系统是**全自动运行**的，无需手动配置即可开始学习。
+
+**学习原理（三层闭环）**：
+```
+攻击拦截 → 高置信度样本 → 沙箱验证 → AutoLearn 训练 → 反哺规则
+```
+
+**学习什么？**
+- 📊 **攻击频率统计**：自动记录攻击载荷、攻击类型、来源 IP
+- 🎯 **特征提取**：同一攻击载荷命中 ≥3 次自动提取特征生成规则
+- ⚖️ **权重自适应**：根据攻击数据自动调整各防御模块权重
+- 🔬 **沙箱联动**：高置信度恶意样本自动投喂学习系统
+- ✅ **正常基线**：自动学习正常请求模式，降低误报率
+
+**如何查看学习效果？**
+1. 进入控制台 → 「🧠 自学习系统」页面
+2. 查看「学习趋势图」「已学习规则」「权重自适应详情」
+3. 可以提交误报/漏报反馈，系统会自动调整权重
+
+**手动干预方式**：
+- **冻结基线**：学习到一定程度后可冻结，防止新异常影响现有规则
+- **重置学习**：清空所有学习数据，从头开始
+- **删除规则**：手动删除误学习的规则
+- **反馈调整**：标记误报/漏报，系统自动调整对应类型权重
+
+### 4. 封禁 IP 没有记录 / 看不到 ban.txt？
+
+**常见原因**：
+1. `logs/` 目录不可写 → 参考「部署必读 → 首页打开直接 403」章节
+2. 开启了测试模式 `WAF_TEST_MODE=true` → 只拦截不封禁，记录在 `test_mode_ban.log`
+3. 管理员白名单中的 IP → 不会被封禁
+4. 还没有触发封禁阈值（默认 60 秒内 60 次请求才触发 CC 封禁）
+
+**验证方法**：
+```bash
+# 检查 logs 目录权限
+ls -la logs/
+
+# 检查测试模式是否开启
+grep WAF_TEST_MODE config.php
+
+# 检查管理员白名单
+grep WAF_ADMIN_IPS config.php
+```
+
+### 5. 首页打开直接 403？
+
+参考上方「部署必读 → 首页打开直接 403」章节。
 
 ---
 
@@ -518,10 +639,18 @@ shield-waf-master/
 │   ├── whitelist_url.json      # URL 白名单
 │   └── sandbox_tasks.json      # 扫描任务
 ├── logs/                       # 日志目录（自动创建，需可写）
-│   ├── block_YYYY-MM-DD.log    # 拦截日志
-│   ├── ban.txt                 # 封禁IP列表
-│   ├── admin_ips.txt           # 控制台动态添加的白名单
-│   └── test_mode_ban.log       # 测试模式下的封禁记录（不实际封禁）
+│   ├── block_YYYY-MM-DD.log    # 每日拦截日志（每天一个文件）
+│   ├── ban.txt                 # 封禁 IP 列表（持久化）
+│   ├── cc_counter.txt          # 速率限制计数器
+│   ├── active_blocks.json      # 当前活跃拦截记录
+│   ├── attack_stats.json       # 攻击统计数据（控制台大盘用）
+│   ├── security.log            # 安全事件日志（登录、配置变更等）
+│   ├── auto_key.php            # 控制台暗门密钥（首次安装自动生成）
+│   ├── learned_patterns.json   # 自学习系统提取的攻击规则
+│   ├── normal_patterns.json    # 自学习系统的正常请求基线
+│   ├── test_mode_ban.log       # 测试模式下的封禁记录（不实际封禁）
+│   ├── admin_ips.txt           # 控制台动态添加的管理员白名单
+│   └── bot_tracker/            # 机器人跟踪数据目录
 ├── src/
 │   ├── Admin/                  # 管理后台
 │   │   ├── Dashboard.php       # 控制台主页面
@@ -573,14 +702,18 @@ shield-waf-master/
 git clone https://github.com/anye1991/shield-waf-master.git
 cd shield-waf-master
 
-# 运行测试套件
-php test_password.php            # 密码模块测试
-php test_dual_password.php       # 双重加密测试
-php test_homepage_compat.php     # 首页403回归测试
+# 运行核心测试套件
+php test_password.php            # 密码模块基础测试
+php test_password_full.php       # 双重密码加密全量测试（68用例）
+php test_homepage_compat.php     # 首页403回归测试（17用例）
 php test_fp_stress.php           # 误报压力测试（37用例）
-php test_admin_whitelist.php    # 管理员白名单+测试模式（11用例）
+php test_admin_whitelist.php     # 管理员白名单+测试模式（11用例）
 php test_parser_scores.php       # 攻击载荷评分详情
 php test_full_decode.php         # 14层解码测试
+php test_obfuscation.php         # 混淆检测测试（34用例）
+php test_learning.php            # 自学习系统测试
+php test_sandbox_learn_coupling.php  # 沙箱学习联动测试（23用例）
+php test_e2e.php                 # 端到端 E2E 测试
 php test_extreme.php             # 极限测试
 
 # 代码语法检查
