@@ -120,13 +120,14 @@ class ApiSecurity {
         }
 
         foreach (self::$dangerApiPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
+            // @ 抑制正则语法错误（部署环境编码差异可能导致个别 pattern 失效）
+            if (@preg_match($pattern['pattern'], $value)) {
                 return ['is_attack' => true, 'reason' => $pattern['name']];
             }
         }
 
         foreach (self::$apiEndpointPatterns as $pattern) {
-            if (preg_match($pattern['pattern'], $value)) {
+            if (@preg_match($pattern['pattern'], $value)) {
                 return ['is_attack' => true, 'reason' => $pattern['name']];
             }
         }

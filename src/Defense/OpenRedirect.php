@@ -173,6 +173,10 @@ class OpenRedirect {
         if (preg_match($combined, $value)) {
             foreach (self::$externalUrlPatterns as $pattern) {
                 if (preg_match($pattern['pattern'], $value)) {
+                    // 排除当前域名自己的完整 URL（如 redirect_to=https://duduziy.com/）
+                    if ($pattern['category'] === 'external' && self::isCurrentDomainUrl($value)) {
+                        continue;
+                    }
                     $adjustedScore = (int)($pattern['severity'] * $paramMultiplier);
                     $score = max($score, $adjustedScore);
                     $findings[] = $pattern['name'];
@@ -216,6 +220,9 @@ class OpenRedirect {
             if (preg_match($combined, $decodedValue)) {
                 foreach (self::$externalUrlPatterns as $pattern) {
                     if (preg_match($pattern['pattern'], $decodedValue)) {
+                        if ($pattern['category'] === 'external' && self::isCurrentDomainUrl($decodedValue)) {
+                            continue;
+                        }
                         $adjustedScore = (int)($pattern['severity'] * 0.85 * $paramMultiplier);
                         if ($score < $adjustedScore) {
                             $score = $adjustedScore;
@@ -282,14 +289,41 @@ class OpenRedirect {
         return [];
     }
 
+    private static function isCurrentDomainUrl($value) {
+        $currentHost = $_SERVER['HTTP_HOST'] ?? '';
+        if (!$currentHost) return false;
+        $parsed = parse_url($value);
+        if ($parsed && !empty($parsed['host'])) {
+            return strcasecmp($parsed['host'], $currentHost) === 0;
+        }
+        return false;
+    }
+
     private static function looksLikeExternalDomain($value) {
+        $currentHost = $_SERVER['HTTP_HOST'] ?? '';
+
+        // 如果能解析出 host，与当前域名对比
+        $parsed = parse_url($value);
+        if ($parsed && !empty($parsed['host'])) {
+            if (strcasecmp($parsed['host'], $currentHost) === 0) {
+                return false;
+            }
+            return true;
+        }
+
+        // 协议头（如 https:）或协议相对 URL（//example.com）
         if (preg_match('/^[a-zA-Z][a-zA-Z0-9+.\-]*:/', $value)) {
             return true;
         }
         if (preg_match('/^\/\//', $value)) {
             return true;
         }
+
+        // 裸域名（不含协议）——排除当前域名本身
         if (preg_match('/^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}(\/|$)/', $value)) {
+            if ($currentHost && stripos($value, $currentHost) !== false) {
+                return false;
+            }
             return true;
         }
         return false;
