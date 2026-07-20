@@ -682,7 +682,7 @@ class AutoLearn {
         self::$static_cache_ts[$key] = time();
     }
 
-    private static function invalidateCache($key = null) {
+    public static function invalidateCache($key = null) {
         if ($key === null) {
             self::$static_cache = [];
             self::$static_cache_ts = [];

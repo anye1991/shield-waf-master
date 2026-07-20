@@ -268,7 +268,7 @@ class CaptchaHandler {
     private static function initDir() {
         if (self::$store_dir !== null) return;
         $base = defined('WAF_LOG_PATH') ? WAF_LOG_PATH : (sys_get_temp_dir() . '/shield_waf_');
-        $dir  = $base . 'captcha/';
+        $dir  = $base . '/captcha/';
         if (!is_dir($dir)) @mkdir($dir, 0700, true);
         self::$store_dir = $dir;
     }

@@ -148,6 +148,74 @@ function waf_ip_in_cidr($ip, $cidr) {
     return ($ipLong & $maskLong) === ($subnetLong & $maskLong);
 }
 
+/**
+ * 记录机器人检测统计（供控制台展示）
+ * 每次请求都会更新 bot_stats.json，包含分类计数、动作计数、最近事件
+ */
+function waf_record_bot_stats(array $botResult) {
+    if (!defined('WAF_LOG_PATH')) return;
+
+    $statsFile = WAF_LOG_PATH . '/bot_stats.json';
+
+    // 读取现有统计
+    $stats = [];
+    if (is_file($statsFile)) {
+        $content = @file_get_contents($statsFile);
+        if ($content !== false) {
+            $stats = json_decode($content, true) ?: [];
+        }
+    }
+
+    // 初始化结构
+    if (!isset($stats['total_detected'])) $stats['total_detected'] = 0;
+    if (!isset($stats['categories'])) $stats['categories'] = [];
+    if (!isset($stats['actions'])) $stats['actions'] = [];
+    if (!isset($stats['recent_events'])) $stats['recent_events'] = [];
+
+    // 分类映射（后端英文 → 控制台展示用的键名）
+    $categoryMap = [
+        'human'           => 'human',
+        'search_engine'   => 'search_engine',
+        'crawler'         => 'crawler',
+        'malicious_bot'   => 'malicious_bot',
+        'ai'              => 'ai',
+        'social_media'    => 'social_media',
+        'unknown'         => 'unknown',
+    ];
+
+    $category = $botResult['category'] ?? 'unknown';
+    $action   = $botResult['action'] ?? 'allow';
+    $catKey   = $categoryMap[$category] ?? 'unknown';
+
+    // 更新计数
+    $stats['total_detected']++;
+    $stats['categories'][$catKey] = ($stats['categories'][$catKey] ?? 0) + 1;
+    $stats['actions'][$action] = ($stats['actions'][$action] ?? 0) + 1;
+
+    // 添加最近事件（保留最近 50 条）
+    $event = [
+        'time'      => date('Y-m-d H:i:s'),
+        'ip'        => waf_get_real_ip(),
+        'category'  => $catKey,
+        'action'    => $action,
+        'score'     => $botResult['score'] ?? 0,
+        'reason'    => mb_substr($botResult['reason'] ?? '', 0, 200),
+        'uri'       => mb_substr($_SERVER['REQUEST_URI'] ?? '/', 0, 200),
+        'ua'        => mb_substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 200),
+    ];
+    array_unshift($stats['recent_events'], $event);
+    $stats['recent_events'] = array_slice($stats['recent_events'], 0, 50);
+
+    // 限流写入：避免每个请求都写文件（10% 概率写入 + 动作非 allow 时必写）
+    $shouldWrite = ($action !== 'allow') || (rand(1, 100) <= 10);
+    if ($shouldWrite) {
+        $json = json_encode($stats, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($json !== false) {
+            @file_put_contents($statsFile, $json, LOCK_EX);
+        }
+    }
+}
+
 function waf_block($msg = '') {
     http_response_code(403);
     $log_ip  = str_replace(["\r", "\n"], '', waf_get_real_ip());

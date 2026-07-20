@@ -79,25 +79,44 @@ try {
                 break;
             }
             
+            $updated = false;
+            
+            // 1. 尝试更新 auto_key.php（当前密码存储位置）
+            $autoKeyFile = WAF_LOG_PATH . '/auto_key.php';
+            if (is_file($autoKeyFile)) {
+                $autoKeys = @include $autoKeyFile;
+                if (is_array($autoKeys)) {
+                    $autoKeys['WAF_PASSWORD'] = $newPassword;
+                    $content = '<?php return ' . var_export($autoKeys, true) . ';';
+                    if (@file_put_contents($autoKeyFile, $content) !== false) {
+                        @chmod($autoKeyFile, 0600);
+                        $updated = true;
+                    }
+                }
+            }
+            
+            // 2. 同时更新 config.php 中的硬编码密码（如果有）
             $configFile = __DIR__ . '/../../config.php';
-            $content = file_get_contents($configFile);
-            $oldPassword = defined('WAF_PASSWORD') ? WAF_PASSWORD : '';
+            if (is_file($configFile)) {
+                $content = file_get_contents($configFile);
+                // 匹配 define('WAF_PASSWORD', 'xxx') 或 define('WAF_PASSWORD', "xxx")
+                $pattern = "/define\\('WAF_PASSWORD',\\s*['\"]([^'\"]+)['\"]\\s*\\)/";
+                $replacement = "define('WAF_PASSWORD', '" . addslashes($newPassword) . "')";
+                $newContent = preg_replace($pattern, $replacement, $content, -1, $count);
+                if ($count > 0) {
+                    @file_put_contents($configFile, $newContent);
+                }
+            }
             
-            $pattern = "/define\\('WAF_PASSWORD',\\s*['\"]([^'\"]+)['\"]\\s*\\)/";
-            $replacement = "define('WAF_PASSWORD', '" . addslashes($newPassword) . "')";
-            
-            $newContent = preg_replace($pattern, $replacement, $content, -1, $count);
-            if ($count === 0) {
+            if (!$updated) {
                 http_response_code(500);
-                echo json_encode(['error' => '无法更新配置文件'], JSON_UNESCAPED_UNICODE);
+                echo json_encode(['error' => '无法更新密码存储文件'], JSON_UNESCAPED_UNICODE);
                 break;
             }
             
-            file_put_contents($configFile, $newContent);
-            
             echo json_encode([
                 'success'  => true,
-                'message'  => '密码已更新，下次登录生效',
+                'message'  => '密码已更新，立即生效',
             ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
             break;
 

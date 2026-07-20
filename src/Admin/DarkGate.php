@@ -21,6 +21,8 @@ function waf_2fa() {
         $stored = defined('WAF_PASSWORD') ? WAF_PASSWORD : '';
         if ($stored && hash_equals($stored, $input)) {
             $_SESSION['waf_ok2'] = time() + WAF_MAGIC_EXPIRE;
+            // 同时刷新 waf_ok1，避免用户在 magic 验证后等待过久导致 ok1 过期
+            $_SESSION['waf_ok1'] = time() + WAF_MAGIC_EXPIRE;
             // 成功后重置错误计数器
             waf_attempt_reset('2fa');
             // 刷新 CSRF token

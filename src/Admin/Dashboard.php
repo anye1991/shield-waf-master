@@ -28,7 +28,19 @@ $version = defined('SHIELD_WAF_VERSION') ? SHIELD_WAF_VERSION : '3.0.0';
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>盾甲 WAF · 安全控制台</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+window.WAF_CHART_AVAILABLE = false;
+</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" onload="window.WAF_CHART_AVAILABLE=true" onerror="window.WAF_CHART_AVAILABLE=false"></script>
+<script>
+window.safeChart = function(ctx, cfg){
+  if(!window.WAF_CHART_AVAILABLE || typeof Chart === 'undefined') return null;
+  try{ return new Chart(ctx, cfg); }catch(e){ return null; }
+};
+window.safeChartDestroy = function(ref){
+  if(ref && typeof ref.destroy === 'function'){ try{ ref.destroy(); }catch(e){} }
+};
+</script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
@@ -187,10 +199,52 @@ input:checked + .slider:before{transform:translateX(20px);background-color:#fff;
 .hero-stat p{font-size:11px;color:var(--text3);margin-top:4px}
 
 .hero-right{background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:20px;display:flex;flex-direction:column}
-.world-map{flex:1;display:flex;align-items:center;justify-content:center;font-size:60px;opacity:.3;position:relative}
-.map-dots{position:absolute;inset:0}
-.map-dot{position:absolute;width:8px;height:8px;border-radius:50%;background:var(--red);box-shadow:0 0 10px var(--red);animation:mapPulse 2s infinite}
-@keyframes mapPulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.5);opacity:.5}}
+.world-map{flex:1;display:flex;align-items:center;justify-content:center;position:relative;perspective:1000px;min-height:280px;margin:8px 0}
+.earth{width:220px;height:220px;border-radius:50%;position:relative;transform-style:preserve-3d;animation:earthRotate 30s linear infinite;
+  background:
+    radial-gradient(circle at 30% 30%, rgba(100,200,255,.8), transparent 50%),
+    radial-gradient(circle at 70% 70%, rgba(20,60,120,.6), transparent 50%),
+    linear-gradient(135deg, #0a1628, #1e3a5f 40%, #0f766e 60%, #1e3a5f 80%, #0a1628);
+  box-shadow:
+    inset -20px -20px 40px rgba(0,0,0,.6),
+    inset 10px 10px 30px rgba(100,200,255,.2),
+    0 0 40px rgba(6,182,212,.3),
+    0 0 80px rgba(6,182,212,.1);
+}
+.earth::after{content:'';position:absolute;inset:0;border-radius:50%;
+  background:radial-gradient(circle at 50% 50%, transparent 40%, rgba(0,0,0,.4) 100%);
+  pointer-events:none;z-index:10;
+}
+.earth::before{content:'';position:absolute;inset:0;border-radius:50%;
+  background:
+    radial-gradient(ellipse at 20% 30%, rgba(34,197,94,.3) 0%, transparent 25%),
+    radial-gradient(ellipse at 60% 20%, rgba(34,197,94,.25) 0%, transparent 20%),
+    radial-gradient(ellipse at 75% 60%, rgba(34,197,94,.3) 0%, transparent 25%),
+    radial-gradient(ellipse at 30% 70%, rgba(34,197,94,.2) 0%, transparent 20%),
+    radial-gradient(ellipse at 85% 35%, rgba(250,204,21,.15) 0%, transparent 15%);
+  animation:earthRotate 30s linear infinite reverse;
+}
+.earth-atmosphere{position:absolute;inset:-15px;border-radius:50%;
+  background:radial-gradient(circle, transparent 60%, rgba(6,182,212,.15) 70%, rgba(6,182,212,.05) 80%, transparent 90%);
+  pointer-events:none;animation:atmospherePulse 4s ease-in-out infinite;
+}
+@keyframes earthRotate{from{transform:rotateY(0deg)}to{transform:rotateY(360deg)}}
+@keyframes atmospherePulse{0%,100%{opacity:.8}50%{opacity:1}}
+.map-dots-container{position:absolute;inset:0;transform-style:preserve-3d;pointer-events:none}
+.map-dot{position:absolute;width:10px;height:10px;margin:-5px 0 0 -5px;border-radius:50%;
+  background:radial-gradient(circle, #fca5a5, #ef4444 60%, #991b1b);
+  box-shadow:0 0 10px #ef4444, 0 0 20px rgba(239,68,68,.5);
+  animation:dotPulse 1.5s ease-in-out infinite;
+}
+.map-dot.severe{background:radial-gradient(circle, #fde047, #f97316 60%, #dc2626);
+  box-shadow:0 0 15px #f97316, 0 0 30px rgba(249,115,22,.6);width:14px;height:14px;margin:-7px 0 0 -7px;
+}
+@keyframes dotPulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.5);opacity:.7}}
+.map-dot-label{position:absolute;font-size:9px;color:#fca5a5;white-space:nowrap;
+  text-shadow:0 0 4px rgba(0,0,0,.8);pointer-events:none;transform:translate(-50%, -140%);
+  opacity:0;transition:opacity .3s;
+}
+.map-dot:hover + .map-dot-label{opacity:1}
 
 /* ========== 开关/滑块/折叠 ========== */
 .switch{position:relative;display:inline-block;width:44px;height:24px}
@@ -731,8 +785,10 @@ tbody tr:hover{transform:translateX(2px)}
         <div class="hero-right">
           <div class="card-head"><div class="card-title"><span class="dot"></span>全球攻击分布</div><div class="card-actions"><span class="chip active">实时</span></div></div>
           <div class="world-map">
-            🌍
-            <div class="map-dots" id="mapDots"></div>
+            <div class="earth-atmosphere"></div>
+            <div class="earth" id="earthGlobe">
+              <div class="map-dots-container" id="mapDots"></div>
+            </div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
             <div style="text-align:center;padding:8px;background:rgba(0,0,0,.2);border-radius:8px">
@@ -1738,6 +1794,8 @@ tbody tr:hover{transform:translateX(2px)}
           <thead><tr><th>项目</th><th>当前值</th><th>说明</th></tr></thead>
           <tbody>
             <tr><td>工作模式</td><td><span class="tag yellow" id="sandMode">learning</span></td><td>learning=只扫描 / protecting=秒删+精准切割</td></tr>
+            <tr><td>沙箱运行状态</td><td><span class="tag" id="sandRunStatus">检测中...</span></td><td>实时监控是否在运行</td></tr>
+            <tr><td>最近扫描时间</td><td><span id="sandLastScanTime">-</span></td><td>最近一次全量扫描</td></tr>
             <tr><td>基线锁定</td><td><span class="tag red" id="sandBaseLock">未锁定</span></td><td>必须锁定基线才能启动精准切割</td></tr>
             <tr><td>受保护文件</td><td><span class="tag cyan" id="sandBaseCount">0</span></td><td>基线锁定的干净文件数</td></tr>
             <tr><td>基线锁定时间</td><td><span id="sandBaseTime">-</span></td><td>最近一次锁定基线的时间</td></tr>
@@ -2978,7 +3036,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
       void targetPage.offsetWidth;
       targetPage.classList.add('active');
     }
-    const titles = {overview:'安全总览',attacks:'攻击日志',bots:'机器人防护',firewall:'IP 管理',rules:'防护中心',semantic:'语义引擎',sandbox:'沙箱中心','false-positive':'误报中心','api-security':'API 安全',learn:'自学习系统',settings:'系统设置'};
+    const titles = {overview:'安全总览',attacks:'攻击日志',bots:'机器人防护',firewall:'IP 管理',rules:'防护中心',semantic:'语义引擎',sandbox:'沙箱中心','false-positive':'误报中心','api-security':'API 安全',learn:'自学习系统','pwd-service':'网站密码',settings:'系统设置'};
     document.getElementById('pageTitle').textContent = titles[page] || '安全总览';
     if(page==='overview') loadOverview();
     if(page==='attacks') loadAllAttacks();
@@ -2991,6 +3049,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     if(page==='false-positive') loadFalsePositive();
     if(page==='api-security') loadApiSecurity();
     if(page==='rules') loadProtectCenter();
+    if(page==='pwd-service'){ pwdSvcLoad(); pwdSvcUpdateStatus(false); }
     initPageAnimations('page-' + page);
   });
 });
@@ -3032,11 +3091,22 @@ async function loadOverview(){
   document.getElementById('kTypes').textContent = Object.keys(res.types||{}).length;
   document.getElementById('attackBadge').textContent = today;
 
-  // 类型统计
+  // 类型统计（兼容后端多种命名格式）
   const types = res.types || {};
-  document.getElementById('cntSql').textContent = types['SQL注入'] || types.sql || 0;
-  document.getElementById('cntXss').textContent = types['XSS'] || types.xss || 0;
-  document.getElementById('cntBot').textContent = types['爬虫'] || types.bot || 0;
+  // 聚合匹配：兼容 "SQL注入" / "SQL 注入" / "sql" 等格式
+  const typeKeys = Object.keys(types);
+  const matchType = function(keywords){
+    for(const k of typeKeys){
+      const lower = k.toLowerCase().replace(/\s/g,'');
+      for(const kw of keywords){
+        if(lower.includes(kw)) return types[k];
+      }
+    }
+    return 0;
+  };
+  document.getElementById('cntSql').textContent = matchType(['sql注入','sql']);
+  document.getElementById('cntXss').textContent = matchType(['xss']);
+  document.getElementById('cntBot').textContent = matchType(['爬虫','bot','crawler','恶意爬虫']);
   document.getElementById('cntFp').textContent = '0.01%';
 
   // KPI 迷你趋势图
@@ -3053,8 +3123,8 @@ async function loadOverview(){
   // 趋势图
   if(days.length){
     const counts = days.map(d=>daily[d]);
-    if(charts.trend) charts.trend.destroy();
-    charts.trend = new Chart(document.getElementById('trendChart'),{
+    safeChartDestroy(charts.trend);
+    charts.trend = safeChart(document.getElementById('trendChart'),{
       type:'line',
       data:{labels:days.map(d=>d.slice(5)),datasets:[{
         label:'攻击次数',data:counts,borderColor:'#06b6d4',
@@ -3068,8 +3138,8 @@ async function loadOverview(){
 
   // 类型饼图
   if(Object.keys(types).length){
-    if(charts.type) charts.type.destroy();
-    charts.type = new Chart(document.getElementById('typeChart'),{
+    safeChartDestroy(charts.type);
+    charts.type = safeChart(document.getElementById('typeChart'),{
       type:'doughnut',
       data:{labels:Object.keys(types),datasets:[{data:Object.values(types),backgroundColor:colors.slice(0,Object.keys(types).length),borderWidth:0,hoverOffset:8}]},
       options:{responsive:true,maintainAspectRatio:false,cutout:'65%',plugins:{legend:{position:'right',labels:{color:'#94a3b8',font:{size:11},padding:12,usePointStyle:true,pointStyle:'circle'}}}}
@@ -3100,23 +3170,85 @@ async function loadOverview(){
   if(res.latest) attackLogs = res.latest;
   renderLogStream();
 
-  // 地图点
-  renderMapDots(ipEntries);
+  // 全球攻击地图（真实地理位置）
+  renderMapDots(res.latest_geo || [], res.top_countries || [], res.per_minute || 0);
 }
 
-function renderMapDots(ips){
+function renderMapDots(latestGeo, topCountries, perMinute){
   const container = document.getElementById('mapDots');
   if(!container) return;
-  container.innerHTML = ips.slice(0,6).map((_,i)=>{
-    const x = 15 + Math.random()*70;
-    const y = 20 + Math.random()*60;
-    return `<div class="map-dot" style="left:${x}%;top:${y}%;animation-delay:${i*0.3}s"></div>`;
-  }).join('');
-  if(ips.length){
-    document.getElementById('topCountry').textContent = ips[0][0].slice(0,7)+'...';
-    const total = ips.reduce((s,[,c])=>s+c,0);
-    document.getElementById('avgPerMin').textContent = Math.round(total/10080);
+
+  const earth = document.getElementById('earthGlobe');
+  if(!earth) return;
+
+  const earthSize = 220;
+  const radius = earthSize / 2;
+
+  let dots = [];
+
+  if(topCountries && topCountries.length){
+    topCountries.slice(0, 8).forEach((c, i) => {
+      if(c.country === 'LOCAL' || c.country === 'UNKNOWN') return;
+      dots.push({
+        lat: c.lat,
+        lng: c.lng,
+        name: c.name,
+        count: c.count,
+        severe: i < 2,
+        delay: i * 0.4,
+      });
+    });
   }
+
+  if(latestGeo && latestGeo.length){
+    const seen = new Set();
+    latestGeo.slice(-10).reverse().forEach(a => {
+      if(!a.geo) return;
+      const key = a.geo.country;
+      if(seen.has(key)) return;
+      seen.add(key);
+      if(a.geo.country === 'LOCAL' || a.geo.country === 'UNKNOWN') return;
+      if(dots.find(d => d.name === a.geo.name)) return;
+      dots.push({
+        lat: a.geo.lat,
+        lng: a.geo.lng,
+        name: a.geo.name,
+        count: 1,
+        severe: false,
+        delay: dots.length * 0.3,
+      });
+    });
+  }
+
+  if(!dots.length){
+    container.innerHTML = '';
+    document.getElementById('topCountry').textContent = '--';
+    document.getElementById('avgPerMin').textContent = '0';
+    return;
+  }
+
+  container.innerHTML = dots.map((d, i) => {
+    const lat = d.lat * Math.PI / 180;
+    const lng = d.lng * Math.PI / 180;
+    const x = radius * Math.cos(lat) * Math.sin(lng);
+    const y = -radius * Math.sin(lat);
+    const z = radius * Math.cos(lat) * Math.cos(lng);
+    const size = d.severe ? 14 : 10;
+
+    return `<div class="map-dot${d.severe ? ' severe' : ''}" 
+      style="left:50%;top:50%;
+             width:${size}px;height:${size}px;
+             margin:-${size/2}px 0 0 -${size/2}px;
+             transform:translate3d(${x}px, ${y}px, ${z}px);
+             animation-delay:${d.delay}s"
+      title="${d.name} (${d.count}次攻击)">
+    </div>`;
+  }).join('');
+
+  if(topCountries && topCountries.length){
+    document.getElementById('topCountry').textContent = topCountries[0].name || '--';
+  }
+  document.getElementById('avgPerMin').textContent = perMinute || 0;
 }
 
 function renderLogStream(){
@@ -3185,33 +3317,56 @@ function loadBlacklistPage(){
 }
 
 // ========== 语义引擎 ==========
+const SEMANTIC_DEFAULT_CONFIG = {
+  mainEnabled: true,
+  sensitivity: 2,
+  perfMode: 'balance',
+  autoLearn: false,
+  whitelists: {
+    url: ['/api/health', '/admin/login', '/static/*'],
+    param: ['utm_source', 'utm_medium', 'ref'],
+    rule: ['rule_001', 'rule_042']
+  }
+};
+
 function getSemanticConfig(){
   const raw = localStorage.getItem('shield_semantic_config');
   if(raw) {
-    try { return JSON.parse(raw); } catch(e){}
+    try { return Object.assign(JSON.parse(JSON.stringify(SEMANTIC_DEFAULT_CONFIG)), JSON.parse(raw)); } catch(e){}
   }
-  return {
-    mainEnabled: true,
-    sensitivity: 2,
-    perfMode: 'balance',
-    autoLearn: false,
-    whitelists: {
-      url: ['/api/health', '/admin/login', '/static/*'],
-      param: ['utm_source', 'utm_medium', 'ref'],
-      rule: ['rule_001', 'rule_042']
-    }
-  };
+  return JSON.parse(JSON.stringify(SEMANTIC_DEFAULT_CONFIG));
 }
 
 function saveSemanticConfig(cfg){
-  localStorage.setItem('shield_semantic_config', JSON.stringify(cfg));
+  // 本地缓存（快速渲染）
+  try{
+    localStorage.setItem('shield_semantic_config', JSON.stringify(cfg));
+  }catch(e){}
+  // 同步到后端（跨设备/跨浏览器持久化）
+  api('set_dashboard_config', {
+    page: 'semantic_settings',
+    config: JSON.stringify(cfg)
+  }).catch(()=>{});
+}
+
+// 从后端加载语义引擎配置（覆盖本地缓存）
+async function loadSemanticConfigFromBackend(){
+  try{
+    const res = await api('get_dashboard_config', {page: 'semantic_settings'});
+    if(!res || !res.success || !res.config) return;
+    semanticCfg = Object.assign(JSON.parse(JSON.stringify(SEMANTIC_DEFAULT_CONFIG)), res.config);
+    // 重新渲染表单（仅在已渲染过的页面上重填）
+    if(document.getElementById('semanticMainSwitch')){
+      fillSemanticForm();
+    }
+  }catch(e){}
 }
 
 let semanticCfg = getSemanticConfig();
 let currentWlType = 'url';
 
-function loadSemantic(){
-  semanticCfg = getSemanticConfig();
+// 将 semanticCfg 填充到表单（供后端加载后调用）
+function fillSemanticForm(){
   const mainSw = document.getElementById('semanticMainSwitch');
   if(mainSw){
     if(semanticCfg.mainEnabled) mainSw.classList.add('on');
@@ -3230,8 +3385,19 @@ function loadSemantic(){
     if(semanticCfg.autoLearn) alSw.classList.add('on');
     else alSw.classList.remove('on');
   }
-  updateParserCount();
-  updateWlCounts();
+  if(typeof updateParserCount === 'function') updateParserCount();
+  if(typeof updateWlCounts === 'function') updateWlCounts();
+  // 如白名单弹窗处于打开状态，刷新列表
+  if(document.getElementById('wlModal') && document.getElementById('wlModal').classList.contains('open')){
+    renderWlList();
+  }
+}
+
+function loadSemantic(){
+  semanticCfg = getSemanticConfig();
+  fillSemanticForm();
+  // 异步从后端拉取真实配置（覆盖本地缓存）
+  loadSemanticConfigFromBackend();
 }
 
 function toggleSemanticMain(){
@@ -3387,7 +3553,7 @@ function sandboxApi(action, data, method){
     fd.append('csrf_token', window.WAF_CSRF_TOKEN);
     opts.body = fd;
   }
-  return fetch('/waf-sandbox-api.php?action=' + action, opts).then(r=>r.json());
+  return fetch('/waf-sandbox-api?action=' + action, opts).then(r=>r.json());
 }
 
 function loadSandbox(){
@@ -3395,10 +3561,10 @@ function loadSandbox(){
   sandboxApi('stats').then(res=>{
     if(!res.success) return;
     const s = res.stats || {};
-    document.getElementById('sandMal').textContent = s.malicious_count || 0;
-    document.getElementById('sandClean').textContent = s.quarantined_count || 0;
-    document.getElementById('sandWatch').textContent = s.watched_files || 0;
-    document.getElementById('sandQuar').textContent = s.quarantined_count || 0;
+    document.getElementById('sandMal').textContent = s.malicious_count || s.total_quarantined || 0;
+    document.getElementById('sandClean').textContent = s.approved || s.restored || 0;
+    document.getElementById('sandWatch').textContent = s.watched_files || s.total_locations || 0;
+    document.getElementById('sandQuar').textContent = s.quarantined_count || s.total_quarantined || 0;
   });
 
   // 2. 基线状态
@@ -3426,6 +3592,26 @@ function loadSandbox(){
       : '<span class="tag red">已关闭</span>';
   });
 
+  // 2.5 沙箱健康状态（运行状态 + 最近扫描时间）
+  sandboxApi('health').then(res=>{
+    if(!res.success) return;
+    const h = res.health || {};
+    const runEl = document.getElementById('sandRunStatus');
+    if(h.running){
+      runEl.textContent = '运行中';
+      runEl.className = 'tag green';
+    } else {
+      runEl.textContent = '未运行';
+      runEl.className = 'tag red';
+    }
+    const scanEl = document.getElementById('sandLastScanTime');
+    scanEl.textContent = h.last_scan_str || '-';
+  }).catch(()=>{
+    const runEl = document.getElementById('sandRunStatus');
+    runEl.textContent = '未知';
+    runEl.className = 'tag yellow';
+  });
+
   // 3. 隔离文件列表
   sandboxApi('list').then(res=>{
     if(!res.success) return;
@@ -3433,7 +3619,7 @@ function loadSandbox(){
     window.sandboxQuarFiles = files;
     const tb = document.getElementById('sandQuarTable');
     tb.innerHTML = files.length ? files.map((f,i)=>{
-      const score = (f.analysis && f.analysis.score) || 0;
+      const score = f.score || (f.analysis && f.analysis.score) || 0;
       const levelTag = score >= 80 ? '<span class="tag red">高危</span>' : (score >= 50 ? '<span class="tag orange">中危</span>' : '<span class="tag yellow">低危</span>');
       return `<tr>
       <td><input type="checkbox" class="quar-item-check" data-id="${f.id}" onchange="quarUpdateSelectAll()" style="cursor:pointer"></td>
@@ -3573,16 +3759,25 @@ function viewQuarFileContent(id){
 
 function deleteQuarFile(id){
   if(!confirm('确认永久删除该隔离文件？此操作不可撤销。')) return;
-  showToast('已删除（演示模式）', 'success');
-  loadSandbox();
+  sandboxApi('review', {id: id, review_action: 'delete'}, 'POST').then(res=>{
+    if(res.success){
+      showToast('已删除', 'success');
+      loadSandbox();
+    } else {
+      showToast(res.error || '删除失败', 'error');
+    }
+  }).catch(e=>showToast('请求失败: ' + e, 'error'));
 }
 
 function quarAddWhitelist(id){
-  const file = (window.sandboxQuarFiles || []).find(f => f.id === id);
-  const path = file ? file.original_path : '';
-  const wl = JSON.parse(localStorage.getItem('sandbox_whitelist') || '[]');
-  if(!wl.includes(path)){ wl.push(path); localStorage.setItem('sandbox_whitelist', JSON.stringify(wl)); }
-  showToast('已加入白名单', 'success');
+  sandboxApi('review', {id: id, review_action: 'approve'}, 'POST').then(res=>{
+    if(res.success){
+      showToast('已加入白名单', 'success');
+      loadSandbox();
+    } else {
+      showToast(res.error || '操作失败', 'error');
+    }
+  }).catch(e=>showToast('请求失败: ' + e, 'error'));
 }
 
 // ========== 文件分析详情 ==========
@@ -3590,10 +3785,35 @@ function analyzeFile(){
   const path = document.getElementById('analyzeFilePath').value.trim();
   if(!path){ showToast('请输入文件路径', 'error'); return; }
   showToast('正在分析文件...');
-  setTimeout(() => {
-    document.getElementById('analyzeResult').style.display = 'block';
-    showToast('分析完成', 'success');
-  }, 800);
+  sandboxApi('analyze', {path: path}).then(res=>{
+    if(res.success){
+      const a = res.analysis || {};
+      const resultArea = document.getElementById('analyzeResult');
+      resultArea.style.display = 'block';
+      const score = a.score || 0;
+      const isMal = a.is_malicious || score >= 50;
+      const details = (a.details || []).map(d => 
+        `<div style="padding:6px 0;border-bottom:1px solid var(--border2)">
+           <div style="font-weight:500">${d.type||'检测项'} (评分: ${d.score||0})</div>
+           <div style="font-size:11px;color:var(--text3);font-family:monospace">${d.snippet||d.desc||''}</div>
+         </div>`
+      ).join('');
+      resultArea.innerHTML = `
+        <div style="margin-bottom:10px">
+          <span class="tag ${isMal?'red':'green'}" style="font-size:14px;padding:4px 12px">
+            ${isMal?'恶意文件':'安全'} · 综合评分: ${score}
+          </span>
+        </div>
+        <div style="font-size:12px;color:var(--text3);margin-bottom:8px">
+          文件: <span style="font-family:monospace;color:var(--text)">${path}</span>
+        </div>
+        ${details || '<div style="color:var(--text3)">未发现异常特征</div>'}
+      `;
+      showToast('分析完成', 'success');
+    } else {
+      showToast(res.error || '分析失败', 'error');
+    }
+  }).catch(e=>showToast('请求失败: ' + e, 'error'));
 }
 
 function viewFullCode(){
@@ -3604,16 +3824,21 @@ function quarantineAnalyzedFile(){
   const path = document.getElementById('analyzeFilePath').value.trim();
   if(!path){ showToast('请输入文件路径', 'error'); return; }
   if(!confirm('确认隔离该文件？')) return;
-  showToast('文件已隔离', 'success');
-  loadSandbox();
+  showToast('隔离中...');
+  sandboxApi('quarantine', {path: path}, 'POST').then(res=>{
+    if(res.success){
+      showToast('文件已隔离', 'success');
+      loadSandbox();
+    } else {
+      showToast(res.error || '隔离失败', 'error');
+    }
+  }).catch(e=>showToast('请求失败: ' + e, 'error'));
 }
 
 function addToWhitelistFromAnalyze(){
   const path = document.getElementById('analyzeFilePath').value.trim();
   if(!path){ showToast('请输入文件路径', 'error'); return; }
-  const wl = JSON.parse(localStorage.getItem('sandbox_whitelist') || '[]');
-  if(!wl.includes(path)){ wl.push(path); localStorage.setItem('sandbox_whitelist', JSON.stringify(wl)); }
-  showToast('已加入白名单', 'success');
+  addToWhitelist(path);
 }
 
 // ========== 精准切割功能 ==========
@@ -3621,10 +3846,29 @@ function previewCut(){
   const path = document.getElementById('cutFilePath').value.trim();
   if(!path){ showToast('请输入文件路径', 'error'); return; }
   showToast('正在分析并生成切割预览...');
-  setTimeout(() => {
-    document.getElementById('cutPreviewArea').style.display = 'block';
-    showToast('预览生成完成', 'success');
-  }, 1000);
+  sandboxApi('locate', {path: path}).then(res=>{
+    if(res.success){
+      const previewArea = document.getElementById('cutPreviewArea');
+      previewArea.style.display = 'block';
+      const locs = res.locations || [];
+      const html = locs.map((l, i) => `
+        <div style="padding:8px 0;border-bottom:1px solid var(--border2)">
+          <div style="font-weight:500;color:var(--red)">
+            位置 ${i+1}: 行 ${l.line_start||'?'}-${l.line_end||'?'} [${l.type||'未知'}] 评分: ${l.score||0}
+          </div>
+          <pre style="background:var(--bg2);padding:8px;border-radius:4px;font-size:11px;overflow:auto;margin:4px 0;color:var(--text2)">${(l.snippet||'').substring(0,200)}</pre>
+          <div style="font-size:11px;color:var(--green)">✓ 将被精准移除</div>
+        </div>
+      `).join('');
+      previewArea.innerHTML = `
+        <div style="margin-bottom:8px;font-weight:600">切割预览：将移除 ${locs.length} 处恶意代码</div>
+        ${html || '<div style="color:var(--green)">未发现需切割的恶意代码</div>'}
+      `;
+      showToast('预览生成完成', 'success');
+    } else {
+      showToast(res.error || '分析失败', 'error');
+    }
+  }).catch(e=>showToast('请求失败: ' + e, 'error'));
 }
 
 function cancelCut(){
@@ -3633,9 +3877,18 @@ function cancelCut(){
 }
 
 function applyCut(){
+  const path = document.getElementById('cutFilePath').value.trim();
+  if(!path){ showToast('请输入文件路径', 'error'); return; }
   if(!confirm('确认应用切割？切割前会自动备份原文件。')) return;
-  showToast('切割已应用，备份已保存', 'success');
-  loadSandbox();
+  showToast('切割中...');
+  sandboxApi('surgical-cut', {path: path}, 'POST').then(res=>{
+    if(res.success){
+      showToast('切割已应用：' + (res.message || ''), 'success');
+      loadSandbox();
+    } else {
+      showToast(res.error || '切割失败', 'error');
+    }
+  }).catch(e=>showToast('请求失败: ' + e, 'error'));
 }
 
 function downloadBackup(){
@@ -3650,7 +3903,22 @@ function setBaselineTab(tab){
 }
 
 function viewDiff(filename){
-  showToast(`正在查看 ${filename} 的差异...`, 'info');
+  showToast(`正在加载 ${filename} 的差异对比...`, 'info');
+  sandboxApi('locations', {path: filename}).then(res=>{
+    if(!res.success){ showToast('加载失败', 'error'); return; }
+    const locs = res.locations || [];
+    if(!locs.length){
+      alert('文件 ' + filename + '\n\n未发现恶意代码位置。');
+      return;
+    }
+    let msg = '文件 ' + filename + ' 恶意位置：\n\n';
+    locs.forEach((l, i) => {
+      msg += (i+1) + '. 行 ' + (l.line_start||'?') + '-' + (l.line_end||'?') +
+             ' [' + (l.type||'unknown') + '] 评分: ' + (l.score||0) + '\n';
+      if(l.snippet) msg += '   ' + l.snippet.substring(0, 80) + '\n';
+    });
+    alert(msg);
+  }).catch(()=>showToast('加载失败', 'error'));
 }
 
 function addToWhitelist(filename){
@@ -3661,12 +3929,32 @@ function addToWhitelist(filename){
 
 function deleteFile(filename){
   if(!confirm(`确认删除文件 ${filename}？此操作不可撤销。`)) return;
-  showToast('文件已删除', 'success');
+  showToast('删除中...');
+  sandboxApi('delete-file', {path: filename}, 'POST').then(res=>{
+    if(res.success){
+      showToast('文件已删除', 'success');
+      loadSandbox();
+    } else {
+      showToast(res.error || '删除失败', 'error');
+    }
+  }).catch(e=>{
+    showToast('当前版本暂不支持删除，请手动操作', 'error');
+  });
 }
 
 function restoreFileBaseline(filename){
   if(!confirm(`确认从基线恢复 ${filename}？`)) return;
-  showToast('文件已从基线恢复', 'success');
+  showToast('恢复中...');
+  sandboxApi('restore-baseline', {path: filename}, 'POST').then(res=>{
+    if(res.success){
+      showToast('文件已从基线恢复', 'success');
+      loadSandbox();
+    } else {
+      showToast(res.error || '恢复失败', 'error');
+    }
+  }).catch(e=>{
+    showToast('当前版本暂不支持基线恢复', 'error');
+  });
 }
 
 // ========== 扫描任务管理 ==========
@@ -3702,36 +3990,93 @@ function loadScanSchedule(){
   }
 }
 
-function viewScanReport(taskId){
-  showToast(`正在加载任务 ${taskId} 的报告...`, 'info');
+function loadScanHistory(){
+  sandboxApi('scan-history').then(res=>{
+    if(!res.success) return;
+    const history = res.history || [];
+    const tbody = document.getElementById('scanTaskBody');
+    if(!tbody) return;
+    if(!history.length){
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text4);padding:20px">暂无扫描记录</td></tr>';
+      return;
+    }
+    tbody.innerHTML = history.slice(0, 20).map((item, idx)=>{
+      const id = item.id || ('SCAN-' + (idx + 1));
+      const typeMap = {manual:'手动扫描', scheduled:'定时扫描', baseline:'基线扫描'};
+      const typeTag = {manual:'cyan', scheduled:'purple', baseline:'orange'};
+      const type = item.type || 'manual';
+      const status = item.status || 'completed';
+      const statusMap = {completed:'已完成', running:'进行中', failed:'失败'};
+      const statusTag = {completed:'green', running:'yellow', failed:'red'};
+      const startTime = item.start_time || '-';
+      const duration = item.duration ? (item.duration < 60 ? item.duration + '秒' : Math.floor(item.duration/60) + '分' + (item.duration%60) + '秒') : '-';
+      const scanned = item.scanned_count || 0;
+      const threats = item.malicious_count || 0;
+      return `<tr>
+        <td style="font-family:monospace;font-size:11px">#${id}</td>
+        <td><span class="tag ${typeTag[type]||'cyan'}">${typeMap[type]||'扫描'}</span></td>
+        <td style="font-size:11px">${startTime}</td>
+        <td style="font-size:11px">${duration}</td>
+        <td>${scanned.toLocaleString()}</td>
+        <td style="color:${threats>0?'var(--red)':'var(--green)'};font-weight:600">${threats}</td>
+        <td><span class="tag ${statusTag[status]||'green'}">${statusMap[status]||'已完成'}</span></td>
+        <td>
+          <button class="btn" style="padding:3px 8px;font-size:10px" onclick="viewScanReport('${id}')">查看报告</button>
+          <button class="btn" style="padding:3px 8px;font-size:10px" onclick="rescan()">重新扫描</button>
+          <button class="btn btn-danger" style="padding:3px 8px;font-size:10px" onclick="deleteScanTask('${id}')">删除</button>
+        </td>
+      </tr>`;
+    }).join('');
+  });
 }
 
-function rescan(taskId){
-  if(!confirm('确认重新扫描？')) return;
-  showToast('已启动重新扫描', 'success');
+function viewScanReport(taskId){
+  showToast(`正在加载任务 ${taskId} 的报告...`, 'info');
+  sandboxApi('scan-history').then(res=>{
+    if(!res.success){ showToast('加载失败', 'error'); return; }
+    const item = (res.history||[]).find(h=>h.id === taskId);
+    if(!item){ showToast('未找到该任务', 'error'); return; }
+    const details = [
+      '任务ID: ' + taskId,
+      '类型: ' + (item.type || 'manual'),
+      '开始时间: ' + (item.start_time || '-'),
+      '耗时: ' + (item.duration ? item.duration + '秒' : '-'),
+      '扫描文件: ' + (item.scanned_count || 0),
+      '发现威胁: ' + (item.malicious_count || 0),
+      '隔离文件: ' + (item.quarantined_count || 0),
+      '状态: ' + (item.status || 'completed'),
+    ];
+    alert('扫描报告\n\n' + details.join('\n'));
+  }).catch(()=>showToast('加载失败', 'error'));
+}
+
+function rescan(){
+  if(!confirm('确认立即触发全量扫描？可能耗时数十秒。')) return;
+  scanNow();
 }
 
 function deleteScanTask(taskId){
   if(!confirm(`确认删除任务 ${taskId}？`)) return;
   showToast('任务已删除', 'success');
+  loadScanHistory();
 }
 
 // ========== 沙箱页面初始化增强 ==========
 function initSandboxEnhancements(){
   loadScanSchedule();
+  loadScanHistory();
 }
 
 // ========== 自学习系统 ==========
 function loadLearn(){
-  // 1. AutoLearn 学习 KPI（复用 dashboard-api）
-  api('get_stats').then(res=>{
+  // 1. AutoLearn 学习 KPI（使用 learn_report action）
+  api('learn_report').then(res=>{
     if(!res || !res.success) return;
-    // 学习规则数、正常基线数等来自 AutoLearn
-    const learn = res.learn || {};
-    document.getElementById('learnPatterns').textContent = learn.patterns_count || 0;
-    document.getElementById('learnNormal').textContent = learn.normal_count || 0;
-    document.getElementById('learnFeedback').textContent = learn.feedback_count || 0;
-    document.getElementById('learnAcc').textContent = (learn.accuracy || 99.9) + '%';
+    const report = res.report || {};
+    document.getElementById('learnPatterns').textContent = report.total_learned_rules || 0;
+    document.getElementById('learnNormal').textContent = report.normal_patterns || 0;
+    document.getElementById('learnFeedback').textContent = report.feedback_count || 0;
+    document.getElementById('learnAcc').textContent = (report.total_attacks > 0 ? Math.min(99.9, 100 - (report.feedback_count / report.total_attacks) * 100).toFixed(1) : '99.9') + '%';
   }).catch(()=>{});
 
   // 2. 沙箱↔AutoLearn 联动状态
@@ -4022,7 +4367,7 @@ function pwdApi(action, data, method){
     fd.append('csrf_token', window.WAF_CSRF_TOKEN);
     opts.body = fd;
   }
-  return fetch('/waf-password-api.php?action=' + action, opts).then(r=>r.json());
+  return fetch('/waf-password-api?action=' + action, opts).then(r=>r.json());
 }
 
 function loadPasswordInfo(){
@@ -4167,13 +4512,90 @@ function getBotSettings(){
 
 function saveBotSettings(){
   if(!botSettings) return;
+  // 本地缓存（快速渲染）
   try{
     localStorage.setItem(BOT_STORAGE_KEY, JSON.stringify(botSettings));
   }catch(e){}
+  // 同步到后端（跨设备/跨浏览器持久化）
+  api('set_dashboard_config', {
+    page: 'bot_settings',
+    config: JSON.stringify(botSettings)
+  }).catch(()=>{});
+}
+
+// 从后端加载机器人配置（覆盖本地缓存）
+async function loadBotSettingsFromBackend(){
+  try{
+    const res = await api('get_dashboard_config', {page: 'bot_settings'});
+    if(!res || !res.success || !res.config) return;
+    // 深度合并：保留默认数组的结构，覆盖标量字段
+    const remote = res.config;
+    const local = getBotSettings();
+    Object.keys(local).forEach(k=>{
+      if(remote[k] !== undefined){
+        local[k] = remote[k];
+      }
+    });
+    botSettings = local;
+    // 重新渲染表单（仅在已渲染过的页面上重填）
+    if(document.getElementById('botMasterSwitch')){
+      initBotForm();
+    }
+  }catch(e){}
+}
+
+// 将 botSettings 填充到表单（供后端加载后调用，不重复触发 loadBotStats）
+function initBotForm(){
+  const s = getBotSettings();
+  const ms = document.getElementById('botMasterSwitch');
+  if(ms) ms.checked = s.masterEnabled;
+  setBotModeUI(s.mode);
+  const strict = document.getElementById('botStrictness');
+  if(strict){
+    strict.value = s.strictness;
+    const strictVal = document.getElementById('strictnessVal');
+    if(strictVal) strictVal.textContent = s.strictness;
+  }
+  const hs = document.getElementById('honeypotSwitch');
+  if(hs) hs.checked = s.honeypotEnabled;
+  const cs = document.getElementById('captchaSwitch');
+  if(cs) cs.checked = s.captchaEnabled;
+  const ct = document.getElementById('captchaThreshold');
+  if(ct){
+    ct.value = s.captchaThreshold;
+    const ctVal = document.getElementById('captchaThVal');
+    if(ctVal) ctVal.textContent = s.captchaThreshold;
+  }
+  if(typeof setCaptchaTypeUI === 'function') setCaptchaTypeUI(s.captchaType);
+  if(typeof renderScoreRules === 'function') renderScoreRules();
+  if(typeof renderHoneypotList === 'function') renderHoneypotList();
+  if(typeof renderSearchEngines === 'function') renderSearchEngines();
+  if(typeof renderWhitelist === 'function'){
+    renderWhitelist('ua');
+    renderWhitelist('ip');
+    renderWhitelist('dns');
+  }
+}
+
+// 加载机器人统计 KPI（从后端 API 拉取真实数据）
+function loadBotStats(){
+  api('bot_stats').then(res=>{
+    if(!res || !res.success) return;
+    const cats = res.categories || {};
+    const actions = res.actions || {};
+    const setVal = (id, v) => { const el = document.getElementById(id); if(el) el.textContent = v; };
+    setVal('botSearch',      cats.search_engine || 0);
+    setVal('botMalicious',  cats.malicious_bot || 0);
+    setVal('botCrawler',    cats.crawler || 0);
+    setVal('botHuman',      cats.human || 0);
+  }).catch(()=>{});
 }
 
 function initBotPage(){
   const s = getBotSettings();
+
+  // 加载机器人统计 KPI
+  loadBotStats();
 
   // 总开关
   const ms = document.getElementById('botMasterSwitch');
@@ -4220,6 +4642,9 @@ function initBotPage(){
   renderWhitelist('ua');
   renderWhitelist('ip');
   renderWhitelist('dns');
+
+  // 异步从后端拉取真实配置（覆盖本地缓存后重新渲染表单）
+  loadBotSettingsFromBackend();
 }
 
 // 折叠/展开
@@ -4499,6 +4924,25 @@ function saveFpData(){
   }catch(e){}
 }
 
+// 从后端加载 URL 白名单（覆盖本地缓存）
+async function loadFpUrlWhitelist(){
+  try{
+    const res = await api('get_whitelist_url');
+    if(!res || !res.success || !Array.isArray(res.data)) return;
+    const s = getFpData();
+    s.urlWhitelist = res.data.map(item => ({
+      id: item.id,
+      url: item.url,
+      type: item.type || 'exact',
+      note: item.note || '',
+      time: item.created_at ? new Date(item.created_at * 1000).toLocaleString('zh-CN', {hour12:false}) : '',
+    }));
+    const el = document.getElementById('fpUrlCount');
+    if(el) el.textContent = s.urlWhitelist.length;
+    renderFpUrlList();
+  }catch(e){}
+}
+
 function loadFalsePositive(){
   const s = getFpData();
   document.getElementById('fpUrlCount').textContent = s.urlWhitelist.length;
@@ -4510,6 +4954,8 @@ function loadFalsePositive(){
   renderFpParamList();
   renderFpRuleList();
   renderFpTicketList();
+  // 异步从后端拉取 URL 白名单（覆盖本地缓存）
+  loadFpUrlWhitelist();
 }
 
 function renderFpUrlList(){
@@ -4534,27 +4980,42 @@ function fpUrlAdd(){
   const type = document.getElementById('fpUrlType').value;
   const note = document.getElementById('fpUrlNote').value.trim();
   if(!url) return showToast('请输入 URL 路径', 'error');
-  const s = getFpData();
-  s.urlWhitelist.unshift({
-    url, type, note,
-    time: new Date().toLocaleString('zh-CN', {hour12:false})
-  });
-  saveFpData();
+  // 调用后端 API 持久化（避免仅存 localStorage 导致跨设备数据丢失）
+  api('add_whitelist_url', {url, type, note}).then(res=>{
+    if(res && res.success){
+      showToast('添加成功', 'success');
+      loadFpUrlWhitelist();
+    } else {
+      showToast(res && res.message ? res.message : '添加失败', 'error');
+    }
+  }).catch(()=> showToast('添加失败（网络错误）', 'error'));
   document.getElementById('fpUrlInput').value = '';
   document.getElementById('fpUrlNote').value = '';
-  document.getElementById('fpUrlCount').textContent = s.urlWhitelist.length;
-  renderFpUrlList();
-  showToast('添加成功', 'success');
 }
 
 function fpUrlDel(idx){
   if(!confirm('确认删除此 URL 白名单？')) return;
   const s = getFpData();
-  s.urlWhitelist.splice(idx, 1);
-  saveFpData();
-  document.getElementById('fpUrlCount').textContent = s.urlWhitelist.length;
-  renderFpUrlList();
-  showToast('已删除', 'success');
+  const item = s.urlWhitelist[idx];
+  if(!item) return;
+  // 优先走后端 API（有 id 走持久化删除）
+  if(item.id){
+    api('remove_whitelist_url', {id: item.id}).then(res=>{
+      if(res && res.success){
+        showToast('已删除', 'success');
+        loadFpUrlWhitelist();
+      } else {
+        showToast(res && res.message ? res.message : '删除失败', 'error');
+      }
+    }).catch(()=> showToast('删除失败（网络错误）', 'error'));
+  } else {
+    // 兼容本地缓存中的旧数据（无 id）
+    s.urlWhitelist.splice(idx, 1);
+    saveFpData();
+    document.getElementById('fpUrlCount').textContent = s.urlWhitelist.length;
+    renderFpUrlList();
+    showToast('已删除', 'success');
+  }
 }
 
 function fpUrlExport(){
@@ -4582,21 +5043,27 @@ function fpUrlImportFile(el){
     try{
       const data = JSON.parse(e.target.result);
       if(!Array.isArray(data)) throw new Error('格式错误');
-      const s = getFpData();
-      data.forEach(item=>{
-        if(item.url){
-          s.urlWhitelist.unshift({
-            url: item.url,
-            type: item.type || 'exact',
-            note: item.note || '',
-            time: new Date().toLocaleString('zh-CN', {hour12:false})
-          });
-        }
+      // 批量调用后端 API 导入（确保跨设备数据一致）
+      const items = data.filter(item => item && item.url);
+      if(!items.length){
+        showToast('文件中无有效条目', 'error');
+        return;
+      }
+      const promises = items.map(item =>
+        api('add_whitelist_url', {
+          url: item.url,
+          type: item.type || 'exact',
+          note: item.note || ''
+        })
+      );
+      Promise.all(promises).then(results=>{
+        const ok = results.filter(r => r && r.success).length;
+        showToast(`导入完成，成功 ${ok}/${items.length} 条`, ok ? 'success' : 'error');
+        loadFpUrlWhitelist();
+      }).catch(()=>{
+        showToast('导入过程出错', 'error');
+        loadFpUrlWhitelist();
       });
-      saveFpData();
-      document.getElementById('fpUrlCount').textContent = s.urlWhitelist.length;
-      renderFpUrlList();
-      showToast(`导入成功，共 ${data.length} 条`, 'success');
     }catch(err){
       showToast('导入失败：' + err.message, 'error');
     }
@@ -4799,12 +5266,34 @@ function getApiConfig(){
 
 function saveApiConfig(){
   if(!apiConfig) return;
+  // 本地缓存（快速渲染）
   try{
     localStorage.setItem(API_STORAGE_KEY, JSON.stringify(apiConfig));
   }catch(e){}
+  // 同步到后端（跨设备/跨浏览器持久化）
+  api('set_dashboard_config', {
+    page: 'api_security',
+    config: JSON.stringify(apiConfig)
+  }).catch(()=>{});
 }
 
-function loadApiSecurity(){
+// 从后端加载 API 安全配置（覆盖本地缓存）
+async function loadApiConfigFromBackend(){
+  try{
+    const res = await api('get_dashboard_config', {page: 'api_security'});
+    if(!res || !res.success) return;
+    if(res.config && typeof res.config === 'object'){
+      apiConfig = Object.assign(JSON.parse(JSON.stringify(defaultApiConfig)), res.config);
+      // 重新渲染表单（仅在已渲染过的页面上重填）
+      if(document.getElementById('apiJwtEnabled')){
+        fillApiSecurityForm();
+      }
+    }
+  }catch(e){}
+}
+
+// 将 apiConfig 填充到表单（供后端加载后调用）
+function fillApiSecurityForm(){
   const s = getApiConfig();
   document.getElementById('apiProtectedCount').textContent = s.protectedApis;
   document.getElementById('apiTodayReq').textContent = s.todayRequests.toLocaleString();
@@ -4849,6 +5338,13 @@ function loadApiSecurity(){
   document.querySelectorAll('input[name="apiRaceAction"]').forEach(r=>{
     r.checked = r.value === s.raceCondition.action;
   });
+}
+
+function loadApiSecurity(){
+  // 先用 localStorage 缓存快速渲染
+  fillApiSecurityForm();
+  // 异步从后端拉取真实配置（覆盖本地缓存）
+  loadApiConfigFromBackend();
 }
 
 function apiSaveConfig(){
@@ -5089,6 +5585,7 @@ let protectState = {};
 let protectMode = 'protect';
 
 function loadProtectCenter(){
+  // 先用 localStorage 缓存快速渲染
   const saved = localStorage.getItem('shield_protect_state');
   if(saved){
     try{ protectState = JSON.parse(saved); }catch(e){}
@@ -5101,6 +5598,18 @@ function loadProtectCenter(){
   updateProtectModeUI();
   renderProtectModules();
   updateProtectKPI();
+
+  // 从后端拉取真实模块配置（覆盖本地缓存）
+  api('get_modules').then(res=>{
+    if(!res || !res.success) return;
+    const modules = res.modules || {};
+    Object.keys(modules).forEach(id => {
+      protectState[id] = modules[id];
+    });
+    saveProtectState();
+    renderProtectModules();
+    updateProtectKPI();
+  }).catch(()=>{});
 }
 
 function renderProtectModules(){
@@ -5170,7 +5679,14 @@ function toggleModule(id, enabled){
     else card.classList.add('disabled');
   }
   updateProtectKPI();
-  showToast(enabled ? '已开启防护' : '已关闭防护', enabled ? 'success' : 'error');
+  // 同步到后端持久化
+  api('set_module', {module: id, enabled: enabled ? 1 : 0}).then(res=>{
+    if(res && res.success){
+      showToast(enabled ? '已开启防护' : '已关闭防护', enabled ? 'success' : 'error');
+    } else {
+      showToast(res?.message || '保存失败', 'error');
+    }
+  }).catch(()=>{ showToast(enabled ? '已开启防护（本地）' : '已关闭防护（本地）', enabled ? 'success' : 'error'); });
 }
 
 function toggleConfig(id){
@@ -5297,6 +5813,16 @@ setInterval(()=>{
     fetch('/waf-dashboard-api').then(r=>r.json()).then(res=>{
       if(res.latest) attackLogs = res.latest;
       renderLogStream();
+      // 同步刷新全球攻击地图
+      renderMapDots(res.latest_geo || [], res.top_countries || [], res.per_minute || 0);
+      // 同步刷新 KPI
+      if(res.total) document.getElementById('kTotal').textContent = res.total;
+      if(res.top_ips) document.getElementById('kIps').textContent = Object.keys(res.top_ips).length;
+      const today = new Date().toISOString().slice(0,10);
+      if(res.daily && res.daily[today]){
+        document.getElementById('kToday').textContent = res.daily[today];
+        document.getElementById('attackBadge').textContent = res.daily[today];
+      }
     }).catch(()=>{});
   }
 },5000);

@@ -86,12 +86,68 @@ class FalsePositiveGuard {
                 'param_count_max' => 10,
             ],
         ],
+        // ========== WordPress 特有业务模式 ==========
+        'wp_post_edit' => [
+            'name' => 'WordPress文章编辑',
+            'conditions' => [
+                'uri' => '/wp-admin\/(?:post|post-new|page|page-new)\.php/i',
+                'method' => 'POST',
+                'params' => ['post_title', 'post_content', 'post_excerpt', 'content'],
+            ],
+        ],
+        'wp_comment' => [
+            'name' => 'WordPress评论提交',
+            'conditions' => [
+                'uri' => '/wp-comments-post\.php/i',
+                'method' => 'POST',
+                'params' => ['comment', 'author', 'email', 'url'],
+            ],
+        ],
+        'wp_theme_customize' => [
+            'name' => 'WordPress主题自定义',
+            'conditions' => [
+                'uri' => '/wp-admin\/customize\.php/i',
+                'method' => 'POST',
+                'params' => ['customized', 'wp_customize'],
+            ],
+        ],
+        'wp_ajax' => [
+            'name' => 'WordPress AJAX请求',
+            'conditions' => [
+                'uri' => '/(?:admin-ajax|wp-json)\b/i',
+                'method' => 'POST',
+                'params' => ['action', '_ajax_nonce', 'nonce'],
+            ],
+        ],
+        'wp_rest_api' => [
+            'name' => 'WordPress REST API',
+            'conditions' => [
+                'uri' => '/wp-json\/wp\/v\d+/i',
+                'headers' => ['X-WP-Nonce'],
+            ],
+        ],
+        'wp_media_upload' => [
+            'name' => 'WordPress媒体上传',
+            'conditions' => [
+                'uri' => '/wp-admin\/(?:async-upload|media-new|upload)\.php/i',
+                'method' => 'POST',
+                'content_type' => '/multipart\/form-data/i',
+            ],
+        ],
+        'wp_plugin_settings' => [
+            'name' => 'WordPress插件设置',
+            'conditions' => [
+                'uri' => '/wp-admin\/(?:options|settings|plugins|themes)\.php/i',
+                'method' => 'POST',
+            ],
+        ],
     ];
 
     /**
      * 可信参数名白名单（这些参数的值可以包含特殊字符）
      */
     private static $trusted_param_names = [
+        // 通用参数
         'q', 'query', 'keyword', 'search', 's',
         'url', 'link', 'redirect', 'next', 'return_url', 'callback',
         'content', 'body', 'message', 'text', 'description', 'comment',
@@ -101,6 +157,24 @@ class FalsePositiveGuard {
         'username', 'email', 'password', 'captcha', 'token',
         'title', 'name', 'tags', 'category',
         'filters', 'options', 'settings', 'config',
+        // ========== WordPress 特有参数 ==========
+        'post_title', 'post_content', 'post_excerpt', 'post_status',
+        'post_author', 'post_date', 'post_category', 'post_tags',
+        'comment', 'comment_content', 'comment_author', 'comment_author_email',
+        'customized', 'wp_customize', 'customize_changeset_uuid',
+        'action', '_ajax_nonce', 'nonce', '_wpnonce',
+        'meta', 'meta_value', 'meta_key',
+        'attachment', 'attachments', 'file_upload',
+        'widget', 'sidebar', 'menu', 'nav_menu',
+        'theme', 'stylesheet', 'template',
+        'plugin', 'plugins', 'activate', 'deactivate',
+        'option', 'option_value', 'option_name',
+        'user_login', 'user_email', 'user_pass', 'display_name',
+        'role', 'capabilities', 'all_roles',
+        'taxonomy', 'term', 'term_id', 'parent',
+        'ping_status', 'comment_status', 'post_password',
+        'post_name', 'post_parent', 'menu_order',
+        'page_template', 'page_options',
     ];
 
     /**

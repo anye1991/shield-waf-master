@@ -44,7 +44,7 @@ class HoneypotLinks {
     private static function init() {
         if (self::$initialized) return;
         $base = defined('WAF_LOG_PATH') ? WAF_LOG_PATH : (sys_get_temp_dir() . '/shield_waf_');
-        self::$trigger_dir = $base . 'honeypot_triggers/';
+        self::$trigger_dir = $base . '/honeypot_triggers/';
         if (!is_dir(self::$trigger_dir)) @mkdir(self::$trigger_dir, 0700, true);
         self::$initialized = true;
     }

@@ -17,7 +17,7 @@ if (empty($_SESSION['waf_csrf_token'])) {
     }
 }
 
-$writeActions = ['add_whitelist', 'remove_whitelist', 'ban_ip', 'unban_ip', 'set_module', 'set_config', 'add_whitelist_url', 'remove_whitelist_url', 'learn_feedback', 'learn_reset', 'learn_freeze', 'learn_unfreeze', 'learn_delete_rule'];
+$writeActions = ['add_whitelist', 'remove_whitelist', 'ban_ip', 'unban_ip', 'set_module', 'set_config', 'add_whitelist_url', 'remove_whitelist_url', 'learn_feedback', 'learn_reset', 'learn_freeze', 'learn_unfreeze', 'learn_delete_rule', 'set_dashboard_config'];
 $action = isset($_GET['action']) ? $_GET['action'] : '';
 $method = $_SERVER['REQUEST_METHOD'];
 if ($method === 'POST' && in_array($action, $writeActions)) {
@@ -129,9 +129,27 @@ function waf_get_modules_config() {
 
 header('Content-Type: application/json');
 
+try {
 switch ($action) {
     case 'get_banned':
         exit(json_encode(['data' => waf_get_banned_ips()]));
+
+    case 'bot_stats':
+        $statsFile = WAF_LOG_PATH . '/bot_stats.json';
+        $stats = [];
+        if (is_file($statsFile)) {
+            $content = @file_get_contents($statsFile);
+            if ($content !== false) {
+                $stats = json_decode($content, true) ?: [];
+            }
+        }
+        exit(json_encode([
+            'success' => true,
+            'total_detected'    => $stats['total_detected'] ?? 0,
+            'categories'        => $stats['categories'] ?? [],
+            'actions'           => $stats['actions'] ?? [],
+            'recent_events'     => array_slice($stats['recent_events'] ?? [], 0, 20),
+        ]));
 
     case 'get_whitelist':
         exit(json_encode(['data' => waf_get_admin_ips()]));
@@ -173,21 +191,6 @@ switch ($action) {
         } else {
             exit(json_encode(['success' => false, 'message' => '无效的IP地址']));
         }
-
-    default:
-        $cacheFile = WAF_LOG_PATH . '/dashboard_cache.json';
-        if (is_file($cacheFile) && time() - filemtime($cacheFile) < WAF_STATS_CACHE_SEC) {
-            $json = file_get_contents($cacheFile);
-            echo $json;
-            exit;
-        }
-
-        $attacks = WafStats::getAttacks(7);
-        $summary = WafStats::summary($attacks);
-        $json = json_encode($summary, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
-        @file_put_contents($cacheFile, $json);
-        echo $json;
-        exit;
 
     // ====================== 沙箱↔AutoLearn 联动信息 ======================
     case 'learn_coupling':
@@ -489,11 +492,13 @@ switch ($action) {
         if (!class_exists('AutoLearn', false)) {
             require_once __DIR__ . '/../Learn/AutoLearn.php';
         }
-        $files = ['learned_patterns.json', 'attack_stats.json', 'weight_adjustments.json', 'feedback_log.json', 'normal_patterns.json'];
+        $files = ['learned_patterns.json', 'attack_stats.json', 'weight_adjustments.json', 'feedback_log.json', 'normal_patterns.json', 'baseline_freeze.json'];
         foreach ($files as $f) {
             $path = WAF_LOG_PATH . '/' . $f;
             if (is_file($path)) @unlink($path);
         }
+        // 清理 AutoLearn 内存缓存，避免脏数据
+        try { AutoLearn::invalidateCache(); } catch (\Throwable $e) {}
         exit(json_encode(['success' => true, 'message' => '学习数据已重置']));
 
     case 'learn_freeze':
@@ -541,5 +546,70 @@ switch ($action) {
         }
         $data['total_learned'] = count($data['rules']);
         @file_put_contents($file, json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
+        // 清理 AutoLearn 内存缓存，确保下次读取最新数据
+        try { AutoLearn::invalidateCache(); } catch (\Throwable $e) {}
         exit(json_encode(['success' => true, 'message' => "已删除 {$removed} 条规则"]));
+
+    // ====================== 控制台页面配置（JSON blob 持久化） ======================
+    // 用于 API 安全中心、机器人防护设置、语义引擎设置等页面，
+    // 避免只存 localStorage 导致跨设备/跨浏览器数据丢失
+    case 'get_dashboard_config':
+        $page = isset($_GET['page']) ? trim($_GET['page']) : (isset($_POST['page']) ? trim($_POST['page']) : '');
+        if (empty($page)) {
+            exit(json_encode(['success' => false, 'message' => 'page 不能为空']));
+        }
+        $allowedPages = ['api_security', 'bot_settings', 'semantic_settings'];
+        if (!in_array($page, $allowedPages, true)) {
+            exit(json_encode(['success' => false, 'message' => '不允许的 page']));
+        }
+        $all = waf_read_json_file('dashboard_config.json', []);
+        if (!is_array($all)) $all = [];
+        $config = isset($all[$page]) ? $all[$page] : null;
+        exit(json_encode(['success' => true, 'config' => $config], JSON_UNESCAPED_UNICODE));
+
+    case 'set_dashboard_config':
+        $page = isset($_POST['page']) ? trim($_POST['page']) : '';
+        $configRaw = isset($_POST['config']) ? $_POST['config'] : '';
+        if (empty($page)) {
+            exit(json_encode(['success' => false, 'message' => 'page 不能为空']));
+        }
+        $allowedPages = ['api_security', 'bot_settings', 'semantic_settings'];
+        if (!in_array($page, $allowedPages, true)) {
+            exit(json_encode(['success' => false, 'message' => '不允许的 page']));
+        }
+        $decoded = json_decode($configRaw, true);
+        if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
+            exit(json_encode(['success' => false, 'message' => 'config 不是合法 JSON']));
+        }
+        $all = waf_read_json_file('dashboard_config.json', []);
+        if (!is_array($all)) $all = [];
+        $all[$page] = $decoded;
+        $result = waf_write_json_file('dashboard_config.json', $all);
+        exit(json_encode(['success' => $result, 'message' => $result ? '配置保存成功' : '保存失败']));
+
+    // ====================== 默认：返回总览统计（必须放在 switch 末尾） ======================
+    default:
+        $cacheFile = WAF_LOG_PATH . '/dashboard_cache.json';
+        if (is_file($cacheFile) && time() - filemtime($cacheFile) < WAF_STATS_CACHE_SEC) {
+            $json = file_get_contents($cacheFile);
+            echo $json;
+            exit;
+        }
+
+        $attacks = WafStats::getAttacks(7);
+        $summary = WafStats::summary($attacks);
+        $json = json_encode($summary, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+        @file_put_contents($cacheFile, $json);
+        echo $json;
+        exit;
 }
+} catch (\Throwable $e) {
+    // 全局兜底：任何未捕获异常都返回 JSON 错误（避免 PHP 默认 HTML 错误页破坏前端 fetch）
+    http_response_code(500);
+    exit(json_encode(['success' => false, 'error' => '服务器内部错误', 'message' => $e->getMessage()]));
+}
+
+// 兜底：switch 中的 case 不应该走到这里（每个 case 都 exit），但为防御性编程，仍输出错误
+http_response_code(500);
+exit(json_encode(['success' => false, 'error' => '未处理的请求']));
+

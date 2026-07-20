@@ -1,6 +1,20 @@
 # 盾甲 WAF - Apache/Nginx 安全规则
 # 防止敏感文件被外部访问
 
+# ====== 控制台路由重写（Apache） ======
+# 将 /waf-dashboard 等虚拟路由转发到入口文件，
+# 与 docker/nginx.conf 中的 nginx 规则保持一致
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    # 控制台相关路由（与 shield-waf.php 中 $wafDashboardRoutes 一致）
+    RewriteRule ^waf-dashboard/?$ /index.php [L]
+    RewriteRule ^waf-dashboard-api/?$ /index.php [L]
+    RewriteRule ^waf-dashboard-bot/?$ /index.php [L]
+    RewriteRule ^waf-scanner-api/?$ /index.php [L]
+    RewriteRule ^waf-sandbox-api/?$ /index.php [L]
+    RewriteRule ^waf-password-api/?$ /index.php [L]
+</IfModule>
+
 # 禁止直接访问 src/ 目录
 RedirectMatch 403 ^/src/
 
@@ -9,6 +23,9 @@ RedirectMatch 403 ^/logs/
 
 # 禁止访问 docker/ 目录
 RedirectMatch 403 ^/docker/
+
+# 禁止访问 data/ 目录（控制台配置/模块状态等敏感文件）
+RedirectMatch 403 ^/data/
 
 # 禁止访问 .env 文件
 <Files ".env">

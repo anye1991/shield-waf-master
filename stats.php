@@ -1,6 +1,8 @@
 <?php
 defined('ABSPATH') || exit;
 
+require_once __DIR__ . '/src/Support/IpGeo.php';
+
 class WafStats {
     public static function getAttacks($days = 7) {
         $logDir = WAF_LOG_PATH;
@@ -8,7 +10,7 @@ class WafStats {
         $now = time();
         for ($i = 0; $i < $days; $i++) {
             $date = date('Y-m-d', $now - $i * 86400);
-            $file = $logDir . 'block_' . $date . '.log';
+            $file = $logDir . '/block_' . $date . '.log';
             if (!is_file($file)) continue;
             $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
             foreach ($lines as $line) {
@@ -39,24 +41,75 @@ class WafStats {
 
     public static function summary($attacks) {
         $total = count($attacks);
-        $ips = $types = $daily = [];
+        $ips = $types = $daily = $countries = [];
         $latest = array_slice($attacks, -20);
+        $geoCache = [];
+
         foreach ($attacks as $a) {
-            $ips[$a['ip']] = ($ips[$a['ip']] ?? 0) + 1;
+            $ip = $a['ip'];
+            $ips[$ip] = ($ips[$ip] ?? 0) + 1;
             $type = self::classify($a['msg']);
             $types[$type] = ($types[$type] ?? 0) + 1;
             $day = substr($a['time'], 0, 10);
             $daily[$day] = ($daily[$day] ?? 0) + 1;
+
+            // IP 地理位置解析
+            if (!isset($geoCache[$ip])) {
+                $geoCache[$ip] = WafIpGeo::lookup($ip);
+            }
+            $geo = $geoCache[$ip];
+            $countryKey = $geo['country'] . '|' . $geo['name'];
+            if (!isset($countries[$countryKey])) {
+                $countries[$countryKey] = [
+                    'country' => $geo['country'],
+                    'name' => $geo['name'],
+                    'lat' => $geo['lat'],
+                    'lng' => $geo['lng'],
+                    'count' => 0,
+                ];
+            }
+            $countries[$countryKey]['count']++;
         }
         ksort($daily);
         arsort($ips);
+
+        // 按攻击次数排序国家
+        usort($countries, function($a, $b) {
+            return $b['count'] - $a['count'];
+        });
+
+        // 为最新日志附加 geo 信息（前端地球定位用）
+        $latestWithGeo = [];
+        foreach ($latest as $a) {
+            $ip = $a['ip'];
+            if (!isset($geoCache[$ip])) {
+                $geoCache[$ip] = WafIpGeo::lookup($ip);
+            }
+            $latestWithGeo[] = array_merge($a, [
+                'geo' => $geoCache[$ip],
+            ]);
+        }
+
+        // 攻击速率（近 1 分钟）
+        $oneMinuteAgo = date('Y-m-d H:i:', time() - 60);
+        $perMinute = 0;
+        foreach ($attacks as $a) {
+            if (strpos($a['time'], $oneMinuteAgo) === 0 || $a['time'] > $oneMinuteAgo) {
+                $perMinute++;
+            }
+        }
+
         return [
-            'version' => defined('SHIELD_WAF_VERSION') ? SHIELD_WAF_VERSION : '3.0.0',
-            'total'   => $total,
-            'top_ips' => array_slice($ips, 0, 10, true),
-            'types'   => $types,
-            'daily'   => $daily,
-            'latest'  => $latest,
+            'version'       => defined('SHIELD_WAF_VERSION') ? SHIELD_WAF_VERSION : '3.0.0',
+            'total'         => $total,
+            'top_ips'       => array_slice($ips, 0, 10, true),
+            'types'         => $types,
+            'daily'         => $daily,
+            'latest'        => $latest,
+            'latest_geo'    => $latestWithGeo,
+            'top_countries' => array_slice($countries, 0, 20),
+            'per_minute'    => $perMinute,
+            'per_hour'      => $perMinute * 60, // 估算每小时
         ];
     }
 }

@@ -106,6 +106,32 @@ if (waf_is_static_request()) {
     return;
 }
 
+// ====================== 控制台路由（跳过所有 WAF 检测，避免自拦截） ======================
+$requestPath = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+$wafDashboardRoutes = [
+    '/waf-dashboard', '/waf-dashboard-api', '/waf-dashboard-bot',
+    '/waf-scanner-api', '/waf-sandbox-api', '/waf-password-api'
+];
+if (in_array($requestPath, $wafDashboardRoutes)) {
+    if (session_status() !== PHP_SESSION_ACTIVE) {
+        session_start();
+    }
+    if ($requestPath === '/waf-dashboard') {
+        require_once __DIR__ . '/src/Admin/Dashboard.php';
+    } elseif ($requestPath === '/waf-dashboard-api') {
+        require_once __DIR__ . '/src/Admin/DashboardApi.php';
+    } elseif ($requestPath === '/waf-dashboard-bot') {
+        require_once __DIR__ . '/src/Admin/DashboardBot.php';
+    } elseif ($requestPath === '/waf-scanner-api') {
+        require_once __DIR__ . '/src/Admin/ScannerApi.php';
+    } elseif ($requestPath === '/waf-sandbox-api') {
+        require_once __DIR__ . '/src/Admin/SandboxApi.php';
+    } elseif ($requestPath === '/waf-password-api') {
+        require_once __DIR__ . '/src/Admin/PasswordApi.php';
+    }
+    exit;
+}
+
 // ====================== 请求场景识别（通用性设计） ======================
 // 识别登录/支付回调/搜索/评论等业务核心路径，据此调整检测策略
 // $isHardSkip  = 高可信场景（登录POST/支付回调）→ 跳过特征检测，仅保留基础防护
@@ -193,6 +219,9 @@ $botResult = BotManager::check([
     'ip'      => waf_get_real_ip(),
 ]);
 unset($_waf_http_headers, $_waf_k, $_waf_v, $_waf_name);
+
+// 记录机器人检测统计（供控制台展示）
+waf_record_bot_stats($botResult);
 
 // 已验证的搜索引擎蜘蛛：bot层面直接放行，攻击检测层面提升阈值（防误拦）
 $isVerifiedSearchEngine = false;
@@ -439,34 +468,6 @@ AutoLearn::recordNormal($uri, array_keys($_GET + $_POST));
 // ====================== 文件上传检测 ======================
 require_once __DIR__ . '/src/Defense/Upload.php';
 waf_check_upload();
-
-// ====================== 路由处理（仪表盘、扫描 API） ======================
-$requestPath = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-
-if ($requestPath === '/waf-dashboard-api') {
-    require_once __DIR__ . '/src/Admin/DashboardApi.php';
-    exit;
-}
-if ($requestPath === '/waf-dashboard') {
-    require_once __DIR__ . '/src/Admin/Dashboard.php';
-    exit;
-}
-if ($requestPath === '/waf-scanner-api') {
-    require_once __DIR__ . '/src/Admin/ScannerApi.php';
-    exit;
-}
-if ($requestPath === '/waf-dashboard-bot') {
-    require_once __DIR__ . '/src/Admin/DashboardBot.php';
-    exit;
-}
-if ($requestPath === '/waf-sandbox-api') {
-    require_once __DIR__ . '/src/Admin/SandboxApi.php';
-    exit;
-}
-if ($requestPath === '/waf-password-api') {
-    require_once __DIR__ . '/src/Admin/PasswordApi.php';
-    exit;
-}
 
 // ====================== 登录页暴力破解防护（固定文件，无跨小时边界问题） ======================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && strpos($requestPath, 'wp-login.php') !== false) {

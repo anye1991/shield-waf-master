@@ -24,19 +24,20 @@ require_once __DIR__ . '/../Semantic/SemanticMemoryPool.php';
 
 class WafScorer {
     private static $weights = [
-        'entropy'   => 0.15,
-        'semantic'  => 0.40,
-        'compiler'  => 0.20,
-        'deviation' => 0.15,
+        'entropy'   => 0.10,  // 降低：熵值容易误判正常内容（Base64图片、加密字符串）
+        'semantic'  => 0.45,  // 提高：语义分析是核心检测能力，类似雷池智能语义引擎
+        'compiler'  => 0.20,  // 保持：URI/参数结构异常检测
+        'deviation' => 0.15,  // 保持：行为基线偏离分析
     ];
 
     // 阈值层级必须严格递增，否则中间层（如 observe）会被 block 短路而失效
-    // 0-30 pass / 30-50 log / 50-70 observe / 70+ block
+    // 0-30 pass / 30-50 log / 50-75 observe / 75+ block
+    // 注：block 从 70 提升到 75，减少边缘误报（WordPress 富文本/代码场景）
     private static $thresholds = [
         'pass'    => 30,
         'log'     => 30,
         'observe' => 50,
-        'block'   => 70,
+        'block'   => 75,
     ];
 
     /**

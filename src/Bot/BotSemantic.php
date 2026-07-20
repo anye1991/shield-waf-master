@@ -315,7 +315,7 @@ class BotSemantic {
     private static function initDir() {
         if (self::$tracker_dir !== null) return;
         $base = defined('WAF_LOG_PATH') ? WAF_LOG_PATH : (sys_get_temp_dir() . '/shield_waf_');
-        $dir  = $base . 'bot_tracker/';
+        $dir  = $base . '/bot_tracker/';
         if (!is_dir($dir)) @mkdir($dir, 0700, true);
         self::$tracker_dir = $dir;
     }

@@ -108,6 +108,11 @@ if ($method === 'POST' && in_array($action, $writeActions)) {
 try {
     switch ($action) {
         // ====================== 查看 ======================
+        case 'health':
+            $health = WafSandbox::getHealthStatus();
+            echo json_encode(['success' => true, 'health' => $health], JSON_UNESCAPED_UNICODE);
+            break;
+
         case 'list':
             $files = WafSandbox::getQuarantineList();
             echo json_encode(['success' => true, 'count' => count($files), 'files' => $files], JSON_UNESCAPED_UNICODE);

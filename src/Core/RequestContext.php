@@ -62,23 +62,65 @@ class RequestContext
         // 常见API端点（支付/登录相关）
         'api/pay', 'api/order', 'api/callback', 'api/notify',
         'api/login', 'api/auth',
-        // WordPress 核心端点（前台访问，非 /wp-admin 后台路径）
-        'wp-json', 'xmlrpc', 'xmlrpc.php', 'wp-cron', 'wp-cron.php',
-        'admin-ajax', 'ajax', 'async-upload', 'asyncupload', 'upload-attachment',
-        // WordPress 前端核心文件
+        // ========== WordPress 官方核心路径 ==========
+        // WordPress 前台核心端点（根目录直接访问）
         'wp-comments-post.php', 'wp-links-opml.php', 'wp-trackback.php',
         'wp-activate.php', 'wp-signup.php', 'wp-mail.php', 'wp-feed.php',
-        'wp-robots.php', 'wp-app.php', 'wp-links-opml.php',
-        // WordPress 后台 AJAX（完整路径）
-        'wp-admin/admin-ajax.php', 'wp-admin/admin-post.php',
-        'wp-admin/customize.php', 'wp-admin/media-new.php',
-        // WordPress REST API 自定义路由
-        'wp/v2/', 'wp/v3/', 'wp/v4/',
-        // Elementor 页面构建器
+        'wp-robots.php', 'wp-app.php', 'wp-load.php', 'wp-blog-header.php',
+        'wp-settings.php', 'wp-cron.php', 'xmlrpc.php', 'wp-json', 'wp-json/',
+        // WordPress 后台入口与通用处理
+        'wp-admin/admin.php', 'wp-admin/admin-ajax.php', 'wp-admin/admin-post.php',
+        'wp-admin/index.php', 'wp-admin/about.php', 'wp-admin/',
+        // WordPress 文章/页面管理
+        'wp-admin/post.php', 'wp-admin/post-new.php', 'wp-admin/page.php', 'wp-admin/page-new.php',
+        'wp-admin/edit.php', 'wp-admin/edit-pages.php', 'wp-admin/edit-comments.php',
+        'wp-admin/edit-form.php', 'wp-admin/edit-form-advanced.php',
+        'wp-admin/edit-link-form.php', 'wp-admin/edit-page-form.php',
+        // WordPress 媒体管理
+        'wp-admin/media-new.php', 'wp-admin/upload.php', 'wp-admin/async-upload.php',
+        // WordPress 主题与插件管理
+        'wp-admin/plugins.php', 'wp-admin/plugin-install.php',
+        'wp-admin/themes.php', 'wp-admin/theme-install.php', 'wp-admin/theme-editor.php',
+        // WordPress 设置页面
+        'wp-admin/options.php', 'wp-admin/options-general.php', 'wp-admin/options-discussion.php',
+        'wp-admin/options-reading.php', 'wp-admin/options-writing.php', 'wp-admin/options-media.php',
+        'wp-admin/options-permalink.php', 'wp-admin/options-privacy.php',
+        // WordPress 用户管理
+        'wp-admin/users.php', 'wp-admin/profile.php', 'wp-admin/user-new.php', 'wp-admin/user-edit.php',
+        // WordPress 分类与标签管理
+        'wp-admin/categories.php', 'wp-admin/tags.php', 'wp-admin/taxonomy.php',
+        'wp-admin/term.php', 'wp-admin/term-new.php',
+        // WordPress 链接管理
+        'wp-admin/link-add.php', 'wp-admin/link-categories.php',
+        // WordPress 工具与导入导出
+        'wp-admin/tools.php', 'wp-admin/export.php', 'wp-admin/import.php',
+        'wp-admin/health-check.php', 'wp-admin/site-health.php',
+        // WordPress 更新与升级
+        'wp-admin/update-core.php', 'wp-admin/update.php', 'wp-admin/upgrade.php',
+        // WordPress 安装相关
+        'wp-admin/install.php', 'wp-admin/install-helper.php', 'wp-admin/bookmarklet.php',
+        // WordPress 自定义器
+        'wp-admin/customize.php', 'wp-admin/customize-controls.php',
+        'wp-admin/customize-nav-menus.php', 'wp-admin/customize-widgets.php',
+        // WordPress 多站点（Multisite）管理
+        'wp-admin/ms-admin.php', 'wp-admin/ms-options.php', 'wp-admin/ms-sites.php',
+        'wp-admin/ms-users.php', 'wp-admin/ms-themes.php', 'wp-admin/ms-plugin-install.php',
+        'wp-admin/ms-edit-site.php', 'wp-admin/ms-edit-user.php', 'wp-admin/ms-upgrade-network.php',
+        'wp-admin/ms-view.php', 'wp-admin/ms-delete-site.php', 'wp-admin/ms-add-site.php',
+        // WordPress REST API 路由
+        'wp/v2/', 'wp/v3/', 'wp/v4/', 'wp-rest/',
+        // WordPress wp-includes 可直接访问的端点
+        'wp-includes/rest-api/', 'wp-includes/feed.php', 'wp-includes/rss-functions.php',
+        'wp-includes/http.php', 'wp-includes/Requests/', 'wp-includes/canonical.php',
+        'wp-includes/class-wp.php', 'wp-includes/rewrite.php',
+        // WordPress AJAX 相关
+        'admin-ajax', 'ajax', 'async-upload', 'asyncupload', 'upload-attachment',
+        // ========== 页面构建器 ==========
         'elementor', 'elementor_ajax',
-        // Divi 页面构建器
         'et_pb_contact_form_submit', 'divi',
-        // 社交媒体登录
+        'avada', 'visual_composer', 'beaver_builder', 'fl-builder',
+        'oxygen', 'wpbakery',
+        // ========== 社交媒体登录 ==========
         'facebook', 'google', 'twitter', 'github', 'qq', 'weibo',
         'social-login', 'social_login',
     ];

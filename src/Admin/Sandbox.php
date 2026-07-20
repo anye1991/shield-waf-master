@@ -123,13 +123,48 @@ class WafSandbox {
 
         waf_ensure_dir(self::$quarantine_dir);
 
-        // 注册请求结束时的实时文件监控
-        if (php_sapi_name() !== 'cli' && !waf_is_admin_ip()) {
+        // 启动心跳日志（可用于确认沙箱是否在运行）
+        $heartbeatFile = $sandboxDir . '.started';
+        if (!is_file($heartbeatFile) || (time() - filemtime($heartbeatFile) > 3600)) {
+            self::log("=== 沙箱启动 ===");
+            self::log("模式: " . self::getMode() . " | 基线锁定: " . (self::isBaselineLocked() ? '是' : '否'));
+            $dirs = self::getMonitorDirs();
+            self::log("监控目录: " . implode(', ', $dirs));
+            @file_put_contents($heartbeatFile, (string)time());
+        }
+
+        // 注册请求结束时的实时文件监控（admin IP 也监控，仅学习/记录不删除）
+        if (php_sapi_name() !== 'cli') {
             register_shutdown_function(['WafSandbox', 'realtimeMonitor']);
         }
 
         // 自动定时扫描（基于文件时间戳的轻量定时器）
         self::autoScanIfNeeded();
+    }
+
+    /**
+     * 获取沙箱运行状态（供控制台检查）
+     */
+    public static function getHealthStatus(): array {
+        $lastScan = self::loadScanResult();
+        $baselineLocked = self::isBaselineLocked();
+        $snapshot = self::loadSnapshot();
+        $baseline = waf_safe_read_json(self::$baseline_file, []);
+
+        return [
+            'running'          => true,
+            'mode'             => self::getMode(),
+            'baseline_locked'  => $baselineLocked,
+            'baseline_count'   => $baselineLocked ? count($baseline) : 0,
+            'snapshot_count'   => count($snapshot),
+            'last_scan_time'   => $lastScan['scan_time'] ?? 0,
+            'last_scan_str'    => !empty($lastScan['scan_time']) ? date('Y-m-d H:i:s', $lastScan['scan_time']) : '从未扫描',
+            'last_scanned'     => $lastScan['scanned'] ?? 0,
+            'last_malicious'   => $lastScan['malicious_count'] ?? 0,
+            'quarantine_count' => count(waf_safe_read_json(self::$manifest_file, [])),
+            'monitor_dirs'     => self::getMonitorDirs(),
+            'log_file'         => self::$log_file,
+        ];
     }
 
     // ====================== 实时监控（请求结束时触发） ======================
@@ -412,6 +447,12 @@ class WafSandbox {
             }
         }
         $cleanContent = implode("\n", $cleanLines);
+
+        // 切割前先备份当前文件（用于回滚）
+        $cutBackupDir = self::$quarantine_dir . 'cut_backup/';
+        if (!is_dir($cutBackupDir)) @mkdir($cutBackupDir, 0755, true);
+        $cutBackupFile = $cutBackupDir . md5($path) . '_' . time() . '.bak';
+        @file_put_contents($cutBackupFile, $currentContent);
 
         // 写回清理后的内容
         file_put_contents($path, $cleanContent);
@@ -878,12 +919,19 @@ class WafSandbox {
      */
     public static function realtimeMonitor() {
         $before = self::loadSnapshot();
-        if (empty($before)) return; // 首次运行无快照，跳过
+        if (empty($before)) {
+            // 首次运行无快照，直接建立快照并返回（下次请求开始监控）
+            $after = self::takeSnapshot(true);
+            self::saveSnapshot($after);
+            self::log("REALTIME_INIT 首次建立实时监控快照: " . count($after) . " 个文件");
+            return;
+        }
 
         $mode = self::getMode();
         $baselineLocked = self::isBaselineLocked();
 
-        $after = self::takeSnapshot();
+        // ⚠️ 必须强制刷新快照，否则 10 秒缓存会导致 before/after 完全相同，监控失效
+        $after = self::takeSnapshot(true);
         $newFiles = array_diff_key($after, $before);
         $modifiedFiles = [];
 
@@ -997,18 +1045,32 @@ class WafSandbox {
      * 检查是否需要自动扫描（基于上次扫描时间）
      */
     private static function autoScanIfNeeded() {
-        // 学习模式不自动扫描（让用户手动排查）
-        if (self::getMode() === 'learning') return;
-
         $interval = defined('WAF_SANDBOX_SCAN_INTERVAL') ? WAF_SANDBOX_SCAN_INTERVAL : 300;
         $lastScan = self::loadScanResult();
         $lastScanTime = $lastScan['scan_time'] ?? 0;
+        $mode = self::getMode();
+
+        // 首次运行（从未扫描过）：注册到请求结束后异步执行，不阻塞页面响应
+        if (empty($lastScanTime)) {
+            register_shutdown_function(function () use ($mode) {
+                @ignore_user_abort(true);
+                $result = self::scanAll();
+                self::log("INIT_SCAN 初始扫描完成: mode={$mode}, scanned={$result['scanned']}, malicious={$result['malicious_count']}, quarantined={$result['quarantined_count']}");
+            });
+            return;
+        }
+
+        // 学习模式不自动周期性扫描（让用户手动排查）
+        if ($mode === 'learning') return;
 
         if (time() - $lastScanTime < $interval) return; // 未到间隔
 
-        // 异步触发扫描（非阻塞）
-        $result = self::scanAll();
-        self::log("AUTO_SCAN 自动扫描完成: scanned={$result['scanned']}, malicious={$result['malicious_count']}, quarantined={$result['quarantined_count']}");
+        // 异步触发扫描（请求结束后执行，不阻塞页面）
+        register_shutdown_function(function () {
+            @ignore_user_abort(true);
+            $result = self::scanAll();
+            self::log("AUTO_SCAN 自动扫描完成: scanned={$result['scanned']}, malicious={$result['malicious_count']}, quarantined={$result['quarantined_count']}");
+        });
     }
 
     // ====================== 文件快照管理 ======================
@@ -1023,11 +1085,12 @@ class WafSandbox {
 
     /**
      * 生成当前文件快照
+     * @param bool $forceRefresh 是否强制刷新（忽略缓存），实时监控比较时必须传 true
      */
-    public static function takeSnapshot() {
+    public static function takeSnapshot($forceRefresh = false) {
         $cache = self::$snapshot_file;
-        // 快照缓存 10 秒内不重复扫描文件系统
-        if (is_file($cache) && time() - filemtime($cache) < 10) {
+        // 快照缓存 10 秒内不重复扫描文件系统（实时监控比较时除外）
+        if (!$forceRefresh && is_file($cache) && time() - filemtime($cache) < 10) {
             $cached = json_decode(file_get_contents($cache), true);
             if (is_array($cached)) return $cached;
         }
@@ -1588,6 +1651,7 @@ class WafSandbox {
         $startTime = microtime(true);
         $snapshot = self::takeSnapshot();
         $beforeSnapshot = self::loadSnapshot();
+        $mode = self::getMode();
 
         $scanned = 0;
         $maliciousFiles = [];
@@ -1597,7 +1661,7 @@ class WafSandbox {
         foreach ($snapshot as $path => $info) {
             $scanned++;
 
-            // ⚠️ 保护检查：WAF 自身文件永不删除/隔离
+            // ⚠️ 保护检查：WAF 自身文件不扫描（快照中已经排除，这里双重保险）
             if (self::isProtectedFile($path)) {
                 continue;
             }
@@ -1617,26 +1681,27 @@ class WafSandbox {
                 $locationCount += count($locations);
                 self::saveMaliciousLocations($path, $locations);
 
+                // 学习模式：只记录告警，不删除不隔离
+                if ($mode === 'learning') {
+                    self::log("LEARNING_SCAN 发现恶意文件(学习模式不处理): $path (score={$analysis['score']})");
+                    self::alertWebhook("学习模式告警-扫描发现", $path, $analysis);
+                    continue;
+                }
+
                 // 新文件（不在之前的快照中）→ 秒删除或隔离
                 $isNew = !isset($beforeSnapshot[$path]);
                 if ($isNew && defined('WAF_SANDBOX_INSTANT_DELETE_NEW') && WAF_SANDBOX_INSTANT_DELETE_NEW) {
-                    // ⚠️ 二次保护检查
-                    if (!self::isProtectedFile($path)) {
-                        @unlink($path);
-                        self::log("SECS_DELETE 新落地恶意文件秒删: $path (score={$analysis['score']})");
-                        self::alertWebhook("秒删恶意文件", $path, $analysis);
-                        // 集成点 1：事件回流到 AutoLearn
-                        self::notifyAutoLearn('instant_delete', $path, $analysis);
-                    }
+                    @unlink($path);
+                    self::log("SECS_DELETE 新落地恶意文件秒删: $path (score={$analysis['score']})");
+                    self::alertWebhook("秒删恶意文件", $path, $analysis);
+                    // 集成点 1：事件回流到 AutoLearn
+                    self::notifyAutoLearn('instant_delete', $path, $analysis);
                 } elseif (defined('WAF_SANDBOX_AUTO_QUARANTINE') && WAF_SANDBOX_AUTO_QUARANTINE) {
-                    // ⚠️ 二次保护检查
-                    if (!self::isProtectedFile($path)) {
-                        self::quarantineFile($path, "全量扫描发现恶意代码 (score={$analysis['score']})", $analysis);
-                        $quarantinedCount++;
-                        self::log("AUTO_QUARANTINE 文件已隔离: $path (score={$analysis['score']})");
-                        self::alertWebhook("文件隔离", $path, $analysis);
-                        // 集成点 1：事件回流到 AutoLearn（quarantineFile 内部已通知，这里跳过避免重复）
-                    }
+                    self::quarantineFile($path, "全量扫描发现恶意代码 (score={$analysis['score']})", $analysis);
+                    $quarantinedCount++;
+                    self::log("AUTO_QUARANTINE 文件已隔离: $path (score={$analysis['score']})");
+                    self::alertWebhook("文件隔离", $path, $analysis);
+                    // 集成点 1：事件回流到 AutoLearn（quarantineFile 内部已通知，这里跳过避免重复）
                 } else {
                     self::log("ALERT 恶意文件: $path (score={$analysis['score']})");
                     self::alertWebhook("恶意代码告警", $path, $analysis);
@@ -1906,12 +1971,18 @@ class WafSandbox {
     private static function saveScanHistory($result) {
         $history = waf_safe_read_json(self::$scan_history_file, []);
         // 只保留摘要，不保留完整文件列表
+        $id = date('YmdHis');
         $summary = [
-            'scan_time'       => $result['scan_time'],
-            'scan_duration'   => $result['scan_duration'],
-            'scanned'         => $result['scanned'],
-            'malicious_count' => $result['malicious_count'],
-            'quarantined'     => $result['quarantined_count'],
+            'id'               => $id,
+            'scan_time'        => $result['scan_time'],
+            'type'             => 'manual',
+            'status'           => 'completed',
+            'scan_duration'    => $result['scan_duration'],
+            'scanned_count'    => $result['scanned'],
+            'malicious_count'  => $result['malicious_count'],
+            'quarantined_count'=> $result['quarantined_count'],
+            'start_time'       => date('Y-m-d H:i:s', $result['scan_time']),
+            'duration'         => (int)round($result['scan_duration']),
         ];
         $history[] = $summary;
         $history = array_slice($history, -20); // 保留最近 20 次

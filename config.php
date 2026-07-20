@@ -78,21 +78,31 @@ function waf_generate_random_key($length = 32) {
 }
 
 function waf_get_auto_key($keyName, $defaultValue, $minLength = 32) {
+    static $cache = [];
+    if (isset($cache[$keyName])) {
+        return $cache[$keyName];
+    }
+
     $envValue = getenv($keyName);
     if ($envValue !== false && $envValue !== '' && $envValue !== $defaultValue) {
+        $cache[$keyName] = $envValue;
         return $envValue;
     }
 
     $autoKeyFile = WAF_LOG_PATH . '/auto_key.php';
     if (is_file($autoKeyFile)) {
         $autoKeys = @include $autoKeyFile;
-        if (is_array($autoKeys) && isset($autoKeys[$keyName]) && !empty($autoKeys[$keyName])) {
+        if (is_array($autoKeys) && isset($autoKeys[$keyName]) && is_string($autoKeys[$keyName]) && $autoKeys[$keyName] !== '') {
+            $cache[$keyName] = $autoKeys[$keyName];
             return $autoKeys[$keyName];
         }
     }
 
-    // 环境变量未设置或等于默认值 → 自动生成随机密钥
-    if ($envValue === false || $envValue === '' || $envValue === $defaultValue) {
+    $needGenerate = ($envValue === false || $envValue === '' || $envValue === $defaultValue);
+    if ($needGenerate) {
+        if (!is_dir(WAF_LOG_PATH)) {
+            @mkdir(WAF_LOG_PATH, 0700, true);
+        }
         $newKey = waf_generate_random_key($minLength);
         if ($newKey && strlen($newKey) >= $minLength) {
             $autoKeys = [];
@@ -104,39 +114,29 @@ function waf_get_auto_key($keyName, $defaultValue, $minLength = 32) {
             }
             $autoKeys[$keyName] = $newKey;
             $content = '<?php return ' . var_export($autoKeys, true) . ';';
-            @file_put_contents($autoKeyFile, $content);
+            @file_put_contents($autoKeyFile, $content, LOCK_EX);
             @chmod($autoKeyFile, 0600);
 
             @file_put_contents(WAF_LOG_PATH . '/security.log',
                 '[' . date('Y-m-d H:i:s') . "] 警告：" . $keyName . " 未设置，已自动生成随机密钥并保存到 auto_key.php\n",
                 FILE_APPEND);
 
+            $cache[$keyName] = $newKey;
             return $newKey;
         }
     }
 
+    $cache[$keyName] = $defaultValue;
     return $defaultValue;
 }
 
-// ======================== 密钥（优先级：服务器环境 > .env > 自动生成 > 默认值） ========================
+// ======================== 密钥（全部统一存储在 auto_key.php） ========================
+// 优先级：服务器环境变量 > .env > auto_key.php（自动生成） > 默认值
+// 安全设计：所有密钥统一存放 auto_key.php，config.php 可纳入版本管理
+// WAF_MAGIC_KEY：暗门密钥（URL 参数 ?magic=xxx）
+// WAF_PASSWORD：  暗门密码（页面输入框）
 define('WAF_MAGIC_KEY', waf_get_auto_key('WAF_MAGIC_KEY', 'change-me-magic-key-32-chars-min', 32));
-define('WAF_2FA_PASS',  waf_get_auto_key('WAF_2FA_PASS',  'change-me-2fa-password', 32));
-
-// ======================== 密码认证（WordPress 简化模式：直接使用密码，禁用双重加密） ========================
-// WordPress 用户直接设置密码即可，无需复杂的双重加密
-// 密码优先级：服务器环境变量 > .env > 自动生成随机密码（保存到 auto_key.php）
-// 安全策略：不再使用硬编码默认密码，首次启动自动生成强随机密码并写入 auto_key.php
-// 用户可在控制台修改密码，或通过 WAF_PASSWORD 环境变量自定义
-if (!defined('WAF_PASSWORD')) {
-    $envPassword = getenv('WAF_PASSWORD');
-    if ($envPassword !== false && $envPassword !== '') {
-        define('WAF_PASSWORD', $envPassword);
-    } else {
-        // 未设置密码时自动生成随机密码（复用已有的 auto_key 机制）
-        define('WAF_PASSWORD', waf_get_auto_key('WAF_PASSWORD', '', 24));
-    }
-    unset($envPassword);
-}
+define('WAF_PASSWORD',  waf_get_auto_key('WAF_PASSWORD',  'change-me-waf-password', 24));
 
 // ======================== 暗门有效期与重试次数 ========================
 define('WAF_MAGIC_EXPIRE',    getenv('WAF_MAGIC_EXPIRE')    !== false ? (int)getenv('WAF_MAGIC_EXPIRE')    : 3600);
