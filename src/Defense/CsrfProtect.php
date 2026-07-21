@@ -1,11 +1,22 @@
 <?php
 defined('ABSPATH') || exit;
 class CsrfProtect {
+    const TOKEN_SESSION_KEY = 'waf_csrf_token';
+
     public static function check() {
         if (in_array($_SERVER['REQUEST_METHOD'], ['GET', 'HEAD', 'OPTIONS'])) return;
-        // 高可信场景跳过 CSRF 检查（登录/支付回调/表单提交等业务核心路径）
-        // 这些场景下 Origin/Referer 在 CDN/反代环境容易误判，且应用自身应有 nonce 机制
         if (class_exists('RequestContext') && RequestContext::isHardSkip()) return;
+
+        $token = isset($_POST['csrf_token']) ? $_POST['csrf_token'] : 
+                 (isset($_SERVER['HTTP_X_CSRF_TOKEN']) ? $_SERVER['HTTP_X_CSRF_TOKEN'] : '');
+
+        if (!empty($token)) {
+            if (self::validateToken($token)) {
+                return;
+            }
+            waf_block('CSRF check failed: Invalid token');
+        }
+
         $host = $_SERVER['HTTP_HOST'] ?? '';
         $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
         $referer = $_SERVER['HTTP_REFERER'] ?? '';
@@ -22,20 +33,42 @@ class CsrfProtect {
         }
     }
 
-    /**
-     * 从 URL 中提取 host（不含端口）
-     */
+    public static function generateToken() {
+        if (session_status() !== PHP_SESSION_ACTIVE) {
+            @session_start();
+        }
+        if (!isset($_SESSION[self::TOKEN_SESSION_KEY]) || strlen($_SESSION[self::TOKEN_SESSION_KEY]) < 32) {
+            if (function_exists('random_bytes')) {
+                $_SESSION[self::TOKEN_SESSION_KEY] = bin2hex(random_bytes(16));
+            } elseif (function_exists('openssl_random_pseudo_bytes')) {
+                $_SESSION[self::TOKEN_SESSION_KEY] = bin2hex(openssl_random_pseudo_bytes(16));
+            } else {
+                $_SESSION[self::TOKEN_SESSION_KEY] = bin2hex(mt_rand()) . uniqid();
+            }
+        }
+        return $_SESSION[self::TOKEN_SESSION_KEY];
+    }
+
+    public static function validateToken($token) {
+        if (session_status() !== PHP_SESSION_ACTIVE) {
+            @session_start();
+        }
+        if (!isset($_SESSION[self::TOKEN_SESSION_KEY])) {
+            return false;
+        }
+        return hash_equals($_SESSION[self::TOKEN_SESSION_KEY], $token);
+    }
+
+    public static function getToken() {
+        return self::generateToken();
+    }
+
     private static function extractHost($url) {
         $parsed = parse_url($url);
         return $parsed['host'] ?? '';
     }
 
-    /**
-     * 比较 host 是否相等（忽略端口差异，处理 CDN/反代场景）
-     * 例：example.com == example.com:443 == example.com:80
-     */
     private static function hostEqual($a, $b) {
-        // 去掉端口部分
         $aHost = preg_replace('/:\d+$/', '', $a);
         $bHost = preg_replace('/:\d+$/', '', $b);
         return strcasecmp($aHost, $bHost) === 0;

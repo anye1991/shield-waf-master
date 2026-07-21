@@ -90,6 +90,15 @@ function waf_get_auto_key($keyName, $defaultValue, $minLength = 32) {
     }
 
     $autoKeyFile = WAF_LOG_PATH . '/auto_key.php';
+    if (!is_dir(WAF_LOG_PATH)) {
+        @mkdir(WAF_LOG_PATH, 0700, true);
+    }
+    $htaccess = WAF_LOG_PATH . '/.htaccess';
+    if (!is_file($htaccess)) {
+        @file_put_contents($htaccess, "Order Deny,Allow\nDeny from all\n");
+        @chmod($htaccess, 0600);
+    }
+
     if (is_file($autoKeyFile)) {
         $autoKeys = @include $autoKeyFile;
         if (is_array($autoKeys) && isset($autoKeys[$keyName]) && is_string($autoKeys[$keyName]) && $autoKeys[$keyName] !== '') {
@@ -100,9 +109,6 @@ function waf_get_auto_key($keyName, $defaultValue, $minLength = 32) {
 
     $needGenerate = ($envValue === false || $envValue === '' || $envValue === $defaultValue);
     if ($needGenerate) {
-        if (!is_dir(WAF_LOG_PATH)) {
-            @mkdir(WAF_LOG_PATH, 0700, true);
-        }
         $newKey = waf_generate_random_key($minLength);
         if ($newKey && strlen($newKey) >= $minLength) {
             $autoKeys = [];

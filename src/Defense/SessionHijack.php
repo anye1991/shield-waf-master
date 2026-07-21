@@ -264,6 +264,14 @@ class SessionHijack {
 
         $maxLen = max($len1, $len2);
         $distance = levenshtein($str1, $str2);
+        if ($distance === -1) {
+            $str1 = substr($str1, 0, 255);
+            $str2 = substr($str2, 0, 255);
+            $distance = levenshtein($str1, $str2);
+            if ($distance === -1) {
+                return 0.0;
+            }
+        }
         return 1.0 - ($distance / $maxLen);
     }
 }

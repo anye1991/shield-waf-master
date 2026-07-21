@@ -238,6 +238,16 @@ class SsrfDefender {
                 if (($firstByte & 0xFE) === 0xFC) return true;
                 // fe80::/10 链路本地
                 if ($firstByte === 0xFE && (ord($bin[1]) & 0xC0) === 0x80) return true;
+                // ::ffff:0:0/96 IPv4-mapped IPv6
+                // 前 80 位全 0，第 81-88 位为 11111111
+                $isMapped = true;
+                for ($i = 0; $i < 10; $i++) {
+                    if (ord($bin[$i]) !== 0) { $isMapped = false; break; }
+                }
+                if ($isMapped && ord($bin[10]) === 0xFF && ord($bin[11]) === 0xFF) {
+                    $ipv4 = ord($bin[12]) . '.' . ord($bin[13]) . '.' . ord($bin[14]) . '.' . ord($bin[15]);
+                    return self::isPrivateIP($ipv4);
+                }
             }
             return false;
         }

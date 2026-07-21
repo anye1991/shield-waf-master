@@ -78,7 +78,7 @@ class ApiRateLimit {
         $logDir = defined('WAF_LOG_PATH') ? WAF_LOG_PATH : (dirname(__DIR__, 2) . '/logs');
         // 按 IP 分片：每个 IP+rule 一个独立文件，攻击者海量 IP 不会污染同一文件
         $shard = md5($key . '|' . $ip);
-        $file = $logDir . 'api_rate_' . $shard . '.txt';
+        $file = $logDir . '/api_rate_' . $shard . '.txt';
         $now = time();
 
         // 使用 fopen + flock(LOCK_EX) 持有锁完成整个读改写周期，避免 TOCTOU 竞态

@@ -101,7 +101,7 @@ try {
                 $content = file_get_contents($configFile);
                 // 匹配 define('WAF_PASSWORD', 'xxx') 或 define('WAF_PASSWORD', "xxx")
                 $pattern = "/define\\('WAF_PASSWORD',\\s*['\"]([^'\"]+)['\"]\\s*\\)/";
-                $replacement = "define('WAF_PASSWORD', '" . addslashes($newPassword) . "')";
+                $replacement = "define('WAF_PASSWORD', '" . addslashes(str_replace('$', '$$', $newPassword)) . "')";
                 $newContent = preg_replace($pattern, $replacement, $content, -1, $count);
                 if ($count > 0) {
                     @file_put_contents($configFile, $newContent);
