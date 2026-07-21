@@ -7,6 +7,63 @@
 
 ---
 
+## [v5.0.0] - 2026-07-21
+
+### 🧠 语义引擎架构级重构
+
+本次大版本针对「14 层编码归一化未全局接入」和「语义解析器未真正发挥作用」两大架构性问题进行全面修复，并完成极限测试和代码审计。
+
+#### 14 层归一化全局统一接入
+
+- **新增 `waf_normalize_inputs()`**：在所有防御模块前统一归一化 `$_GET`/`$_POST`/`$_COOKIE`/URI/body/headers
+- **修复架构缺陷**：原各模块直接查询原始输入，14 层归一化引擎从未被调用
+- **MySQL 内联注释处理**：`/*!50000UNION*/` → `UNION`（两侧加空格避免关键字粘连）
+- **八进制编码解码**：`\163\171\163\164\145\155` → `system`
+
+#### 11 解析器内容类型路由
+
+- **新增 `routeParsers()`**：根据 Content-Type 和输入特征激活对应解析器，避免所有解析器分析同一份混合文本
+- **SQL**：URI 参数 + body 字符串
+- **HTML**：仅 Content-Type 为 html 或 body 含 `<` 时激活
+- **XXE**：仅 Content-Type 含 xml 或 body 含 `<?xml` 时激活
+- **SSRF**：URL 相关参数 + URL 模式值
+- **反序列化**：仅 body 含序列化签名时激活
+- **CRLF**：headers + URI 参数 + body 字符串
+
+#### 双证据融合架构
+
+- **规则引擎 + 语义引擎双路评分**：取较高值作为最终判定
+- **双证据增强**：规则匹配 + 解析器确认互相印证提升置信度
+- **解析器兜底**：强解析器证据可独立触发检测（即使规则未匹配）
+- **签名保底机制**：`calcSignatureBonus()` 对短 payload 提供底线分数
+
+### 🔒 代码审计修复（9 项）
+
+- **P0 JWT 算法白名单**：删除误判的合法算法（HS256/RS256/ES256 等）
+- **P0 日志目录权限**：`0777` → `0750`，`/tmp` 降级 `0777` → `0700`
+- **P1 默认密钥硬编码**：默认值改为空，自动生成失败时 `die()` 拒绝启动
+- **P1 JWT exp 容差**：添加 60 秒容差窗口，避免时钟不同步误拦截
+- **P2 API 速率限制竞争条件**：APCu 优先，文件降级用 `flock(LOCK_EX)`
+- **P2 DashboardApi 请求大小限制**：新增 413 Request Entity Too Large
+- **P2 JWT typ 校验**：放宽为"包含 jwt 子串"
+- **P2 rand() 弃用**：替换为 `mt_rand()`
+- **P2 SVG 检测变量初始化**：显式 `$scriptFound = false`
+
+### 📋 配置文件完善
+
+- **命名统一**：`WAF_LOG_MAX_FILESIZE` → `WAF_LOG_MAX_SIZE`（保留旧别名）
+- **命名统一**：`WAF_ALLOWED_ORIGINS` → `WAF_CORS_ALLOWED_ORIGINS`（保留旧别名）
+- **补齐 8 个缺失配置项**：`WAF_DEBUG`/`WAF_STORAGE_DIR`/`WAF_UPLOAD_PATH`/`WAF_PASSWORD_WP_INTEGRATION`/`WAF_CC_LIMIT_AJAX`/`WAF_CC_FILE_MAX_PER_IP`/`WAF_CC_CLEANUP_INTERVAL`/`WAF_SKIP_RATELIMIT`
+- **同步 `.env.example`**：所有配置项均支持 .env 统一配置
+
+### 📊 极限测试
+
+- **71/71 全通过**：覆盖 14 大类攻击（编码绕过/SQL/XSS/命令注入/路径遍历/XXE/SSRF/SSTI/模板/CRLF/反序列化/OpenRedirect/误报/路由）
+- **误报率 0%**：10 个正常请求全部放行，分数均 <30
+- **拦截率 100%**：61 个攻击用例全部检测到
+
+---
+
 ## [v4.2.0] - 2026-07-20
 
 ### 🌍 3D 全球攻击地图
