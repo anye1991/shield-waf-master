@@ -124,8 +124,28 @@ class RequestContextAnalyzer {
     /** @var bool 是否已加载持久化数据 */
     private static $loaded = false;
 
-    /** @var bool 当前请求是否已写入持久化（避免重复 IO） */
-    private static $persisted = false;
+    /** @var bool 内存中是否有未持久化的修改 */
+    private static $dirty = false;
+
+    /** @var int 上次持久化时间戳 */
+    private static $lastPersistTime = 0;
+
+    /** @var bool shutdown函数是否已注册 */
+    private static $shutdownRegistered = false;
+
+    /** @var int 持久化间隔（秒）- 避免每次请求写磁盘 */
+    const PERSIST_INTERVAL = 30;
+
+    /** 注册 shutdown 函数，请求结束时批量持久化 */
+    private static function registerShutdown(): void {
+        if (self::$shutdownRegistered) return;
+        self::$shutdownRegistered = true;
+        register_shutdown_function(function () {
+            if (self::$dirty) {
+                self::persistData();
+            }
+        });
+    }
 
     // ====================================================================
     // 公共 API
@@ -184,7 +204,9 @@ class RequestContextAnalyzer {
         $indicators = self::buildContextIndicators($csrf, $replay, $session, $timing, $api, $patterns);
 
         self::cleanupStaleRecords();
-        self::persistData();
+
+        self::$dirty = true;
+        self::registerShutdown();
 
         return [
             'score'                 => $score,
@@ -868,14 +890,16 @@ class RequestContextAnalyzer {
 
     /**
      * 持久化历史数据到 WAF_STORAGE_DIR/request_context/
+     * 延迟批量写入，避免每次请求磁盘I/O
      *
      * @return void
      */
     private static function persistData(): void {
-        if (self::$persisted) {
-            return;
-        }
-        self::$persisted = true;
+        if (!self::$dirty) return;
+        $now = time();
+        if ($now - self::$lastPersistTime < self::PERSIST_INTERVAL) return;
+        self::$lastPersistTime = $now;
+        self::$dirty = false;
 
         $file = self::getPersistFile();
         if ($file === '') {

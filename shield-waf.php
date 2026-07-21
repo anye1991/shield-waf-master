@@ -56,14 +56,24 @@ require_once __DIR__ . '/src/Core/RequestContext.php';
 
 // ====================== 静态资源请求快速放行（避免图片/CSS/JS 被 WAF 误拦截） ======================
 function waf_is_static_request() {
+    static $staticExtMap = null;
+    if ($staticExtMap === null) {
+        $staticExtMap = array_flip([
+            'jpg','jpeg','png','gif','webp','svg','ico','avif','apng',
+            'css','js','woff','woff2','ttf','eot','otf',
+            'mp3','mp4','webm','pdf','zip','map',
+        ]);
+    }
     $uri = $_SERVER['REQUEST_URI'] ?? '/';
     $path = parse_url($uri, PHP_URL_PATH) ?: '/';
-    $staticExts = ['.jpg','.jpeg','.png','.gif','.webp','.svg','.ico','.avif','.apng',
-                   '.css','.js','.woff','.woff2','.ttf','.eot','.otf',
-                   '.mp3','.mp4','.webm','.pdf','.zip','.map'];
     $lower = strtolower($path);
-    foreach ($staticExts as $ext) {
-        if (substr($lower, -strlen($ext)) === $ext) return true;
+
+    $dotPos = strrpos($lower, '.');
+    if ($dotPos !== false) {
+        $ext = substr($lower, $dotPos + 1);
+        if (isset($staticExtMap[$ext])) {
+            return true;
+        }
     }
     // 上传目录放行（可通过 WAF_UPLOAD_PATH 自定义，默认兼容 WordPress）
     $uploadPath = defined('WAF_UPLOAD_PATH') ? strtolower(WAF_UPLOAD_PATH) : '/wp-content/uploads/';

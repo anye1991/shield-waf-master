@@ -17,14 +17,15 @@
 defined('ABSPATH') || exit;
 
 class SemanticMemoryPool {
-    const MAX_HISTORY_PER_IP = 100;   // 每IP最多保留的最近记录数
-    const BASELINE_MIN_SAMPLES = 5;   // 基线建立所需的最小样本数
-    const BASELINE_WINDOW = 10;       // 基线计算的最近样本窗口
-    const INACTIVE_TTL = 1800;        // 不活跃超时（秒）—— 30 分钟自动清理
-    const FREQ_WINDOW = 60;           // 频率统计窗口（秒）
-    const ACCUM_HALFLIFE = 600;       // 累积半衰期（秒）
+    const MAX_HISTORY_PER_IP = 100;
+    const BASELINE_MIN_SAMPLES = 5;
+    const BASELINE_WINDOW = 10;
+    const INACTIVE_TTL = 1800;
+    const FREQ_WINDOW = 60;
+    const ACCUM_HALFLIFE = 600;
     const PERSIST_DIR = '/tmp/shield_memory';
     const PERSIST_FILE = 'memory_pool.json';
+    const PERSIST_INTERVAL = 30;
 
     /** @var array<string,array> IP 行为历史记录 */
     private static $histories = [];
@@ -36,6 +37,23 @@ class SemanticMemoryPool {
     private static $actorProfiles = [];
     /** 是否已从持久化存储加载 */
     private static $loaded = false;
+    /** 内存中是否有未持久化的修改 */
+    private static $dirty = false;
+    /** 上次持久化时间 */
+    private static $lastPersistTime = 0;
+    /** shutdown函数是否已注册 */
+    private static $shutdownRegistered = false;
+
+    /** 注册 shutdown 函数，确保请求结束时持久化 */
+    private static function registerShutdown() {
+        if (self::$shutdownRegistered) return;
+        self::$shutdownRegistered = true;
+        register_shutdown_function(function () {
+            if (self::$dirty) {
+                self::persist();
+            }
+        });
+    }
 
     /** 记录一次请求到记忆池，并基于历史（不含当前）重建基线。 */
     public static function record(string $ip, string $text, string $uri, array $params, array $features) {
@@ -64,7 +82,9 @@ class SemanticMemoryPool {
         }
 
         self::cleanupIfStale($now);
-        self::persist();
+
+        self::$dirty = true;
+        self::registerShutdown();
     }
 
     /** 行为演化分析：对比当前请求与历史基线，输出异常分数与异常标签。 @return array{score:int, anomalies:array} */
@@ -737,8 +757,14 @@ class SemanticMemoryPool {
         self::cleanupIfStale(microtime(true));
     }
 
-    /** 持久化到 /tmp/shield_memory/（best-effort） */
+    /** 持久化到 /tmp/shield_memory/（延迟批量写入，避免每次请求I/O） */
     private static function persist() {
+        if (!self::$dirty) return;
+        $now = time();
+        if ($now - self::$lastPersistTime < self::PERSIST_INTERVAL) return;
+        self::$lastPersistTime = $now;
+        self::$dirty = false;
+
         $file = self::persistPath();
         if ($file === '') { return; }
         $data = [

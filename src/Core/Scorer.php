@@ -18,10 +18,17 @@
 defined('ABSPATH') || exit;
 
 require_once __DIR__ . '/../Semantic/SemanticEngine.php';
-require_once __DIR__ . '/../Learn/AutoLearn.php';
-require_once __DIR__ . '/../Learn/NaiveBayesClassifier.php';
-require_once __DIR__ . '/../Semantic/FalsePositiveGuard.php';
-require_once __DIR__ . '/../Semantic/SemanticMemoryPool.php';
+
+// Learn 模块自动加载
+spl_autoload_register(function ($class) {
+    static $classMap = [
+        'AutoLearn' => 'AutoLearn.php',
+        'NaiveBayesClassifier' => 'NaiveBayesClassifier.php',
+    ];
+    if (isset($classMap[$class])) {
+        require_once __DIR__ . '/../Learn/' . $classMap[$class];
+    }
+});
 
 class WafScorer {
     private static $weights = [
@@ -357,6 +364,9 @@ class WafScorer {
      * 作为辅助维度，为语义评分提供概率补充
      */
     private static function calcBayesMl($payload, $body = '') {
+        if (defined('WAF_ML_BAYES_ENABLED') && !WAF_ML_BAYES_ENABLED) {
+            return 0;
+        }
         $modelInfo = NaiveBayesClassifier::getModelInfo();
         $totalSamples = ($modelInfo['attack_count'] ?? 0) + ($modelInfo['normal_count'] ?? 0);
 

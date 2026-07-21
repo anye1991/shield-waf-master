@@ -13,36 +13,44 @@
  */
 defined('ABSPATH') || exit;
 
-require_once __DIR__ . '/CharSemantics.php';
-require_once __DIR__ . '/WordSemantics.php';
-require_once __DIR__ . '/StructureSemantics.php';
-require_once __DIR__ . '/ParamSemantics.php';
-require_once __DIR__ . '/BusinessSemantics.php';
-require_once __DIR__ . '/LogicInference.php';
-require_once __DIR__ . '/IntentInference.php';
-require_once __DIR__ . '/IntentAnalyzer.php';
-require_once __DIR__ . '/ObfuscationAnalyzer.php';
-require_once __DIR__ . '/AttackChainAnalyzer.php';
-require_once __DIR__ . '/SemanticMemoryPool.php';
-require_once __DIR__ . '/AdversarialDefense.php';
-require_once __DIR__ . '/MultiVectorFusion.php';
-require_once __DIR__ . '/FalsePositiveGuard.php';
-require_once __DIR__ . '/AttackPathPredictor.php';
-require_once __DIR__ . '/ActiveDefense.php';
-require_once __DIR__ . '/SqlSemanticParser.php';
-require_once __DIR__ . '/HtmlSemanticParser.php';
-require_once __DIR__ . '/PhpCodeSemanticParser.php';
-require_once __DIR__ . '/PathTraversalSemanticParser.php';
-require_once __DIR__ . '/CommandInjectionSemanticParser.php';
-require_once __DIR__ . '/AttackPatternLibrary.php';
-require_once __DIR__ . '/XxeSemanticParser.php';
-require_once __DIR__ . '/SsrfSemanticParser.php';
-require_once __DIR__ . '/SstiSemanticParser.php';
-require_once __DIR__ . '/DeserializationSemanticParser.php';
-require_once __DIR__ . '/CrlfInjectionSemanticParser.php';
-require_once __DIR__ . '/ExpressionInjectionSemanticParser.php';
-require_once __DIR__ . '/ParamPositionAnalyzer.php';
-require_once __DIR__ . '/RequestContextAnalyzer.php';
+// 语义模块自动加载器（按需加载，避免一次性加载30+文件）
+spl_autoload_register(function ($class) {
+    static $classMap = [
+        'CharSemantics' => 'CharSemantics.php',
+        'WordSemantics' => 'WordSemantics.php',
+        'StructureSemantics' => 'StructureSemantics.php',
+        'ParamSemantics' => 'ParamSemantics.php',
+        'BusinessSemantics' => 'BusinessSemantics.php',
+        'LogicInference' => 'LogicInference.php',
+        'IntentInference' => 'IntentInference.php',
+        'IntentAnalyzer' => 'IntentAnalyzer.php',
+        'ObfuscationAnalyzer' => 'ObfuscationAnalyzer.php',
+        'AttackChainAnalyzer' => 'AttackChainAnalyzer.php',
+        'SemanticMemoryPool' => 'SemanticMemoryPool.php',
+        'AdversarialDefense' => 'AdversarialDefense.php',
+        'MultiVectorFusion' => 'MultiVectorFusion.php',
+        'FalsePositiveGuard' => 'FalsePositiveGuard.php',
+        'AttackPathPredictor' => 'AttackPathPredictor.php',
+        'ActiveDefense' => 'ActiveDefense.php',
+        'SqlSemanticParser' => 'SqlSemanticParser.php',
+        'HtmlSemanticParser' => 'HtmlSemanticParser.php',
+        'PhpCodeSemanticParser' => 'PhpCodeSemanticParser.php',
+        'PathTraversalSemanticParser' => 'PathTraversalSemanticParser.php',
+        'CommandInjectionSemanticParser' => 'CommandInjectionSemanticParser.php',
+        'AttackPatternLibrary' => 'AttackPatternLibrary.php',
+        'XxeSemanticParser' => 'XxeSemanticParser.php',
+        'SsrfSemanticParser' => 'SsrfSemanticParser.php',
+        'SstiSemanticParser' => 'SstiSemanticParser.php',
+        'DeserializationSemanticParser' => 'DeserializationSemanticParser.php',
+        'CrlfInjectionSemanticParser' => 'CrlfInjectionSemanticParser.php',
+        'ExpressionInjectionSemanticParser' => 'ExpressionInjectionSemanticParser.php',
+        'ParamPositionAnalyzer' => 'ParamPositionAnalyzer.php',
+        'RequestContextAnalyzer' => 'RequestContextAnalyzer.php',
+    ];
+    if (isset($classMap[$class])) {
+        require_once __DIR__ . '/' . $classMap[$class];
+    }
+});
 
 class SemanticEngine {
     private static $weights = [
@@ -163,24 +171,35 @@ class SemanticEngine {
         $wordResult      = WordSemantics::analyze($decodedText);
         $structResult    = StructureSemantics::analyze($decodedText);
 
+        // ---- 快速短路：L1-L3基础分极低时跳过重型深度解析器（正常请求加速）----
+        // 权重：char(0.02) + word(0.02) + structure(0.04) + adversarial(0.04) = 0.12
+        // 快速预估分 < 5 分 → 几乎肯定是正常请求，跳过11个重型解析器
+        $fastPreScore = $charResult['score'] * 0.02
+                      + $wordResult['score'] * 0.02
+                      + $structResult['score'] * 0.04
+                      + $adversarialScore * 0.04;
+        $skipHeavyParsers = ($fastPreScore < 5 && $decodeDepth === 0 && empty($normalizerContext['obfuscation_detected']));
+
         $paramScore = 0;
         $paramMismatches = [];
-        if (!empty($params)) {
-            foreach ($params as $k => $v) {
-                $pr = ParamSemantics::analyze((string)$k, (string)$v);
-                if ($pr['score'] > $paramScore) $paramScore = $pr['score'];
-                if (!empty($pr['mismatch'])) $paramMismatches[] = (string)$k;
+        if (!$skipHeavyParsers || !empty($params)) {
+            if (!empty($params)) {
+                foreach ($params as $k => $v) {
+                    $pr = ParamSemantics::analyze((string)$k, (string)$v);
+                    if ($pr['score'] > $paramScore) $paramScore = $pr['score'];
+                    if (!empty($pr['mismatch'])) $paramMismatches[] = (string)$k;
+                }
+            } else {
+                $pr = ParamSemantics::analyze('content', $text);
+                $paramScore = $pr['score'];
             }
-        } else {
-            $pr = ParamSemantics::analyze('content', $text);
-            $paramScore = $pr['score'];
         }
 
         $businessResult = BusinessSemantics::analyze($uri, $params);
-        $logicResult    = LogicInference::analyze($decodedText);
-        $intentResult   = IntentInference::analyze($decodedText, $uri, $params);
-        $intentAnalyzerResult = IntentAnalyzer::analyze($decodedText, $uri, $params);
-        $obfuscationResult = ObfuscationAnalyzer::analyze($decodedText, $normalizerContext);
+        $logicResult    = !$skipHeavyParsers ? LogicInference::analyze($decodedText) : ['score' => 0, 'details' => [], 'type' => 'none'];
+        $intentResult   = !$skipHeavyParsers ? IntentInference::analyze($decodedText, $uri, $params) : ['score' => 0, 'phase' => 'none', 'intents' => []];
+        $intentAnalyzerResult = !$skipHeavyParsers ? IntentAnalyzer::analyze($decodedText, $uri, $params) : ['score' => 0];
+        $obfuscationResult = !$skipHeavyParsers ? ObfuscationAnalyzer::analyze($decodedText, $normalizerContext) : ['score' => 0];
 
         $chainScore = 0;
         $chainInfo = [];
@@ -221,41 +240,41 @@ class SemanticEngine {
 
         $obfuscationScore = $obfuscationResult['score'];
 
-        // ---- 深度语义解析器（内容类型感知路由，不再无脑全部分析同一段文本） ----
-        $route = self::routeParsers($contentType, $headers, $body, $params, $uri, $decodedText);
+        // ---- 深度语义解析器（内容类型感知路由 + 快速短路，正常请求零开销） ----
+        $route = !$skipHeavyParsers ? self::routeParsers($contentType, $headers, $body, $params, $uri, $decodedText) : [];
 
         // SQL解析器：分析URI参数值 + POST body中的字符串值
-        $sqlParserResult = !empty($route['sql']) ? SqlSemanticParser::analyze($route['sql']) : self::emptyParserResult();
+        $sqlParserResult = (!empty($route['sql'])) ? SqlSemanticParser::analyze($route['sql']) : self::emptyParserResult();
 
         // HTML解析器：分析Body（当Content-Type为html时重点分析）
-        $htmlParserResult = !empty($route['html']) ? HtmlSemanticParser::analyze($route['html']) : self::emptyParserResult();
+        $htmlParserResult = (!empty($route['html'])) ? HtmlSemanticParser::analyze($route['html']) : self::emptyParserResult();
 
         // PHP解析器：分析Body + 文件上传相关参数
-        $phpParserResult = !empty($route['php']) ? PhpCodeSemanticParser::analyze($route['php']) : self::emptyParserResult();
+        $phpParserResult = (!empty($route['php'])) ? PhpCodeSemanticParser::analyze($route['php']) : self::emptyParserResult();
 
         // 路径遍历：分析URI参数值 + 文件相关参数
-        $pathParserResult = !empty($route['path']) ? PathTraversalSemanticParser::analyze($route['path']) : self::emptyParserResult();
+        $pathParserResult = (!empty($route['path'])) ? PathTraversalSemanticParser::analyze($route['path']) : self::emptyParserResult();
 
         // 命令注入：分析URI参数值 + Body字符串
-        $commandParserResult = !empty($route['command']) ? CommandInjectionSemanticParser::analyze($route['command']) : self::emptyParserResult();
+        $commandParserResult = (!empty($route['command'])) ? CommandInjectionSemanticParser::analyze($route['command']) : self::emptyParserResult();
 
         // XXE解析器：分析Body（仅当Content-Type为xml时）
-        $xxeParserResult = !empty($route['xxe']) ? XxeSemanticParser::analyze($route['xxe']) : self::emptyParserResult();
+        $xxeParserResult = (!empty($route['xxe'])) ? XxeSemanticParser::analyze($route['xxe']) : self::emptyParserResult();
 
         // SSRF解析器：分析URI中的URL参数 + Body中的URL
-        $ssrfParserResult = !empty($route['ssrf']) ? SsrfSemanticParser::analyze($route['ssrf']) : self::emptyParserResult();
+        $ssrfParserResult = (!empty($route['ssrf'])) ? SsrfSemanticParser::analyze($route['ssrf']) : self::emptyParserResult();
 
         // SSTI：分析URI参数 + Body
-        $sstiParserResult = !empty($route['ssti']) ? SstiSemanticParser::analyze($route['ssti']) : self::emptyParserResult();
+        $sstiParserResult = (!empty($route['ssti'])) ? SstiSemanticParser::analyze($route['ssti']) : self::emptyParserResult();
 
         // 反序列化：分析Body（当Content-Type包含序列化特征时）
-        $deserParserResult = !empty($route['deser']) ? DeserializationSemanticParser::analyze($route['deser']) : self::emptyParserResult();
+        $deserParserResult = (!empty($route['deser'])) ? DeserializationSemanticParser::analyze($route['deser']) : self::emptyParserResult();
 
         // CRLF：分析Headers + URI参数
-        $crlfParserResult = !empty($route['crlf']) ? CrlfInjectionSemanticParser::analyze($route['crlf']) : self::emptyParserResult();
+        $crlfParserResult = (!empty($route['crlf'])) ? CrlfInjectionSemanticParser::analyze($route['crlf']) : self::emptyParserResult();
 
         // 表达式注入：分析URI参数 + Body
-        $exprParserResult = !empty($route['expr']) ? ExpressionInjectionSemanticParser::analyze($route['expr']) : self::emptyParserResult();
+        $exprParserResult = (!empty($route['expr'])) ? ExpressionInjectionSemanticParser::analyze($route['expr']) : self::emptyParserResult();
 
         $sqlParserScore  = $sqlParserResult['score'] ?? 0;
         $htmlParserScore = $htmlParserResult['score'] ?? 0;
@@ -302,7 +321,7 @@ class SemanticEngine {
         $requestContextScore = $requestContextResult['score'] ?? 0;
 
         // ---- 攻击模式泛化匹配（结构相似度，非字符串匹配） ----
-        $patternMatchResult = AttackPatternLibrary::match($text, $decodedText);
+        $patternMatchResult = !$skipHeavyParsers ? AttackPatternLibrary::match($text, $decodedText) : ['is_attack_like' => false, 'best_match' => null];
         $patternMatchScore = 0;
         if ($patternMatchResult['is_attack_like'] && !empty($patternMatchResult['best_match'])) {
             $sim = $patternMatchResult['best_match']['similarity'];

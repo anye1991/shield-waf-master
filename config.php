@@ -13,23 +13,29 @@ if (!defined('ABSPATH')) {
 }
 
 // ======================== 版本号 ========================
-define('SHIELD_WAF_VERSION', '5.2.0');
+define('SHIELD_WAF_VERSION', '5.3.0');
 
 // ======================== 环境变量读取封装（兼容禁用 getenv/putenv 的环境） ========================
 function waf_getenv($key) {
+    static $cache = [];
+    static $loaded = [];
+    if (isset($loaded[$key])) {
+        return $cache[$key];
+    }
+    $result = false;
     if (isset($_ENV[$key])) {
-        return $_ENV[$key];
-    }
-    if (isset($_SERVER[$key]) && strpos($key, 'HTTP_') !== 0) {
-        return $_SERVER[$key];
-    }
-    if (function_exists('getenv')) {
+        $result = $_ENV[$key];
+    } elseif (isset($_SERVER[$key]) && strpos($key, 'HTTP_') !== 0) {
+        $result = $_SERVER[$key];
+    } elseif (function_exists('getenv')) {
         $val = getenv($key);
         if ($val !== false) {
-            return $val;
+            $result = $val;
         }
     }
-    return false;
+    $cache[$key] = $result;
+    $loaded[$key] = true;
+    return $result;
 }
 
 // ======================== 简易 .env 加载（带白名单） ========================
@@ -431,6 +437,8 @@ define('WAF_FALSE_POSITIVE_GUARD', waf_getenv('WAF_FALSE_POSITIVE_GUARD') !== fa
 define('WAF_SCORER_ENABLED', waf_getenv('WAF_SCORER_ENABLED') !== false ? (waf_getenv('WAF_SCORER_ENABLED') === 'true') : true);
 // 自动学习是否启用
 define('WAF_AUTOLEARN_ENABLED', waf_getenv('WAF_AUTOLEARN_ENABLED') !== false ? (waf_getenv('WAF_AUTOLEARN_ENABLED') === 'true') : true);
+// 贝叶斯机器学习分类器是否启用（纯PHP实现，零依赖，自动训练）
+define('WAF_ML_BAYES_ENABLED', waf_getenv('WAF_ML_BAYES_ENABLED') !== false ? (waf_getenv('WAF_ML_BAYES_ENABLED') === 'true') : true);
 // 拦截阈值（总分>=此值拦截），与 shield-waf.php 中 $blockThreshold 保持一致
 // 四级响应：<30 放行 / 30-50 记录 / 50-75 观察 / >=75 拦截
 // 注：当前架构为规则引擎+语义解析器双路评分，取较高值作为最终判定
@@ -442,6 +450,33 @@ define('WAF_SCORE_MONITOR', waf_getenv('WAF_SCORE_MONITOR') !== false ? (int)waf
 define('WAF_SEMANTIC_WEIGHT', 30);
 
 // ======================== 性能优化配置 ========================
+// 性能模式：high(高性能) / balanced(平衡，默认) / strict(严格)
+//   high     - 高性能：关闭重型分析（记忆池/攻击链/跨请求/贝叶斯），适合低配置服务器
+//   balanced - 平衡模式：核心功能全开，重型功能按需触发，推荐大部分站点
+//   strict   - 严格模式：所有功能拉满，最高安全性，服务器配置要求高
+define('WAF_PERFORMANCE_MODE', waf_getenv('WAF_PERFORMANCE_MODE') !== false ? waf_getenv('WAF_PERFORMANCE_MODE') : 'balanced');
+
+// 根据性能模式自动调整各模块开关
+$_perfMode = WAF_PERFORMANCE_MODE;
+if ($_perfMode === 'high') {
+    if (!defined('WAF_SEMANTIC_MEMORY')) define('WAF_SEMANTIC_MEMORY', false);
+    if (!defined('WAF_ATTACK_CHAIN')) define('WAF_ATTACK_CHAIN', false);
+    if (!defined('WAF_REQUEST_CONTEXT_ANALYZER')) define('WAF_REQUEST_CONTEXT_ANALYZER', false);
+    if (!defined('WAF_AUTOLEARN_ENABLED')) define('WAF_AUTOLEARN_ENABLED', false);
+    if (!defined('WAF_ML_BAYES_ENABLED')) define('WAF_ML_BAYES_ENABLED', false);
+    if (!defined('WAF_ACTIVE_DEFENSE')) define('WAF_ACTIVE_DEFENSE', false);
+    if (!defined('WAF_FALSE_POSITIVE_GUARD')) define('WAF_FALSE_POSITIVE_GUARD', true);
+} elseif ($_perfMode === 'strict') {
+    if (!defined('WAF_SEMANTIC_MEMORY')) define('WAF_SEMANTIC_MEMORY', true);
+    if (!defined('WAF_ATTACK_CHAIN')) define('WAF_ATTACK_CHAIN', true);
+    if (!defined('WAF_REQUEST_CONTEXT_ANALYZER')) define('WAF_REQUEST_CONTEXT_ANALYZER', true);
+    if (!defined('WAF_AUTOLEARN_ENABLED')) define('WAF_AUTOLEARN_ENABLED', true);
+    if (!defined('WAF_ML_BAYES_ENABLED')) define('WAF_ML_BAYES_ENABLED', true);
+    if (!defined('WAF_ACTIVE_DEFENSE')) define('WAF_ACTIVE_DEFENSE', true);
+    if (!defined('WAF_FALSE_POSITIVE_GUARD')) define('WAF_FALSE_POSITIVE_GUARD', true);
+}
+unset($_perfMode);
+
 // APCu 缓存是否启用（优先使用 APCu 共享内存，文件降级兜底）
 define('WAF_APCU_ENABLED', waf_getenv('WAF_APCU_ENABLED') !== false ? (waf_getenv('WAF_APCU_ENABLED') === 'true') : function_exists('apcu_enabled') && apcu_enabled());
 // 单次检测输入最大长度（字节），超过此值截断扫描，防止 OOM
