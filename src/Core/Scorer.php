@@ -390,6 +390,43 @@ class WafScorer {
             $bonus = max($bonus, 72);
         }
 
+        // SSRF 服务器端请求伪造
+        $ssrfParser = $semanticResult['ssrf_parser_result'] ?? [];
+        if (is_array($ssrfParser)) {
+            if (!empty($ssrfParser['has_cloud_metadata'])) $bonus = max($bonus, 75); // 云元数据（最高危）
+            if (!empty($ssrfParser['has_internal_ip']))    $bonus = max($bonus, 68); // 内网IP
+            if (!empty($ssrfParser['has_dns_rebind']))      $bonus = max($bonus, 65); // DNS 重绑定
+        }
+
+        // 命令注入
+        $cmdParser = $semanticResult['command_parser_result'] ?? [];
+        if (is_array($cmdParser)) {
+            if (!empty($cmdParser['has_command_substitution'])) $bonus = max($bonus, 72); // 命令替换（`$()`）
+            if (!empty($cmdParser['is_command_injection']) && ($cmdParser['command_count'] ?? 0) >= 2) {
+                $bonus = max($bonus, 65); // 多命令链
+            }
+        }
+
+        // SSTI 模板注入
+        $sstiParser = $semanticResult['ssti_parser_result'] ?? [];
+        if (is_array($sstiParser)) {
+            if (!empty($sstiParser['is_ssti'])) {
+                if (!empty($sstiParser['has_dangerous_filter'])) {
+                    $bonus = max($bonus, 75); // 危险过滤器（最高危）
+                } elseif (!empty($sstiParser['has_mixed_engines'])) {
+                    $bonus = max($bonus, 68); // 多引擎混合
+                } else {
+                    $bonus = max($bonus, 60); // 基础 SSTI
+                }
+            }
+        }
+
+        // 反序列化
+        $deserParser = $semanticResult['deser_parser_result'] ?? [];
+        if (is_array($deserParser) && !empty($deserParser['is_deserialization'])) {
+            $bonus = max($bonus, 68);
+        }
+
         return (float)$bonus;
     }
 
