@@ -180,6 +180,10 @@ require_once __DIR__ . '/src/Defense/ApiRateLimit.php';
 ApiRateLimit::check();
 
 // ====================== IP 封禁检查 ======================
+// 随机触发过期记录清理（1% 概率），防止过期封禁残留导致首页403
+if (mt_rand(1, 100) === 1) {
+    waf_clean_ban_file();
+}
 if (waf_is_banned()) {
     waf_block('Banned IP');
 }

@@ -21,6 +21,7 @@ defined('ABSPATH') || exit;
 if (!function_exists('waf_safe_read_json')) {
     require_once __DIR__ . '/../Support/Functions.php';
 }
+require_once __DIR__ . '/NaiveBayesClassifier.php';
 
 class AutoLearn {
     private static $patterns_file = null;
@@ -96,6 +97,11 @@ class AutoLearn {
 
         if ($stats['payloads'][$hash]['count'] >= 3) {
             self::tryLearnPattern($normalizedPayload, $stats['payloads'][$hash]);
+        }
+
+        if (!empty($normalizedPayload) && strlen($normalizedPayload) < 10000) {
+            NaiveBayesClassifier::train($normalizedPayload, 'attack');
+            NaiveBayesClassifier::save();
         }
     }
 
@@ -233,6 +239,14 @@ class AutoLearn {
         }
 
         self::saveNormal($normal);
+
+        if (mt_rand(1, 100) <= 10) {
+            $normalText = $path . '?' . implode('&', array_map('strval', $params));
+            if (strlen($normalText) < 500) {
+                NaiveBayesClassifier::train($normalText, 'normal');
+                NaiveBayesClassifier::save();
+            }
+        }
     }
 
     /**

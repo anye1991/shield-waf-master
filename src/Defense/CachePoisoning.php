@@ -171,13 +171,11 @@ class CachePoisoning {
             if (strlen($varyValue) > 500) {
                 waf_block('Cache poisoning - Vary header too large');
             }
-            
-            $parts = array_map('trim', explode(',', $varyValue));
-            foreach ($parts as $part) {
-                if ($part === '*') continue;
-                if (!in_array($part, self::$varyHeaders) && !empty($part)) {
-                    waf_block('Cache poisoning - suspicious Vary header value: ' . $part);
-                }
+            if (strpos($varyValue, "\r") !== false || strpos($varyValue, "\n") !== false) {
+                waf_block('Cache poisoning - Vary header contains CRLF');
+            }
+            if (preg_match('/[<>"\'`;]/', $varyValue)) {
+                waf_block('Cache poisoning - Vary header contains suspicious characters');
             }
         }
     }

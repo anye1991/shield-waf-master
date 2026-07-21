@@ -122,11 +122,12 @@ function waf_cc_check_file($ip, $limit = null) {
             $fp = @fopen($file, 'c+');
         }
         if (!$fp) {
-            // fail-closed：无法确定时拦截更安全
+            // fail-open：无法写入日志时放行，避免部署环境日志目录不可写导致全站403
+            // 速率限制是"尽力而为"的防护，失效不应影响正常业务访问
             if (defined('WAF_DEBUG') && WAF_DEBUG) {
-                error_log('ShieldWAF RateLimit: cannot open cc log file: ' . $file);
+                error_log('ShieldWAF RateLimit: cannot open cc log file, fail-open: ' . $file);
             }
-            return false;
+            return true;
         }
     }
 

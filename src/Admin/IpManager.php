@@ -91,21 +91,22 @@ function waf_ban($ip, $sec = 86400) {
 }
 
 /**
- * 清理过期超过 30 天的封禁记录（防止文件无限增长）
+ * 清理过期的封禁记录（防止文件无限增长）
+ * 过期超过 24 小时即删除，避免测试/扫描后长期残留导致首页403
  * 随机或定期调用即可
  */
 function waf_clean_ban_file() {
     $file = WAF_LOG_PATH . '/ban.txt';
     if (!is_file($file)) return;
-    $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    $lines = @file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    if (!is_array($lines)) return;
     $now   = time();
     $new   = [];
     $changed = false;
     foreach ($lines as $line) {
         $d = explode('|', $line);
         if (count($d) !== 2) { $changed = true; continue; }
-        // 过期超过 30 天才删除
-        if ((int)$d[1] + 2592000 < $now) {
+        if ((int)$d[1] < $now) {
             $changed = true;
             continue;
         }
@@ -404,7 +405,7 @@ function waf_get_ban_duration($historyCount) {
         case 1:  return 86400;        // 1 天
         case 2:  return 604800;       // 7 天
         case 3:  return 2592000;      // 30 天
-        default: return PHP_INT_MAX;   // 永久
+        default: return PHP_INT_MAX;   // 永久封禁
     }
 }
 

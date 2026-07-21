@@ -19,15 +19,17 @@ defined('ABSPATH') || exit;
 
 require_once __DIR__ . '/../Semantic/SemanticEngine.php';
 require_once __DIR__ . '/../Learn/AutoLearn.php';
+require_once __DIR__ . '/../Learn/NaiveBayesClassifier.php';
 require_once __DIR__ . '/../Semantic/FalsePositiveGuard.php';
 require_once __DIR__ . '/../Semantic/SemanticMemoryPool.php';
 
 class WafScorer {
     private static $weights = [
         'entropy'   => 0.10,  // 降低：熵值容易误判正常内容（Base64图片、加密字符串）
-        'semantic'  => 0.45,  // 提高：语义分析是核心检测能力，类似雷池智能语义引擎
-        'compiler'  => 0.20,  // 保持：URI/参数结构异常检测
-        'deviation' => 0.15,  // 保持：行为基线偏离分析
+        'semantic'  => 0.40,  // 核心检测能力
+        'compiler'  => 0.20,  // URI/参数结构异常检测
+        'deviation' => 0.15,  // 行为基线偏离分析
+        'ml_bayes'  => 0.08,  // 朴素贝叶斯机器学习（训练不足时自动归零）
     ];
 
     // 阈值层级必须严格递增，否则中间层（如 observe）会被 block 短路而失效
@@ -55,11 +57,13 @@ class WafScorer {
         $semanticScore   = $semanticResult['total_score'] ?? 0;
         $compilerScore   = self::calcCompiler($payload, $uri, $params);
         $deviationScore  = self::calcDeviation($uri, $params, $normalizerContext);
+        $bayesScore      = self::calcBayesMl($payload, $body);
 
         $totalScore = $entropyScore * self::$weights['entropy']
                     + $semanticScore * self::$weights['semantic']
                     + $compilerScore * self::$weights['compiler']
-                    + $deviationScore * self::$weights['deviation'];
+                    + $deviationScore * self::$weights['deviation']
+                    + $bayesScore * self::$weights['ml_bayes'];
 
         $encodeBypassBonus = self::calcEncodeBypassBonus($semanticResult, $normalizerContext);
         $totalScore += $encodeBypassBonus;
@@ -157,6 +161,7 @@ class WafScorer {
                 'semantic'  => ['score' => $semanticScore, 'weight' => self::$weights['semantic']],
                 'compiler'  => ['score' => $compilerScore, 'weight' => self::$weights['compiler']],
                 'deviation' => ['score' => $deviationScore, 'weight' => self::$weights['deviation']],
+                'ml_bayes'  => ['score' => $bayesScore, 'weight' => self::$weights['ml_bayes']],
                 'encode_bypass' => ['bonus' => $encodeBypassBonus],
             ],
         ];
@@ -342,6 +347,38 @@ class WafScorer {
             }
         }
         return $scores;
+    }
+
+    // ====================== 朴素贝叶斯机器学习 (8%) ======================
+
+    /**
+     * 朴素贝叶斯 ML 评分
+     * 训练不足时自动返回 0，不参与评分（冷启动保护）
+     * 作为辅助维度，为语义评分提供概率补充
+     */
+    private static function calcBayesMl($payload, $body = '') {
+        $modelInfo = NaiveBayesClassifier::getModelInfo();
+        $totalSamples = ($modelInfo['attack_count'] ?? 0) + ($modelInfo['normal_count'] ?? 0);
+
+        if ($totalSamples < 20) {
+            return 0;
+        }
+
+        $score = 0;
+        $hasPayload = !empty($payload) && $payload !== '';
+        $hasBody = !empty($body) && $body !== '';
+
+        if ($hasPayload) {
+            $payloadScore = NaiveBayesClassifier::getAttackScore($payload);
+            $score = max($score, $payloadScore);
+        }
+
+        if ($hasBody && strlen($body) < 10000) {
+            $bodyScore = NaiveBayesClassifier::getAttackScore($body);
+            $score = max($score, $bodyScore);
+        }
+
+        return (float)round($score, 1);
     }
 
     // ====================== 明确攻击证据强化加成 ======================

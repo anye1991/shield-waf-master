@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 }
 
 // ======================== 版本号 ========================
-define('SHIELD_WAF_VERSION', '5.1.0');
+define('SHIELD_WAF_VERSION', '5.2.0');
 
 // ======================== 简易 .env 加载（带白名单） ========================
 function waf_load_env($dir) {
@@ -51,9 +51,10 @@ function waf_load_env($dir) {
         }
         if ($isDenied) continue;
 
-        if (!getenv($key)) {
+        if (getenv($key) === false) {
             $_ENV[$key] = $value;
             $_SERVER[$key] = $value;
+            putenv($key . '=' . $value);
         }
     }
 }
