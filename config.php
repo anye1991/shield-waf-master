@@ -171,7 +171,11 @@ define('WAF_MAGIC_MAX_RETRY', getenv('WAF_MAGIC_MAX_RETRY') !== false ? (int)get
 // ======================== 日志与存储路径 ========================
 define('WAF_ADMIN_IP_FILE',     WAF_LOG_PATH . '/admin_ips.txt');
 define('WAF_ADMIN_IP_TTL',      86400);
-define('WAF_LOG_MAX_FILESIZE',  getenv('WAF_LOG_MAX_FILESIZE') !== false ? (int)getenv('WAF_LOG_MAX_FILESIZE') : 10485760);
+define('WAF_LOG_MAX_SIZE',  getenv('WAF_LOG_MAX_SIZE') !== false ? (int)getenv('WAF_LOG_MAX_SIZE') : 10485760);
+// 向后兼容：旧版常量名 WAF_LOG_MAX_FILESIZE 已弃用，统一为 WAF_LOG_MAX_SIZE
+if (!defined('WAF_LOG_MAX_FILESIZE')) {
+    define('WAF_LOG_MAX_FILESIZE', WAF_LOG_MAX_SIZE);
+}
 
 // ======================== 管理员 IP 白名单（直配置，方便测试） ========================
 // 在 config.php 直接配置管理员 IP（或 CIDR 网段），无需登录控制台手动添加。
@@ -222,6 +226,14 @@ define('WAF_MAX_ENCODING_DEPTH',  getenv('WAF_MAX_ENCODING_DEPTH')  !== false ? 
 define('WAF_MAX_PAYLOAD_SIZE',    getenv('WAF_MAX_PAYLOAD_SIZE')    !== false ? (int)getenv('WAF_MAX_PAYLOAD_SIZE')    : 100000);
 define('WAF_SESSION_REGENERATE',  getenv('WAF_SESSION_REGENERATE')  !== false ? (getenv('WAF_SESSION_REGENERATE') === 'true')  : true);
 define('WAF_DB_DEBUG',            getenv('WAF_DB_DEBUG')            !== false ? (getenv('WAF_DB_DEBUG') === 'true')            : false);
+// WAF 调试模式：开启后输出详细检测日志（生产环境务必关闭）
+define('WAF_DEBUG',               getenv('WAF_DEBUG')               !== false ? (getenv('WAF_DEBUG') === 'true')               : false);
+// 存储目录：用于 RaceCondition 等模块的临时文件存储，默认使用系统临时目录
+define('WAF_STORAGE_DIR',         getenv('WAF_STORAGE_DIR')         !== false ? getenv('WAF_STORAGE_DIR')                     : (sys_get_temp_dir() . '/shield-waf'));
+// 上传路径白名单：识别为上传目录的路径前缀，用于相关防护逻辑
+define('WAF_UPLOAD_PATH',         getenv('WAF_UPLOAD_PATH')         !== false ? getenv('WAF_UPLOAD_PATH')                     : '/wp-content/uploads/');
+// WordPress 密码策略集成：设为 true 自动接管 wp_hash_password/wp_check_password
+define('WAF_PASSWORD_WP_INTEGRATION', getenv('WAF_PASSWORD_WP_INTEGRATION') !== false ? (getenv('WAF_PASSWORD_WP_INTEGRATION') === 'true') : false);
 define('SHIELD_WAF_CSP',                getenv('SHIELD_WAF_CSP')                !== false ? getenv('SHIELD_WAF_CSP')                : '');
 define('SHIELD_WAF_PERMISSIONS_POLICY', getenv('SHIELD_WAF_PERMISSIONS_POLICY') !== false ? getenv('SHIELD_WAF_PERMISSIONS_POLICY') : '');
 
@@ -257,6 +269,14 @@ define('WAF_BOT_VERIFY_DNS', getenv('WAF_BOT_VERIFY_DNS') !== false ? (getenv('W
 define('WAF_CC_LIMIT',  getenv('WAF_CC_LIMIT')  !== false ? (int)getenv('WAF_CC_LIMIT')  : 120);
 define('WAF_CC_WINDOW', getenv('WAF_CC_WINDOW') !== false ? (int)getenv('WAF_CC_WINDOW') : 60);
 define('WAF_CC_LOG',    WAF_LOG_PATH . '/cc_counter.txt');
+// AJAX 请求（wp-json/admin-ajax/heartbeat）速率上限
+define('WAF_CC_LIMIT_AJAX', getenv('WAF_CC_LIMIT_AJAX') !== false ? (int)getenv('WAF_CC_LIMIT_AJAX') : 240);
+// 单 IP 在 CC 日志文件中的最大行数（超过丢弃最旧），防止日志无限增长
+define('WAF_CC_FILE_MAX_PER_IP', getenv('WAF_CC_FILE_MAX_PER_IP') !== false ? (int)getenv('WAF_CC_FILE_MAX_PER_IP') : 1000);
+// 异步清理触发间隔（每 N 次请求触发一次全窗口清理）
+define('WAF_CC_CLEANUP_INTERVAL', getenv('WAF_CC_CLEANUP_INTERVAL') !== false ? (int)getenv('WAF_CC_CLEANUP_INTERVAL') : 100);
+// 是否跳过速率限制（用于调试或内网白名单场景）
+define('WAF_SKIP_RATELIMIT', getenv('WAF_SKIP_RATELIMIT') !== false ? (getenv('WAF_SKIP_RATELIMIT') === 'true') : false);
 
 // ======================== 告警 Webhook ========================
 define('WAF_WEBHOOK_URL', '');
@@ -267,7 +287,12 @@ define('WAF_STATS_CACHE_SEC', 10);
 
 // ======================== CDN 配置 ========================
 define('WAF_TRUST_CF_IP', false);
-define('WAF_ALLOWED_ORIGINS', getenv('WAF_ALLOWED_ORIGINS') !== false ? getenv('WAF_ALLOWED_ORIGINS') : '');
+// CORS 跨域白名单（逗号分隔）
+define('WAF_CORS_ALLOWED_ORIGINS', getenv('WAF_CORS_ALLOWED_ORIGINS') !== false ? getenv('WAF_CORS_ALLOWED_ORIGINS') : (getenv('WAF_ALLOWED_ORIGINS') !== false ? getenv('WAF_ALLOWED_ORIGINS') : ''));
+// 向后兼容：旧版常量名 WAF_ALLOWED_ORIGINS 已弃用
+if (!defined('WAF_ALLOWED_ORIGINS')) {
+    define('WAF_ALLOWED_ORIGINS', WAF_CORS_ALLOWED_ORIGINS);
+}
 
 // ======================== 沙箱配置 ========================
 // 沙箱工作模式：
