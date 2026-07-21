@@ -9,26 +9,26 @@
         {
             "name": "hash生成 (10次)",
             "iterations": 10,
-            "total_ms": 3123.08,
-            "per_op_us": 312308
+            "total_ms": 3133,
+            "per_op_us": 313299.92
         },
         {
             "name": "verify验证 (100次)",
             "iterations": 100,
-            "total_ms": 31360.91,
-            "per_op_us": 313609.09
+            "total_ms": 31416.55,
+            "per_op_us": 314165.53
         },
         {
             "name": "info识别 (1000次)",
             "iterations": 1000,
-            "total_ms": 8.86,
-            "per_op_us": 8.86
+            "total_ms": 9.11,
+            "per_op_us": 9.11
         },
         {
             "name": "needsRehash (1000次)",
             "iterations": 1000,
-            "total_ms": 5.24,
-            "per_op_us": 5.24
+            "total_ms": 6.41,
+            "per_op_us": 6.41
         }
     ],
     "details": [
@@ -157,6 +157,6 @@
             "status": "pass"
         }
     ],
-    "date": "2026-07-20 01:35:44",
+    "date": "2026-07-21 04:36:43",
     "php_version": "8.5.6-dev"
 }

@@ -32,16 +32,16 @@ if (PHP_VERSION_ID < 70400) {
 // ====================== 日志目录自动权限 + /tmp 降级（无需手动 chown） ======================
 $wafLogDir = __DIR__ . '/logs';
 if (!is_dir($wafLogDir)) {
-    @mkdir($wafLogDir, 0777, true);
+    @mkdir($wafLogDir, 0750, true);
 }
 if (is_dir($wafLogDir) && !is_writable($wafLogDir)) {
-    @chmod($wafLogDir, 0777);
+    @chmod($wafLogDir, 0750);
 }
 // 仍不可写时预定义 WAF_LOG_PATH 为 /tmp（config.php 中会跳过重复定义）
 if (!is_writable($wafLogDir)) {
     $fallback = '/tmp/shield_waf_logs';
     if (!is_dir($fallback)) {
-        @mkdir($fallback, 0777, true);
+        @mkdir($fallback, 0700, true);
     }
     if (is_dir($fallback) && is_writable($fallback)) {
         define('WAF_LOG_PATH', $fallback);

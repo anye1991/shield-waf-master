@@ -219,10 +219,10 @@ function waf_2fa() {
     <div class="bg-particles">';
 
     for ($i = 0; $i < 20; $i++) {
-        $x = rand(0, 100);
-        $y = rand(0, 100);
-        $delay = rand(0, 5) . 's';
-        $size = rand(1, 3) . 'px';
+        $x = mt_rand(0, 100);
+        $y = mt_rand(0, 100);
+        $delay = mt_rand(0, 5) . 's';
+        $size = mt_rand(1, 3) . 'px';
         echo "<div class='particle' style='left:{$x}%;top:{$y}%;animation-delay:{$delay};width:{$size};height:{$size};'></div>";
     }
 

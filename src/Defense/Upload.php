@@ -452,12 +452,14 @@ function waf_upload_svg_check($content) {
         // 标签名中插入注释或空格混淆
         '/<\s*s\s*c\s*r\s*i\s*p\s*t\s*>/i',
     ];
+    $scriptFound = false;
     foreach ($scriptPatterns as $pattern) {
         if (preg_match($pattern, $content . $cleanContent)) {
             $scriptFound = true;
             break;
         }
     }
+    // 显式 isset 判断，避免 $scriptFound 未初始化导致的 E_NOTICE
     if (!empty($scriptFound)) {
         $score += 25;
         $result['details'][] = 'SVG 中包含脚本标签';

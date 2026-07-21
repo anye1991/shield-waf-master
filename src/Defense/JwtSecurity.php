@@ -14,15 +14,9 @@ class JwtSecurity {
         'session_token', 'api_token', 'oauth_token',
     ];
 
+    // 仅 alg=none 视为危险算法；HS*/RS*/ES*/PS*/EdDSA 均为合法签名算法
     private static $dangerAlgorithms = [
         'none', 'noneNone', 'None', 'NONE',
-        'HS256', 'HS384', 'HS512',
-        'RS256', 'RS384', 'RS512',
-        'ES256', 'ES384', 'ES512',
-        'PS256', 'PS384', 'PS512',
-        'EdDSA', 'Ed25519', 'Ed448',
-        'RSA-OAEP', 'RSA-OAEP-256', 'RSA-OAEP-384',
-        'RSA-PSS', 'RSA-PSS-256', 'RSA-PSS-384',
     ];
 
     private static $jwtClaims = [
@@ -133,11 +127,11 @@ class JwtSecurity {
                         return ['is_attack' => true, 'reason' => 'JWT alg=none algorithm confusion attack'];
                     }
 
-                    // 放宽 typ 校验，允许 jwt、at+jwt、application/jwt 以及空值（Azure AD 使用 at+jwt）
+                    // 放宽 typ 校验，允许 JWT 相关的常见 typ 值及大小写变体（Azure AD 使用 at+jwt、部分实现使用 access_token+jwt）
                     if (isset($headerJson['typ']) && !empty($headerJson['typ'])) {
                         $typ = strtolower($headerJson['typ']);
-                        $allowedTyps = ['jwt', 'at+jwt', 'application/jwt'];
-                        if (!in_array($typ, $allowedTyps)) {
+                        // 允许任何包含 "jwt" 子串的 typ 值，覆盖 jwt/at+jwt/application/jwt/access_token+jwt 等变体
+                        if (strpos($typ, 'jwt') === false) {
                             return ['is_attack' => true, 'reason' => 'JWT typ header has abnormal value: ' . $headerJson['typ']];
                         }
                     }
@@ -170,7 +164,8 @@ class JwtSecurity {
                             return ['is_attack' => true, 'reason' => 'JWT exp claim is not numeric'];
                         }
 
-                        if ($payloadJson['exp'] < time()) {
+                        // 添加 60 秒容差窗口，避免客户端/服务器时钟不同步导致合法请求被误拦截
+                        if ($payloadJson['exp'] < time() - 60) {
                             return ['is_attack' => true, 'reason' => 'JWT token expired'];
                         }
                     }

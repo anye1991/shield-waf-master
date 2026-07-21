@@ -29,14 +29,49 @@ if ($method === 'POST' && in_array($action, $writeActions)) {
 }
 
 $ip = waf_get_real_ip();
-$cache_file = WAF_LOG_PATH . '/dashboard_api_rate';
-$prev = is_file($cache_file) ? json_decode(file_get_contents($cache_file), true) : null;
-$now = microtime(true);
-if ($prev && $prev['ip'] === $ip && ($now - $prev['time']) < 1.0) {
+
+// 修复竞争条件：优先使用 APCu 共享内存（计数器按 IP 分桶，1秒窗口）
+$rateLimited = false;
+if (function_exists('apcu_enabled') && apcu_enabled()) {
+    $rateKey = 'waf_dash_rate_' . md5($ip);
+    $counter = apcu_inc($rateKey, 1, $found, 1);
+    if ($found && $counter > 1) {
+        $rateLimited = true;
+    }
+} else {
+    // 文件降级：使用带锁的独占文件写入避免竞争条件
+    $cache_file = WAF_LOG_PATH . '/dashboard_api_rate';
+    $lockFile = $cache_file . '.lock';
+    $lockFp = @fopen($lockFile, 'w');
+    if ($lockFp && flock($lockFp, LOCK_EX | LOCK_NB)) {
+        $prev = is_file($cache_file) ? json_decode(@file_get_contents($cache_file), true) : null;
+        $now = microtime(true);
+        if ($prev && $prev['ip'] === $ip && ($now - $prev['time']) < 1.0) {
+            $rateLimited = true;
+        } else {
+            @file_put_contents($cache_file, json_encode(['ip' => $ip, 'time' => $now]));
+        }
+        flock($lockFp, LOCK_UN);
+        fclose($lockFp);
+    } elseif ($lockFp) {
+        fclose($lockFp);
+    }
+}
+
+if ($rateLimited) {
     http_response_code(429);
     exit(json_encode(['error' => 'Too many requests']));
 }
-@file_put_contents($cache_file, json_encode(['ip' => $ip, 'time' => $now]));
+
+// 请求体大小限制：防止超大 POST 导致内存耗尽
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $contentLength = isset($_SERVER['CONTENT_LENGTH']) ? (int)$_SERVER['CONTENT_LENGTH'] : 0;
+    $maxApiBody = defined('WAF_MAX_BODY_SIZE') ? WAF_MAX_BODY_SIZE : 1048576;
+    if ($contentLength > $maxApiBody) {
+        http_response_code(413);
+        exit(json_encode(['error' => 'Request entity too large']));
+    }
+}
 
 require_once __DIR__ . '/../../stats.php';
 require_once __DIR__ . '/IpManager.php';

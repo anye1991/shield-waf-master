@@ -137,12 +137,32 @@ function waf_get_auto_key($keyName, $defaultValue, $minLength = 32) {
 }
 
 // ======================== 密钥（全部统一存储在 auto_key.php） ========================
-// 优先级：服务器环境变量 > .env > auto_key.php（自动生成） > 默认值
+// 优先级：服务器环境变量 > .env > auto_key.php（自动生成） > 启动失败
 // 安全设计：所有密钥统一存放 auto_key.php，config.php 可纳入版本管理
+// 安全策略：默认值留空，自动生成失败时直接 die()，绝不回退到可被猜测的弱密钥
 // WAF_MAGIC_KEY：暗门密钥（URL 参数 ?magic=xxx）
 // WAF_PASSWORD：  暗门密码（页面输入框）
-define('WAF_MAGIC_KEY', waf_get_auto_key('WAF_MAGIC_KEY', 'change-me-magic-key-32-chars-min', 32));
-define('WAF_PASSWORD',  waf_get_auto_key('WAF_PASSWORD',  'change-me-waf-password', 24));
+$_resolvedMagicKey = waf_get_auto_key('WAF_MAGIC_KEY', '', 32);
+if ($_resolvedMagicKey === '' || strlen($_resolvedMagicKey) < 32) {
+    @file_put_contents(WAF_LOG_PATH . '/security.log',
+        '[' . date('Y-m-d H:i:s') . "] 致命：WAF_MAGIC_KEY 未配置且自动生成失败，拒绝启动\n",
+        FILE_APPEND);
+    http_response_code(500);
+    die('Shield WAF: magic key configuration failure');
+}
+define('WAF_MAGIC_KEY', $_resolvedMagicKey);
+unset($_resolvedMagicKey);
+
+$_resolvedPassword = waf_get_auto_key('WAF_PASSWORD', '', 24);
+if ($_resolvedPassword === '' || strlen($_resolvedPassword) < 24) {
+    @file_put_contents(WAF_LOG_PATH . '/security.log',
+        '[' . date('Y-m-d H:i:s') . "] 致命：WAF_PASSWORD 未配置且自动生成失败，拒绝启动\n",
+        FILE_APPEND);
+    http_response_code(500);
+    die('Shield WAF: password configuration failure');
+}
+define('WAF_PASSWORD', $_resolvedPassword);
+unset($_resolvedPassword);
 
 // ======================== 暗门有效期与重试次数 ========================
 define('WAF_MAGIC_EXPIRE',    getenv('WAF_MAGIC_EXPIRE')    !== false ? (int)getenv('WAF_MAGIC_EXPIRE')    : 3600);

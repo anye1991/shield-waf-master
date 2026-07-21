@@ -54,17 +54,17 @@ class SemanticEngine {
         'chain'       => 0.04,
         'memory'      => 0.03,
         'adversarial' => 0.04,
-        'sql_parser'        => 0.07,
-        'html_parser'       => 0.05,
-        'php_parser'        => 0.05,
-        'path_parser'       => 0.06,
-        'command_parser'    => 0.06,
-        'xxe_parser'        => 0.05,
-        'ssrf_parser'       => 0.05,
-        'ssti_parser'       => 0.05,
-        'deser_parser'      => 0.05,
-        'crlf_parser'       => 0.04,
-        'expr_parser'       => 0.05,
+        'sql_parser'        => 0.10,
+        'html_parser'       => 0.08,
+        'php_parser'        => 0.08,
+        'path_parser'       => 0.08,
+        'command_parser'    => 0.08,
+        'xxe_parser'        => 0.07,
+        'ssrf_parser'       => 0.07,
+        'ssti_parser'       => 0.07,
+        'deser_parser'      => 0.07,
+        'crlf_parser'       => 0.05,
+        'expr_parser'       => 0.06,
     ];
 
     /**
@@ -1057,17 +1057,17 @@ class SemanticEngine {
         if (preg_match('/on(load|error|click|mouseover|focus|blur|change|submit)\s*=/i', $text)) $bonus = max($bonus, 55);
         if (preg_match('/javascript:/i', $text)) $bonus = max($bonus, 60);
         if (preg_match('/<svg\b/i', $text) && preg_match('/on\w+\s*=/i', $text)) $bonus = max($bonus, 60);
-        if (preg_match('/<body\b/i', $text) && preg_match('/on\w+\s*=/i', $text)) $bonus = max($bonus, 55);
-        if (preg_match('/<iframe\b/i', $text)) $bonus = max($bonus, 50);
+        if (preg_match('/<body\b/i', $text) && preg_match('/on\w+\s*=/i', $text)) $bonus = max($bonus, 60);
+        if (preg_match('/<iframe\b/i', $text)) $bonus = max($bonus, 55);
         if (preg_match('/document\.cookie/i', $text)) $bonus = max($bonus, 55);
         if (preg_match('/eval\s*\(/i', $text) && preg_match('/string\.fromcharcode/i', $text)) $bonus = max($bonus, 70);
         
         // 命令注入签名
-        if (preg_match('/;\s*(cat|ls|id|whoami|uname|wget|curl|rm|cp|mv)\b/i', $text)) $bonus = max($bonus, 60);
-        if (preg_match('/\|\s*(cat|ls|id|whoami|uname|wget|curl)\b/i', $text)) $bonus = max($bonus, 55);
-        if (preg_match('/`[^`]+`/', $text)) $bonus = max($bonus, 50);
-        if (preg_match('/\$\([^)]+\)/', $text)) $bonus = max($bonus, 50);
-        if (preg_match('/&&\s*(cat|ls|id|whoami|uname|wget|curl|rm)\b/i', $text)) $bonus = max($bonus, 55);
+        if (preg_match('/;\s*(cat|ls|id|whoami|uname|wget|curl|rm|cp|mv)\b/i', $text)) $bonus = max($bonus, 65);
+        if (preg_match('/\|\s*(cat|ls|id|whoami|uname|wget|curl)\b/i', $text)) $bonus = max($bonus, 60);
+        if (preg_match('/`[^`]+`/', $text)) $bonus = max($bonus, 60);
+        if (preg_match('/\$\([^)]+\)/', $text)) $bonus = max($bonus, 60);
+        if (preg_match('/&&\s*(cat|ls|id|whoami|uname|wget|curl|rm)\b/i', $text)) $bonus = max($bonus, 60);
         if (preg_match('/\b(system|exec|shell_exec|passthru|popen|proc_open)\s*\(/i', $text)) $bonus = max($bonus, 70);
         
         // 路径遍历签名
@@ -1080,35 +1080,35 @@ class SemanticEngine {
         if (preg_match('/<!DOCTYPE\b/i', $text) && preg_match('/SYSTEM\b/i', $text)) $bonus = max($bonus, 60);
         
         // SSRF签名
-        if (preg_match('#https?://127\.0\.0\.1#i', $text)) $bonus = max($bonus, 55);
-        if (preg_match('#https?://localhost#i', $text)) $bonus = max($bonus, 50);
+        if (preg_match('#https?://127\.0\.0\.1#i', $text)) $bonus = max($bonus, 65);
+        if (preg_match('#https?://localhost#i', $text)) $bonus = max($bonus, 60);
         if (preg_match('#https?://169\.254\.169\.254#i', $text)) $bonus = max($bonus, 65);
-        if (preg_match('#file:///#i', $text)) $bonus = max($bonus, 55);
-        if (preg_match('#gopher://#i', $text)) $bonus = max($bonus, 60);
-        if (preg_match('#dict://#i', $text)) $bonus = max($bonus, 55);
+        if (preg_match('#file:///#i', $text)) $bonus = max($bonus, 65);
+        if (preg_match('#gopher://#i', $text)) $bonus = max($bonus, 65);
+        if (preg_match('#dict://#i', $text)) $bonus = max($bonus, 60);
         
         // SSTI签名
-        if (preg_match('/\{\{.*?\}\}/s', $text)) $bonus = max($bonus, 50);
-        if (preg_match('/\$\{.*?\}/s', $text)) $bonus = max($bonus, 50);
+        if (preg_match('/\{\{.*?\}\}/s', $text)) $bonus = max($bonus, 60);
+        if (preg_match('/\$\{.*?\}/s', $text)) $bonus = max($bonus, 60);
         
         // 模板注入签名
-        if (preg_match('/<%\s*=?\s*(Execute|Response|Request)/i', $text)) $bonus = max($bonus, 55); // ASP
+        if (preg_match('/<%\s*=?\s*(Execute|Response|Request)/i', $text)) $bonus = max($bonus, 60); // ASP
         if (preg_match('/<\?=\s*system\s*\(/i', $text)) $bonus = max($bonus, 65); // PHP短标签
         if (preg_match('/\{system\s*\(/i', $text)) $bonus = max($bonus, 65); // Smarty
         
         // CRLF签名
         if (preg_match('/[\r\n]\s*(Set-Cookie|Location|Content-Type|Set-Location)/i', $text)) $bonus = max($bonus, 60);
-        if (preg_match('/%0[dD]%0[aA]/i', $text)) $bonus = max($bonus, 50);
+        if (preg_match('/%0[dD]%0[aA]/i', $text)) $bonus = max($bonus, 55);
         
         // 反序列化签名
-        if (preg_match('/^[Oa]:\d+:/i', $text)) $bonus = max($bonus, 55);
-        if (preg_match('/O:\d+:"[^"]+":\d+:/i', $text)) $bonus = max($bonus, 55);
-        if (preg_match('/PHP_Object_Injection/i', $text)) $bonus = max($bonus, 60);
+        if (preg_match('/^[Oa]:\d+:/i', $text)) $bonus = max($bonus, 65);
+        if (preg_match('/O:\d+:"[^"]+":\d+:/i', $text)) $bonus = max($bonus, 65);
+        if (preg_match('/PHP_Object_Injection/i', $text)) $bonus = max($bonus, 65);
         
         // OpenRedirect签名
-        if (preg_match('#redirect\s*=\s*https?://(?!' . preg_quote($_SERVER['HTTP_HOST'] ?? 'localhost', '#') . ')#i', $text)) $bonus = max($bonus, 50);
-        if (preg_match('#redirect\s*=\s*//#i', $text)) $bonus = max($bonus, 50);
-        if (preg_match('#@[\w.-]+\s*$#i', $text) && preg_match('#https?://#i', $text)) $bonus = max($bonus, 45);
+        if (preg_match('#redirect\s*=\s*https?://(?!' . preg_quote($_SERVER['HTTP_HOST'] ?? 'localhost', '#') . ')#i', $text)) $bonus = max($bonus, 55);
+        if (preg_match('#redirect\s*=\s*//#i', $text)) $bonus = max($bonus, 55);
+        if (preg_match('#@[\w.-]+\s*$#i', $text) && preg_match('#https?://#i', $text)) $bonus = max($bonus, 55);
         
         return $bonus;
     }
