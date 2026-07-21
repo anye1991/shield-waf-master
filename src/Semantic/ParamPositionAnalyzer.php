@@ -657,8 +657,13 @@ class ParamPositionAnalyzer {
         // 2. 异常分：位置异常总分（上限 30）
         $anomalyScore = min(30, (int) ($anomalies['total_anomaly_score'] ?? 0));
 
-        // 3. 高风险参数分：每个 +5（上限 40）
-        $highRiskScore = min(40, count($highRisk) * 5);
+        // 3. 高风险参数分：累加每个参数的 risk_score（上限 50）
+        //    Cookie/Header 中的 token/session 等敏感参数应有较高威胁分
+        $highRiskScore = 0;
+        foreach ($highRisk as $hr) {
+            $highRiskScore += (int) ($hr['risk_score'] ?? 5);
+        }
+        $highRiskScore = min(50, $highRiskScore);
 
         // 4. 跨位置模式分：每个异常 +10（上限 20）
         $crossCount = (int) ($anomalies['cross_anomaly_count'] ?? 0);

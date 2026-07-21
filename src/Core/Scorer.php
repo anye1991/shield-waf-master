@@ -142,6 +142,8 @@ class WafScorer {
             'action'          => $action,
             'risk_level'      => self::getRiskLevel($totalScore),
             'is_attack'       => $totalScore >= self::$thresholds['block'],
+            'param_position_score'  => $semanticResult['param_position_score'] ?? 0,
+            'request_context_score' => $semanticResult['request_context_score'] ?? 0,
             'semantic_detail' => $semanticResult,
             'fp_guard'        => $fpResult,
             'fp_adjustment'   => $fpAdjustment,
