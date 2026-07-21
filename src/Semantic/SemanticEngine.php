@@ -78,14 +78,16 @@ class SemanticEngine {
         string $ip = '',
         array $multiVectorData = [],
         array $headers = [],
-        string $method = 'GET'
+        string $method = 'GET',
+        string $body = '',
+        string $contentType = ''
     ): array {
         if ($text === '' && empty($params) && empty($multiVectorData)) {
             return self::emptyResult();
         }
 
-        // ---- 基础10维分析 ----
-        $baseResult = self::baseAnalyze($text, $uri, $params, $normalizerContext, $ip, $multiVectorData);
+        // ---- 基础10维分析（含内容类型感知路由） ----
+        $baseResult = self::baseAnalyze($text, $uri, $params, $normalizerContext, $ip, $multiVectorData, $body, $contentType, $headers);
 
         // ---- 误报控制检查 ----
         $fpResult = FalsePositiveGuard::analyze($uri, $method, $params, $headers, $baseResult, $ip);
@@ -122,7 +124,7 @@ class SemanticEngine {
     /**
      * 基础10维分析
      */
-    private static function baseAnalyze(string $text, string $uri, array $params, array $normalizerContext, string $ip, array $multiVectorData): array {
+    private static function baseAnalyze(string $text, string $uri, array $params, array $normalizerContext, string $ip, array $multiVectorData, string $body = '', string $contentType = '', array $headers = []): array {
         $multiVectorResult = [];
         if (!empty($multiVectorData)) {
             $multiVectorResult = MultiVectorFusion::analyze(
@@ -214,18 +216,41 @@ class SemanticEngine {
 
         $obfuscationScore = $obfuscationResult['score'];
 
-        // ---- 深度语义解析器（真正的语法分析，不是正则匹配） ----
-        $sqlParserResult = SqlSemanticParser::analyze($decodedText);
-        $htmlParserResult = HtmlSemanticParser::analyze($decodedText);
-        $phpParserResult = PhpCodeSemanticParser::analyze($decodedText);
-        $pathParserResult = PathTraversalSemanticParser::analyze($decodedText);
-        $commandParserResult = CommandInjectionSemanticParser::analyze($decodedText);
-        $xxeParserResult = XxeSemanticParser::analyze($decodedText);
-        $ssrfParserResult = SsrfSemanticParser::analyze($decodedText);
-        $sstiParserResult = SstiSemanticParser::analyze($decodedText);
-        $deserParserResult = DeserializationSemanticParser::analyze($decodedText);
-        $crlfParserResult = CrlfInjectionSemanticParser::analyze($decodedText);
-        $exprParserResult = ExpressionInjectionSemanticParser::analyze($decodedText);
+        // ---- 深度语义解析器（内容类型感知路由，不再无脑全部分析同一段文本） ----
+        $route = self::routeParsers($contentType, $headers, $body, $params, $uri, $decodedText);
+
+        // SQL解析器：分析URI参数值 + POST body中的字符串值
+        $sqlParserResult = !empty($route['sql']) ? SqlSemanticParser::analyze($route['sql']) : self::emptyParserResult();
+
+        // HTML解析器：分析Body（当Content-Type为html时重点分析）
+        $htmlParserResult = !empty($route['html']) ? HtmlSemanticParser::analyze($route['html']) : self::emptyParserResult();
+
+        // PHP解析器：分析Body + 文件上传相关参数
+        $phpParserResult = !empty($route['php']) ? PhpCodeSemanticParser::analyze($route['php']) : self::emptyParserResult();
+
+        // 路径遍历：分析URI参数值 + 文件相关参数
+        $pathParserResult = !empty($route['path']) ? PathTraversalSemanticParser::analyze($route['path']) : self::emptyParserResult();
+
+        // 命令注入：分析URI参数值 + Body字符串
+        $commandParserResult = !empty($route['command']) ? CommandInjectionSemanticParser::analyze($route['command']) : self::emptyParserResult();
+
+        // XXE解析器：分析Body（仅当Content-Type为xml时）
+        $xxeParserResult = !empty($route['xxe']) ? XxeSemanticParser::analyze($route['xxe']) : self::emptyParserResult();
+
+        // SSRF解析器：分析URI中的URL参数 + Body中的URL
+        $ssrfParserResult = !empty($route['ssrf']) ? SsrfSemanticParser::analyze($route['ssrf']) : self::emptyParserResult();
+
+        // SSTI：分析URI参数 + Body
+        $sstiParserResult = !empty($route['ssti']) ? SstiSemanticParser::analyze($route['ssti']) : self::emptyParserResult();
+
+        // 反序列化：分析Body（当Content-Type包含序列化特征时）
+        $deserParserResult = !empty($route['deser']) ? DeserializationSemanticParser::analyze($route['deser']) : self::emptyParserResult();
+
+        // CRLF：分析Headers + URI参数
+        $crlfParserResult = !empty($route['crlf']) ? CrlfInjectionSemanticParser::analyze($route['crlf']) : self::emptyParserResult();
+
+        // 表达式注入：分析URI参数 + Body
+        $exprParserResult = !empty($route['expr']) ? ExpressionInjectionSemanticParser::analyze($route['expr']) : self::emptyParserResult();
 
         $sqlParserScore  = $sqlParserResult['score'] ?? 0;
         $htmlParserScore = $htmlParserResult['score'] ?? 0;
@@ -837,5 +862,139 @@ class SemanticEngine {
 
     public static function getWeights(): array {
         return self::$weights;
+    }
+
+    /**
+     * 内容类型感知路由：根据 Content-Type 和输入来源，
+     * 决定哪些解析器激活、分析哪段文本，避免所有解析器无脑分析同一段混合文本。
+     */
+    private static function routeParsers(string $contentType, array $headers, string $body, array $params, string $uri, string $decodedText): array {
+        $route = [
+            'sql'     => '',
+            'html'    => '',
+            'php'     => '',
+            'path'    => '',
+            'command' => '',
+            'xxe'     => '',
+            'ssrf'    => '',
+            'ssti'    => '',
+            'deser'   => '',
+            'crlf'    => '',
+            'expr'    => '',
+        ];
+
+        $ct = strtolower($contentType);
+        $uriParamsText = '';
+        foreach ($params as $k => $v) {
+            $uriParamsText .= (string)$k . '=' . (string)$v . ' ';
+        }
+
+        // 提取Body中的字符串值（用于SQL/命令/SSTI分析）
+        $bodyStrings = '';
+        if (!empty($body)) {
+            $bodyStrings = $body;
+            // JSON body：提取所有字符串值
+            if (strpos($ct, 'application/json') !== false) {
+                $json = json_decode($body, true);
+                if (is_array($json)) {
+                    $bodyStrings = self::extractStringValues($json);
+                }
+            }
+        }
+
+        // SQL解析器：URI参数 + Body字符串值（SQL注入通常发生在参数和body中）
+        $route['sql'] = trim($uriParamsText . ' ' . $bodyStrings);
+        if ($route['sql'] === '') $route['sql'] = $decodedText;
+
+        // HTML解析器：仅在Content-Type为html或body包含HTML标签时
+        if (strpos($ct, 'text/html') !== false || strpos($body, '<') !== false) {
+            $route['html'] = !empty($body) ? $body : $decodedText;
+        }
+
+        // PHP解析器：Body + 文件上传参数 + URI参数
+        $fileParams = '';
+        foreach ($params as $k => $v) {
+            if (stripos((string)$k, 'file') !== false || stripos((string)$k, 'upload') !== false || stripos((string)$k, 'path') !== false) {
+                $fileParams .= (string)$v . ' ';
+            }
+        }
+        $route['php'] = trim($bodyStrings . ' ' . $fileParams);
+        if ($route['php'] === '') $route['php'] = $decodedText;
+
+        // 路径遍历：URI参数 + 文件相关参数 + URI路径
+        $route['path'] = trim($uriParamsText . ' ' . $fileParams . ' ' . $uri);
+        if ($route['path'] === '') $route['path'] = $decodedText;
+
+        // 命令注入：URI参数 + Body字符串
+        $route['command'] = trim($uriParamsText . ' ' . $bodyStrings);
+        if ($route['command'] === '') $route['command'] = $decodedText;
+
+        // XXE解析器：仅在Content-Type为xml或body包含XML特征时
+        if (strpos($ct, 'xml') !== false || strpos($body, '<?xml') !== false || strpos($body, '<!DOCTYPE') !== false) {
+            $route['xxe'] = !empty($body) ? $body : $decodedText;
+        }
+
+        // SSRF解析器：URI中的URL参数 + Body中的URL
+        $urlParams = '';
+        foreach ($params as $k => $v) {
+            $keyLower = strtolower((string)$k);
+            if (strpos($keyLower, 'url') !== false || strpos($keyLower, 'link') !== false || strpos($keyLower, 'redirect') !== false || strpos($keyLower, 'host') !== false || strpos($keyLower, 'target') !== false) {
+                $urlParams .= (string)$v . ' ';
+            }
+        }
+        $route['ssrf'] = trim($urlParams . ' ' . $bodyStrings);
+        if ($route['ssrf'] === '') $route['ssrf'] = $decodedText;
+
+        // SSTI：URI参数 + Body
+        $route['ssti'] = trim($uriParamsText . ' ' . $bodyStrings);
+        if ($route['ssti'] === '') $route['ssti'] = $decodedText;
+
+        // 反序列化：仅在Content-Type包含序列化特征或body包含序列化特征时
+        $isSerialized = false;
+        if (strpos($ct, 'java-serialized-object') !== false || strpos($ct, 'phpserialized') !== false) {
+            $isSerialized = true;
+        }
+        if (preg_match('/^[Oa]:\d+:/', $body) || preg_match('/^\{.*\}$/', $body)) {
+            $isSerialized = true;
+        }
+        if ($isSerialized) {
+            $route['deser'] = $body;
+        }
+
+        // CRLF：Headers + URI参数（CRLF注入通常发生在Header和URI参数中）
+        $headerText = '';
+        foreach ($headers as $k => $v) {
+            $headerText .= (string)$k . ': ' . (string)$v . ' ';
+        }
+        $route['crlf'] = trim($headerText . ' ' . $uriParamsText);
+        if ($route['crlf'] === '') $route['crlf'] = $decodedText;
+
+        // 表达式注入：URI参数 + Body
+        $route['expr'] = trim($uriParamsText . ' ' . $bodyStrings);
+        if ($route['expr'] === '') $route['expr'] = $decodedText;
+
+        return $route;
+    }
+
+    /**
+     * 从嵌套数组中提取所有字符串值（用于JSON body分析）
+     */
+    private static function extractStringValues(array $data): string {
+        $result = '';
+        foreach ($data as $k => $v) {
+            if (is_string($v)) {
+                $result .= $v . ' ';
+            } elseif (is_array($v)) {
+                $result .= self::extractStringValues($v);
+            }
+        }
+        return $result;
+    }
+
+    /**
+     * 返回空的解析器结果（当路由决定该解析器不激活时）
+     */
+    private static function emptyParserResult(): array {
+        return ['score' => 0, 'detected' => false];
     }
 }

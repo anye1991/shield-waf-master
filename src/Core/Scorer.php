@@ -49,9 +49,9 @@ class WafScorer {
      * @param string $ip      请求IP地址（用于攻击链关联）
      * @return array 评分结果
      */
-    public static function score($payload, $uri = '', $params = [], $normalizerContext = [], $ip = '') {
+    public static function score($payload, $uri = '', $params = [], $normalizerContext = [], $ip = '', $body = '', $contentType = '') {
         $entropyScore   = self::calcEntropy($payload);
-        $semanticResult  = self::calcSemantic($payload, $uri, $params, $normalizerContext, $ip);
+        $semanticResult  = self::calcSemantic($payload, $uri, $params, $normalizerContext, $ip, $body, $contentType);
         $semanticScore   = $semanticResult['total_score'] ?? 0;
         $compilerScore   = self::calcCompiler($payload, $uri, $params);
         $deviationScore  = self::calcDeviation($uri, $params, $normalizerContext);
@@ -207,7 +207,7 @@ class WafScorer {
     /**
      * 调用语义引擎分析
      */
-    private static function calcSemantic($text, $uri, $params, $normalizerContext = [], $ip = '') {
+    private static function calcSemantic($text, $uri, $params, $normalizerContext = [], $ip = '', $body = '', $contentType = '') {
         $multiVectorData = [
             'raw_text'         => $text,
             'uri_path'         => parse_url($uri, PHP_URL_PATH) ?: $uri,
@@ -225,7 +225,7 @@ class WafScorer {
             'raw_body'         => defined('WAF_RAW_BODY') ? WAF_RAW_BODY : '',
         ];
 
-        $result = SemanticEngine::analyze($text, $uri, $params, $normalizerContext, $ip, $multiVectorData);
+        $result = SemanticEngine::analyze($text, $uri, $params, $normalizerContext, $ip, $multiVectorData, self::extractHeaders(), $_SERVER['REQUEST_METHOD'] ?? 'GET', $body, $contentType);
         return $result;
     }
 

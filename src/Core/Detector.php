@@ -105,7 +105,7 @@ class WafRiskScore {
         'obfuscation' => 0.7,
     ];
 
-    public static function analyze($cleanText, $normalizerContext = [], $uri = '', $params = []) {
+    public static function analyze($cleanText, $normalizerContext = [], $uri = '', $params = [], $body = '', $contentType = '') {
         $result = [
             'is_attack' => false,
             'total_score' => 0,
@@ -175,7 +175,12 @@ class WafRiskScore {
                 $uri,
                 $params,
                 $normalizerContext,
-                waf_get_real_ip()
+                waf_get_real_ip(),
+                [],
+                [],
+                'GET',
+                $body,
+                $contentType
             );
             
             $semanticEvidence = [
@@ -340,6 +345,6 @@ function waf_is_attack($clean) {
     return $result['is_attack'];
 }
 
-function waf_analyze_attack($clean, $normalizerContext = [], $uri = '', $params = []) {
-    return WafRiskScore::analyze($clean, $normalizerContext, $uri, $params);
+function waf_analyze_attack($clean, $normalizerContext = [], $uri = '', $params = [], $body = '', $contentType = '') {
+    return WafRiskScore::analyze($clean, $normalizerContext, $uri, $params, $body, $contentType);
 }

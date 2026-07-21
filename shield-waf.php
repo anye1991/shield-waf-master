@@ -473,11 +473,12 @@ $normResult = AdversarialDefense::normalizeWithContext("$uri $body $post $header
 $all = $normResult['output'];
 
 // ====================== 攻击检测（L14语义上下文评分系统 + 自动学习 + 智能评分） ======================
-$attackResult = waf_analyze_attack($all, $normResult, $uri, $waf_normalized['inputs']);
+$contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+$attackResult = waf_analyze_attack($all, $normResult, $uri, $waf_normalized['inputs'], $waf_normalized['body'], $contentType);
 
 // 智能评分系统（四维：熵值+语义+结构偏差+偏离分析）
 require_once __DIR__ . '/src/Core/Scorer.php';
-$scorerResult = WafScorer::score($all, $uri, $waf_normalized['inputs'], $normResult, waf_get_real_ip());
+$scorerResult = WafScorer::score($all, $uri, $waf_normalized['inputs'], $normResult, waf_get_real_ip(), $waf_normalized['body'], $contentType);
 
 // 综合判断：规则检测或智能评分任一达到拦截阈值即拦截
 // 已验证搜索引擎：提升阈值到95，确保正常爬取不误拦（但真带攻击载荷仍会拦）
