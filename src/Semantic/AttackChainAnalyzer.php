@@ -13,6 +13,11 @@
  *   D. 行为序列相似度 - LCS最长公共子序列比较
  *   E. 阶段进展评估 - 当前步数/完成度/下一步预判
  *   F. 多维度风险评分 - 链匹配度+阶段深度+时序异常+复杂度
+ *   G. 多链关联检测 - 并行多链/链切换识别（高级攻击者特征）
+ *   H. 精细化时序窗口 - 短(60s)/中(600s)/长(3600s) 三窗口 Burst/Sustained/SlowBurn 分析
+ *   I. 横向移动检测 - 跨 URI 路径的攻击链关联（A→B→C 系统渗透）
+ *   J. 阶段转移概率 - 7x7 转移矩阵驱动的跳跃/回退异常评分
+ *   K. 增强评分整合 - 多链+时序+横向+转移异常融合的综合评分
  */
 defined('ABSPATH') || exit;
 
@@ -96,6 +101,28 @@ class AttackChainAnalyzer {
             'risk_level'  => 'critical',
             'keywords'    => ['upload', 'eval', 'assert', 'base64_decode', 'webshell'],
         ],
+        // === 增强模板（v2 横向/提权/撞库）===
+        'lateral_movement_chain' => [
+            'name'        => '横向移动链',
+            'desc'        => '跨系统渗透链：A系统注入 → B系统Webshell → C系统数据外传',
+            'phases'      => ['RECON', 'SCAN', 'INJECT', 'EXPLOIT', 'PERSIST', 'EXFIL'],
+            'risk_level'  => 'critical',
+            'keywords'    => ['shell', 'ssh', 'psexec', 'lateral', 'pivot', 'internal'],
+        ],
+        'ssrf_to_rce_chain' => [
+            'name'        => 'SSRF提权链',
+            'desc'        => 'SSRF探测到内网RCE提权的攻击流程',
+            'phases'      => ['RECON', 'SCAN', 'INJECT', 'EXPLOIT', 'PERSIST'],
+            'risk_level'  => 'high',
+            'keywords'    => ['localhost', '127.0.0.1', '169.254', 'metadata', 'gopher', 'dict'],
+        ],
+        'credential_stuffing_chain' => [
+            'name'        => '撞库攻击链',
+            'desc'        => '从登录枚举到撞库注入的认证攻击流程',
+            'phases'      => ['RECON', 'SCAN', 'ENUM', 'INJECT'],
+            'risk_level'  => 'high',
+            'keywords'    => ['login', 'password', 'account', 'admin', 'signin', 'auth'],
+        ],
     ];
 
     /**
@@ -105,6 +132,35 @@ class AttackChainAnalyzer {
      * @var array<string,array>
      */
     private static $ipHistory = [];
+
+    /**
+     * 活跃攻击链列表（多链关联检测用）
+     * 结构: [ip => [['name'=>key, 'display'=>名称, 'progress'=>int, 'similarity'=>float, 'first_seen'=>ts, 'last_seen'=>ts], ...]]
+     *
+     * @var array<string,array>
+     */
+    private static $activeChains = [];
+
+    /**
+     * 阶段转移概率矩阵（7x7）
+     * 行：源阶段；列：目标阶段。每行概率和≈1.0
+     *
+     * 异常判定规则：
+     *   - 跳跃推进（如 RECON→EXPLOIT）概率 0.01，触发时 anomaly +20
+     *   - 反向回退概率 0.05-0.1，触发时 anomaly +10
+     *   - 极低概率/未知转移 anomaly +30
+     *
+     * @var array<string,array<string,float>>
+     */
+    private static $phaseTransitionProbabilities = [
+        'RECON'   => ['RECON' => 0.40, 'SCAN' => 0.40, 'ENUM' => 0.15, 'INJECT' => 0.04, 'EXPLOIT' => 0.01, 'PERSIST' => 0.00, 'EXFIL' => 0.00],
+        'SCAN'    => ['RECON' => 0.10, 'SCAN' => 0.35, 'ENUM' => 0.30, 'INJECT' => 0.20, 'EXPLOIT' => 0.04, 'PERSIST' => 0.01, 'EXFIL' => 0.00],
+        'ENUM'    => ['RECON' => 0.05, 'SCAN' => 0.10, 'ENUM' => 0.30, 'INJECT' => 0.40, 'EXPLOIT' => 0.13, 'PERSIST' => 0.01, 'EXFIL' => 0.01],
+        'INJECT'  => ['RECON' => 0.02, 'SCAN' => 0.03, 'ENUM' => 0.10, 'INJECT' => 0.30, 'EXPLOIT' => 0.45, 'PERSIST' => 0.08, 'EXFIL' => 0.02],
+        'EXPLOIT' => ['RECON' => 0.01, 'SCAN' => 0.02, 'ENUM' => 0.03, 'INJECT' => 0.10, 'EXPLOIT' => 0.30, 'PERSIST' => 0.45, 'EXFIL' => 0.09],
+        'PERSIST' => ['RECON' => 0.01, 'SCAN' => 0.01, 'ENUM' => 0.02, 'INJECT' => 0.05, 'EXPLOIT' => 0.15, 'PERSIST' => 0.40, 'EXFIL' => 0.36],
+        'EXFIL'   => ['RECON' => 0.01, 'SCAN' => 0.01, 'ENUM' => 0.01, 'INJECT' => 0.03, 'EXPLOIT' => 0.05, 'PERSIST' => 0.15, 'EXFIL' => 0.74],
+    ];
 
     /**
      * 记录请求到攻击链分析器
@@ -192,7 +248,11 @@ class AttackChainAnalyzer {
      *     phase_sequence:array,
      *     predicted_next:array,
      *     start_time:int,
-     *     last_activity:int
+     *     last_activity:int,
+     *     active_chain_count:int,
+     *     timing_pattern:array,
+     *     lateral_movement:array,
+     *     transition_anomaly:int
      * }
      */
     public static function getPrediction(string $ip): array {
@@ -212,6 +272,11 @@ class AttackChainAnalyzer {
                 'predicted_next'   => [],
                 'start_time'       => 0,
                 'last_activity'    => 0,
+                // 增强字段（无数据时为零值/空数组）
+                'active_chain_count' => 0,
+                'timing_pattern'     => [],
+                'lateral_movement'   => [],
+                'transition_anomaly' => 0,
             ];
         }
 
@@ -244,6 +309,13 @@ class AttackChainAnalyzer {
         );
 
         $predictedNext = self::predictNextPhase($currentPhase, $chainMatch);
+
+        // 增强评分：多链关联 + 时序窗口 + 横向移动 + 阶段转移异常
+        $enhanced = self::calcEnhancedScore($ip, [
+            'base_score'    => $riskScore,
+            'current_phase' => $currentPhase,
+        ]);
+        $riskScore = $enhanced['enhanced_score'];
         $riskLevel = self::scoreToRiskLevel($riskScore);
 
         return [
@@ -261,6 +333,11 @@ class AttackChainAnalyzer {
             'predicted_next'   => $predictedNext,
             'start_time'       => $history['start_time'],
             'last_activity'    => $history['last_activity'],
+            // 增强字段（多链关联/时序窗口/横向移动/转移异常）
+            'active_chain_count' => $enhanced['active_chain_count'],
+            'timing_pattern'     => $enhanced['timing_pattern'],
+            'lateral_movement'   => $enhanced['lateral_movement'],
+            'transition_anomaly' => $enhanced['transition_anomaly'],
         ];
     }
 
@@ -294,6 +371,7 @@ class AttackChainAnalyzer {
         foreach (self::$ipHistory as $ip => $history) {
             if ($now - $history['last_activity'] > self::INACTIVITY_TIMEOUT) {
                 unset(self::$ipHistory[$ip]);
+                unset(self::$activeChains[$ip]);
             }
         }
     }
@@ -306,6 +384,7 @@ class AttackChainAnalyzer {
      */
     public static function clearChain(string $ip) {
         unset(self::$ipHistory[$ip]);
+        unset(self::$activeChains[$ip]);
     }
 
     // ====================================================================
@@ -772,5 +851,452 @@ class AttackChainAnalyzer {
     public static function getActiveIpCount(): int {
         self::cleanupExpired();
         return count(self::$ipHistory);
+    }
+
+    // ====================================================================
+    // G. 多链关联检测（并行多链 / 链切换识别）
+    // ====================================================================
+
+    /**
+     * 多链关联检测
+     *
+     * 分析 IP 历史请求中并存的多个攻击链，识别链切换行为：
+     *   - 多并行链（>=2）→ 切换异常 +20 分（高级攻击者特征）
+     *   - 链切换（前半段匹配A链，后半段匹配B链）→ +15 分
+     *
+     * 副作用：刷新 self::$activeChains[$ip] 缓存
+     *
+     * @param string $ip 客户端IP
+     * @return array{
+     *     chain_count:int,
+     *     active_chains:array,
+     *     switch_detected:bool,
+     *     switch_anomaly:int
+     * }
+     */
+    private static function detectMultiChains(string $ip): array {
+        $empty = [
+            'chain_count'     => 0,
+            'active_chains'   => [],
+            'switch_detected' => false,
+            'switch_anomaly'  => 0,
+        ];
+
+        if (!isset(self::$ipHistory[$ip])) {
+            self::$activeChains[$ip] = [];
+            return $empty;
+        }
+
+        $requests = self::$ipHistory[$ip]['requests'];
+        $phaseSequence = self::extractPhaseSequence($requests);
+
+        if (count($phaseSequence) < 2) {
+            self::$activeChains[$ip] = [];
+            return $empty;
+        }
+
+        $now = time();
+        $firstSeen = $requests[0]['time'] ?? $now;
+        $lastSeen = $requests[count($requests) - 1]['time'] ?? $now;
+
+        // 对每个模板计算 LCS 相似度，识别并行活跃链
+        $activeChains = [];
+        foreach (self::$chainTemplates as $key => $template) {
+            $templatePhases = $template['phases'];
+            $lcsLen = self::lcsLength($phaseSequence, $templatePhases);
+            if ($lcsLen < 2) {
+                continue;
+            }
+            $maxLen = max(count($templatePhases), count($phaseSequence));
+            $similarity = $maxLen > 0 ? $lcsLen / $maxLen : 0.0;
+            if ($similarity < 0.3) {
+                continue;
+            }
+            $progress = (int)round($lcsLen / count($templatePhases) * 100);
+            $activeChains[] = [
+                'name'       => $key,
+                'display'    => $template['name'],
+                'progress'   => $progress,
+                'similarity' => round($similarity, 3),
+                'first_seen' => $firstSeen,
+                'last_seen'  => $lastSeen,
+            ];
+        }
+
+        // 链切换检测：将请求序列按时间分前后两半，分别找最佳匹配链
+        $switchDetected = false;
+        if (count($requests) >= 6 && count($activeChains) >= 1) {
+            $mid = (int)(count($requests) / 2);
+            $earlySeq = self::extractPhaseSequence(array_slice($requests, 0, $mid));
+            $lateSeq  = self::extractPhaseSequence(array_slice($requests, $mid));
+            $earlyBest = self::findDominantChainKey($earlySeq);
+            $lateBest  = self::findDominantChainKey($lateSeq);
+            if ($earlyBest !== null && $lateBest !== null && $earlyBest !== $lateBest) {
+                $switchDetected = true;
+            }
+        }
+
+        // 异常分：多并行链 +20，链切换 +15（上限 40）
+        $switchAnomaly = 0;
+        if (count($activeChains) >= 2) {
+            $switchAnomaly += 20;
+        }
+        if ($switchDetected) {
+            $switchAnomaly += 15;
+        }
+        $switchAnomaly = min(40, $switchAnomaly);
+
+        // 刷新缓存
+        self::$activeChains[$ip] = $activeChains;
+
+        return [
+            'chain_count'     => count($activeChains),
+            'active_chains'   => $activeChains,
+            'switch_detected' => $switchDetected,
+            'switch_anomaly'  => $switchAnomaly,
+        ];
+    }
+
+    /**
+     * 找出阶段序列的最佳匹配链 key
+     *
+     * @param array $phaseSequence 阶段序列
+     * @return string|null 链 key（相似度<0.3 返回 null）
+     */
+    private static function findDominantChainKey(array $phaseSequence): ?string {
+        if (count($phaseSequence) < 2) {
+            return null;
+        }
+        $bestKey = null;
+        $bestSim = 0.0;
+        foreach (self::$chainTemplates as $key => $template) {
+            $templatePhases = $template['phases'];
+            $lcsLen = self::lcsLength($phaseSequence, $templatePhases);
+            if ($lcsLen < 2) {
+                continue;
+            }
+            $maxLen = max(count($templatePhases), count($phaseSequence));
+            $sim = $maxLen > 0 ? $lcsLen / $maxLen : 0.0;
+            if ($sim > $bestSim) {
+                $bestSim = $sim;
+                $bestKey = $key;
+            }
+        }
+        return $bestSim >= 0.3 ? $bestKey : null;
+    }
+
+    // ====================================================================
+    // H. 精细化时序窗口分析（短/中/长三窗口）
+    // ====================================================================
+
+    /**
+     * 精细化时序模式分析
+     *
+     * 基于三时间窗口检测攻击者的时序行为模式：
+     *   - 短窗口（60秒）：>20 请求/分钟 → Burst 暴力模式，anomaly 25-40
+     *   - 中窗口（600秒）：>60 请求/10分钟 → Sustained 持续渗透，anomaly 15-25
+     *   - 长窗口（3600秒）：分散请求避开短窗告警 → Slow Burn 隐身模式
+     *
+     * Slow Burn + 阶段推进 → is_stealth=true，异常分 +15（隐身攻击者）
+     *
+     * @param string $ip 客户端IP
+     * @return array{
+     *     pattern:string,
+     *     rate_per_minute:float,
+     *     anomaly_score:int,
+     *     is_stealth:bool
+     * }
+     */
+    private static function analyzeTimingPattern(string $ip): array {
+        $empty = [
+            'pattern'         => 'normal',
+            'rate_per_minute' => 0.0,
+            'anomaly_score'   => 0,
+            'is_stealth'      => false,
+        ];
+
+        if (!isset(self::$ipHistory[$ip])) {
+            return $empty;
+        }
+
+        $requests = self::$ipHistory[$ip]['requests'];
+        if (count($requests) < 2) {
+            return $empty;
+        }
+
+        $now = time();
+        $shortCount = 0;  // 60s 窗口
+        $midCount   = 0;  // 600s 窗口
+        $longCount  = 0;  // 3600s 窗口
+        foreach ($requests as $req) {
+            $age = $now - (int)($req['time'] ?? $now);
+            if ($age <= 60)   $shortCount++;
+            if ($age <= 600)  $midCount++;
+            if ($age <= 3600) $longCount++;
+        }
+
+        $pattern       = 'normal';
+        $anomaly       = 0;
+        $isStealth     = false;
+        $ratePerMinute = 0.0;
+
+        $currentPhase  = self::$ipHistory[$ip]['current_phase'];
+        $phaseAdvanced = self::phaseIndex($currentPhase) > 0;
+
+        if ($shortCount > 20) {
+            // Burst 暴力模式：25-40 分（随强度递增）
+            $pattern = 'burst';
+            $anomaly = 25 + min(15, (int)(($shortCount - 20) / 4));
+            $ratePerMinute = (float)$shortCount; // 60s 窗口 → 直接为每分钟数
+        } elseif ($midCount > 60) {
+            // Sustained 持续渗透：15-25 分
+            $pattern = 'sustained';
+            $anomaly = 15 + min(10, (int)(($midCount - 60) / 12));
+            $ratePerMinute = $midCount / 10.0;
+        } elseif ($longCount >= 5 && $shortCount <= 5 && $midCount <= 30) {
+            // Slow Burn 隐身模式：长窗有活动，短/中窗稀疏（避开告警）
+            $pattern = 'slow_burn';
+            $anomaly = 5;
+            $ratePerMinute = $longCount / 60.0;
+            // 隐身攻击者：阶段已推进却仍保持低速 → +15
+            if ($phaseAdvanced) {
+                $isStealth = true;
+                $anomaly += 15;
+            }
+        } else {
+            // normal：仍给出基于短窗的速率参考
+            if ($shortCount > 0) {
+                $ratePerMinute = (float)$shortCount;
+            } elseif ($midCount > 0) {
+                $ratePerMinute = $midCount / 10.0;
+            } elseif ($longCount > 0) {
+                $ratePerMinute = $longCount / 60.0;
+            }
+        }
+
+        return [
+            'pattern'         => $pattern,
+            'rate_per_minute' => round($ratePerMinute, 2),
+            'anomaly_score'   => $anomaly,
+            'is_stealth'      => $isStealth,
+        ];
+    }
+
+    // ====================================================================
+    // I. 横向移动检测（跨 URI 路径的攻击链关联）
+    // ====================================================================
+
+    /**
+     * 横向移动检测
+     *
+     * 分析同一 IP 在不同 URI 路径上的攻击链活动，识别横向移动模式：
+     *   A系统SQL注入 → B系统Webshell → C系统数据外传
+     *
+     * 当 2 个及以上 URI 路径前缀出现 INJECT/EXPLOIT/PERSIST/EXFIL 活动，
+     * 判定为横向移动，movement_score 30-50。
+     *
+     * @param string $ip 客户端IP
+     * @return array{
+     *     is_lateral:bool,
+     *     affected_paths:array,
+     *     movement_score:int
+     * }
+     */
+    private static function detectLateralMovement(string $ip): array {
+        $empty = [
+            'is_lateral'     => false,
+            'affected_paths' => [],
+            'movement_score' => 0,
+        ];
+
+        if (!isset(self::$ipHistory[$ip])) {
+            return $empty;
+        }
+
+        $requests = self::$ipHistory[$ip]['requests'];
+        if (count($requests) < 2) {
+            return $empty;
+        }
+
+        // 按 URI 前缀分组统计阶段
+        $pathPhaseMap = [];  // [path_prefix => [phase => count]]
+        foreach ($requests as $req) {
+            $prefix = self::extractUriPathPrefix($req['uri'] ?? '');
+            $phase  = $req['phase'] ?? 'RECON';
+            if (!isset($pathPhaseMap[$prefix])) {
+                $pathPhaseMap[$prefix] = [];
+            }
+            if (!isset($pathPhaseMap[$prefix][$phase])) {
+                $pathPhaseMap[$prefix][$phase] = 0;
+            }
+            $pathPhaseMap[$prefix][$phase]++;
+        }
+
+        // 识别有"深度阶段"活动（INJECT 及之后）的路径
+        $deepPhases = ['INJECT', 'EXPLOIT', 'PERSIST', 'EXFIL'];
+        $affectedPaths = [];
+        foreach ($pathPhaseMap as $prefix => $phaseCounts) {
+            foreach ($deepPhases as $dp) {
+                if (!empty($phaseCounts[$dp])) {
+                    $affectedPaths[] = $prefix;
+                    break;
+                }
+            }
+        }
+
+        $affectedCount = count($affectedPaths);
+        if ($affectedCount < 2) {
+            return $empty;
+        }
+
+        // 30-50 分：基础 30 + 每多一个路径 +5（上限 50）
+        $score = 30 + min(20, ($affectedCount - 2) * 5);
+
+        return [
+            'is_lateral'     => true,
+            'affected_paths' => $affectedPaths,
+            'movement_score' => $score,
+        ];
+    }
+
+    /**
+     * 提取 URI 路径前缀（第一段）
+     * 例：/api/v1/login → /api；/admin/users → /admin
+     *
+     * @param string $uri 原始 URI
+     * @return string 路径前缀
+     */
+    private static function extractUriPathPrefix(string $uri): string {
+        $path = parse_url($uri, PHP_URL_PATH);
+        if (!is_string($path) || $path === '') {
+            return '/';
+        }
+        $parts = explode('/', trim($path, '/'));
+        $first = $parts[0] ?? '';
+        return $first === '' ? '/' : '/' . $first;
+    }
+
+    // ====================================================================
+    // J. 阶段转移概率异常评分
+    // ====================================================================
+
+    /**
+     * 计算阶段转移异常分（基于 7x7 概率矩阵）
+     *
+     * 评分规则：
+     *   - 概率 >= 0.20：正常推进，0 分
+     *   - 概率 0.10-0.20：轻度异常，5 分
+     *   - 概率 0.05-0.10：反向回退或小跳，10 分
+     *   - 概率 0.01-0.05：跳跃推进（如 RECON→EXPLOIT），20 分
+     *   - 概率 < 0.01 或未知：极低概率，30 分
+     *
+     * @param string $from 源阶段
+     * @param string $to   目标阶段
+     * @return int 异常分（0-30）
+     */
+    private static function calcTransitionAnomaly(string $from, string $to): int {
+        $from = strtoupper(trim($from));
+        $to   = strtoupper(trim($to));
+
+        // 同阶段停留：无异常
+        if ($from === $to) {
+            return 0;
+        }
+
+        if (!isset(self::$phaseTransitionProbabilities[$from][$to])) {
+            return 30;  // 未知转移
+        }
+
+        $prob = (float)self::$phaseTransitionProbabilities[$from][$to];
+
+        if ($prob >= 0.20) {
+            return 0;
+        } elseif ($prob >= 0.10) {
+            return 5;
+        } elseif ($prob >= 0.05) {
+            return 10;  // 反向回退
+        } elseif ($prob >= 0.01) {
+            return 20;  // 跳跃推进
+        }
+        return 30;  // 极低概率
+    }
+
+    // ====================================================================
+    // K. 增强评分整合
+    // ====================================================================
+
+    /**
+     * 增强评分整合
+     *
+     * 在基础评分（calculateRiskScore）之上，叠加多链关联、精细化时序、
+     * 横向移动、阶段转移异常四类增强信号，输出最终综合分数（上限 100）。
+     *
+     * 评分叠加：
+     *   - 多链并行异常：+10-40（switch_anomaly）
+     *   - 时序模式异常：+15-40（timing anomaly_score）
+     *   - 横向移动异常：+30-50（movement_score）
+     *   - 阶段转移异常：+0-30（transition anomaly）
+     *
+     * chain_risk 字段语义（low/medium/high/critical）由 scoreToRiskLevel 保持不变。
+     *
+     * @param string $ip              客户端IP
+     * @param array  $basePrediction  基础预测数据（含 base_score/current_phase）
+     * @return array{
+     *     enhanced_score:int,
+     *     active_chain_count:int,
+     *     timing_pattern:array,
+     *     lateral_movement:array,
+     *     transition_anomaly:int
+     * }
+     */
+    private static function calcEnhancedScore(string $ip, array $basePrediction): array {
+        $baseScore    = (int)($basePrediction['base_score'] ?? 0);
+
+        $emptyResult = [
+            'enhanced_score'     => $baseScore,
+            'active_chain_count' => 0,
+            'timing_pattern'     => [],
+            'lateral_movement'   => [],
+            'transition_anomaly' => 0,
+        ];
+
+        if (!isset(self::$ipHistory[$ip])) {
+            return $emptyResult;
+        }
+
+        // 1. 多链关联异常
+        $multiChain    = self::detectMultiChains($ip);
+        $switchAnomaly = (int)$multiChain['switch_anomaly'];
+
+        // 2. 精细化时序窗口异常
+        $timing        = self::analyzeTimingPattern($ip);
+        $timingAnomaly = (int)$timing['anomaly_score'];
+
+        // 3. 横向移动异常
+        $lateral       = self::detectLateralMovement($ip);
+        $lateralScore  = (int)$lateral['movement_score'];
+
+        // 4. 阶段转移异常（基于最后一次阶段切换）
+        $transitionAnomaly = 0;
+        $requests          = self::$ipHistory[$ip]['requests'];
+        $phaseSequence     = self::extractPhaseSequence($requests);
+        $seqCount          = count($phaseSequence);
+        if ($seqCount >= 2) {
+            $from = $phaseSequence[$seqCount - 2];
+            $to   = $phaseSequence[$seqCount - 1];
+            $transitionAnomaly = self::calcTransitionAnomaly($from, $to);
+        }
+
+        // 整合评分（上限 100）
+        $enhancedScore = $baseScore + $switchAnomaly + $timingAnomaly + $lateralScore + $transitionAnomaly;
+        $enhancedScore = max(0, min(100, $enhancedScore));
+
+        return [
+            'enhanced_score'     => $enhancedScore,
+            'active_chain_count' => (int)$multiChain['chain_count'],
+            'timing_pattern'     => $timing,
+            'lateral_movement'   => $lateral,
+            'transition_anomaly' => $transitionAnomaly,
+        ];
     }
 }

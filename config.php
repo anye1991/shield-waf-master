@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 }
 
 // ======================== 版本号 ========================
-define('SHIELD_WAF_VERSION', '5.0.0');
+define('SHIELD_WAF_VERSION', '5.1.0');
 
 // ======================== 简易 .env 加载（带白名单） ========================
 function waf_load_env($dir) {
@@ -391,6 +391,10 @@ define('WAF_SEMANTIC_MEMORY_TTL', 48);
 define('WAF_ATTACK_CHAIN', getenv('WAF_ATTACK_CHAIN') !== false ? (getenv('WAF_ATTACK_CHAIN') === 'true') : true);
 // 攻击链保留时间（小时）
 define('WAF_ATTACK_CHAIN_TTL', 24);
+// 参数位置上下文分析（L11）：同 payload 在不同位置（query/post/cookie/header/json）威胁不同
+define('WAF_PARAM_POSITION_ANALYZER', getenv('WAF_PARAM_POSITION_ANALYZER') !== false ? (getenv('WAF_PARAM_POSITION_ANALYZER') === 'true') : true);
+// 跨请求上下文分析（L12）：CSRF/重放攻击/会话异常/时序异常/API滥用检测
+define('WAF_REQUEST_CONTEXT_ANALYZER', getenv('WAF_REQUEST_CONTEXT_ANALYZER') !== false ? (getenv('WAF_REQUEST_CONTEXT_ANALYZER') === 'true') : true);
 
 // ======================== 主动防御配置 ========================
 // 主动防御是否启用（蜜罐+预判拦截+攻击链封堵）

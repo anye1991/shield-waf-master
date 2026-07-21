@@ -41,6 +41,8 @@ require_once __DIR__ . '/SstiSemanticParser.php';
 require_once __DIR__ . '/DeserializationSemanticParser.php';
 require_once __DIR__ . '/CrlfInjectionSemanticParser.php';
 require_once __DIR__ . '/ExpressionInjectionSemanticParser.php';
+require_once __DIR__ . '/ParamPositionAnalyzer.php';
+require_once __DIR__ . '/RequestContextAnalyzer.php';
 
 class SemanticEngine {
     private static $weights = [
@@ -65,6 +67,9 @@ class SemanticEngine {
         'deser_parser'      => 0.07,
         'crlf_parser'       => 0.05,
         'expr_parser'       => 0.06,
+        // 上下文分析器（新增）
+        'param_position'    => 0.05,   // 参数位置语义分析
+        'request_context'   => 0.06,   // 跨请求上下文分析
     ];
 
     /**
@@ -264,6 +269,38 @@ class SemanticEngine {
         $crlfParserScore = $crlfParserResult['score'] ?? 0;
         $exprParserScore = $exprParserResult['score'] ?? 0;
 
+        // ---- 参数位置上下文分析（L11）：同 payload 在不同位置威胁不同 ----
+        $paramPositionResult = ['score' => 0, 'positions' => [], 'position_anomalies' => [], 'cross_position_patterns' => [], 'high_risk_params' => []];
+        if (!defined('WAF_PARAM_POSITION_ANALYZER') || WAF_PARAM_POSITION_ANALYZER) {
+            $paramPositionResult = ParamPositionAnalyzer::analyze(
+                $multiVectorData['get'] ?? [],
+                $multiVectorData['post'] ?? [],
+                $multiVectorData['cookie_array'] ?? [],
+                $multiVectorData['headers'] ?? [],
+                [],  // JSON Body（已由 body 解析器处理，这里传空避免重复）
+                $uri
+            );
+        }
+        $paramPositionScore = $paramPositionResult['score'] ?? 0;
+
+        // ---- 跨请求上下文分析（L12）：CSRF/重放/会话/时序/API滥用 ----
+        $ctxMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+        $requestContextResult = [
+            'score' => 0, 'csrf_risk' => [], 'replay_risk' => [], 'session_anomaly' => [],
+            'timing_anomaly' => [], 'api_abuse' => [], 'cross_request_patterns' => [],
+        ];
+        if (!defined('WAF_REQUEST_CONTEXT_ANALYZER') || WAF_REQUEST_CONTEXT_ANALYZER) {
+            $requestContextResult = RequestContextAnalyzer::analyze(
+                $ip,
+                $uri,
+                $ctxMethod,
+                $multiVectorData['headers'] ?? $headers,
+                $params,
+                session_id() ?: ''
+            );
+        }
+        $requestContextScore = $requestContextResult['score'] ?? 0;
+
         // ---- 攻击模式泛化匹配（结构相似度，非字符串匹配） ----
         $patternMatchResult = AttackPatternLibrary::match($text, $decodedText);
         $patternMatchScore = 0;
@@ -295,6 +332,8 @@ class SemanticEngine {
         $total += $deserParserScore           * self::$weights['deser_parser'];
         $total += $crlfParserScore            * self::$weights['crlf_parser'];
         $total += $exprParserScore            * self::$weights['expr_parser'];
+        $total += $paramPositionScore         * self::$weights['param_position'];
+        $total += $requestContextScore        * self::$weights['request_context'];
 
         $multiVectorScore = $multiVectorResult['fusion_score'] ?? 0;
         if ($multiVectorScore >= 30) {
@@ -314,6 +353,7 @@ class SemanticEngine {
             $memoryScore, $adversarialScore, $sqlParserScore, $htmlParserScore, $phpParserScore,
             $pathParserScore, $commandParserScore, $xxeParserScore, $ssrfParserScore,
             $sstiParserScore, $deserParserScore, $crlfParserScore, $exprParserScore,
+            $paramPositionScore, $requestContextScore,
         ]);
 
         if ($highDimensions >= 6) $total += 18;
@@ -461,6 +501,17 @@ class SemanticEngine {
             $total = $parserFlagBonus;
         }
 
+        // ===== 上下文分析器强证据加成 =====
+        // 参数位置异常 + 注入证据 -> 跨位置注入意图
+        if ($paramPositionScore >= 50 && $intentScore >= 40) $total += 10;
+        if (!empty($paramPositionResult['cross_position_patterns'])) $total += 8;
+        // 跨请求上下文强证据：CSRF/重放/会话劫持 -> 直接加成
+        if (!empty($requestContextResult['csrf_risk']['is_csrf'])) $total += 12;
+        if (!empty($requestContextResult['replay_risk']['is_replay'])) $total += 10;
+        if (!empty($requestContextResult['session_anomaly']['is_anomaly'])) $total += 12;
+        if (!empty($requestContextResult['timing_anomaly']['is_anomaly'])) $total += 8;
+        if (!empty($requestContextResult['api_abuse']['is_abuse'])) $total += 10;
+
         // ===== 明确攻击签名兜底加成 =====
         // 当解析器得分偏低但归一化后的文本包含明确的攻击签名时，给予兜底分数
         // 防止短payload或变形payload因解析器保守而漏检
@@ -495,6 +546,27 @@ class SemanticEngine {
             'deser_parser_score'    => $deserParserScore,
             'crlf_parser_score'     => $crlfParserScore,
             'expr_parser_score'     => $exprParserScore,
+            'param_position_score'  => $paramPositionScore,
+            'request_context_score' => $requestContextScore,
+            'param_position_result' => [
+                'position_count'        => count($paramPositionResult['positions'] ?? []),
+                'position_anomaly_count' => count($paramPositionResult['position_anomalies'] ?? []),
+                'cross_position_count'  => count($paramPositionResult['cross_position_patterns'] ?? []),
+                'high_risk_param_count' => count($paramPositionResult['high_risk_params'] ?? []),
+            ],
+            'request_context_result' => [
+                'csrf_risk'         => $requestContextResult['csrf_risk']['risk_score'] ?? 0,
+                'is_csrf'           => $requestContextResult['csrf_risk']['is_csrf'] ?? false,
+                'replay_risk'       => $requestContextResult['replay_risk']['risk_score'] ?? 0,
+                'is_replay'         => $requestContextResult['replay_risk']['is_replay'] ?? false,
+                'session_anomaly'   => $requestContextResult['session_anomaly']['risk_score'] ?? 0,
+                'is_session_anomaly' => $requestContextResult['session_anomaly']['is_anomaly'] ?? false,
+                'timing_anomaly'    => $requestContextResult['timing_anomaly']['risk_score'] ?? 0,
+                'timing_pattern'    => $requestContextResult['timing_anomaly']['pattern'] ?? 'human',
+                'api_abuse'         => $requestContextResult['api_abuse']['risk_score'] ?? 0,
+                'is_api_abuse'      => $requestContextResult['api_abuse']['is_abuse'] ?? false,
+                'cross_request_patterns' => count($requestContextResult['cross_request_patterns']['patterns'] ?? []),
+            ],
             'sql_parser_result'     => [
                 'has_tautology'       => $sqlParserResult['has_tautology'] ?? false,
                 'tautology_type'      => $sqlParserResult['tautology_type'] ?? '',
@@ -722,6 +794,20 @@ class SemanticEngine {
             'l4_param_score' => 0, 'l5_business_score' => 0, 'l6_logic_score' => 0,
             'l7_intent_score' => 0, 'l8_chain_score' => 0, 'l9_memory_score' => 0,
             'l10_adversarial_score' => 0, 'indicators' => [],
+            // 上下文分析器空结果
+            'param_position_score' => 0, 'request_context_score' => 0,
+            'param_position_result' => [
+                'position_count' => 0, 'position_anomaly_count' => 0,
+                'cross_position_count' => 0, 'high_risk_param_count' => 0,
+            ],
+            'request_context_result' => [
+                'csrf_risk' => 0, 'is_csrf' => false,
+                'replay_risk' => 0, 'is_replay' => false,
+                'session_anomaly' => 0, 'is_session_anomaly' => false,
+                'timing_anomaly' => 0, 'timing_pattern' => 'human',
+                'api_abuse' => 0, 'is_api_abuse' => false,
+                'cross_request_patterns' => 0,
+            ],
         ];
     }
 

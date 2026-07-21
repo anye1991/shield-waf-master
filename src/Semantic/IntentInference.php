@@ -121,6 +121,46 @@ class IntentInference {
         'actions'       => ['name' => '目标达成阶段', 'desc' => '数据外传、凭据窃取、横向移动',       'order' => 7, 'weight' => 30],
     ];
 
+    /* =====================================================================
+     * Kill Chain 阶段转移概率矩阵（G 阶段转移异常推理）
+     * 定义阶段间的转移概率（0.0-1.0），用于推断阶段转移的异常程度。
+     *   正向推进（+1 阶段）= 0.70   同阶段停留 = 0.30
+     *   跳跃推进（+2 阶段）= 0.15   反向回退（-1 阶段）= 0.10
+     *   大跳跃（≥+3 阶段或回退至起点）= 0.05
+     * 概率越低代表该转移路径越罕见，越可能是异常行为（如已知漏洞直接利用、
+     * 重放攻击、目标切换、误报等）。
+     * ===================================================================== */
+    private static $phaseTransitionMatrix = [
+        'recon' => [
+            'recon' => 0.30, 'weaponization' => 0.70, 'delivery' => 0.15,
+            'exploitation' => 0.15, 'installation' => 0.05, 'c2' => 0.05, 'actions' => 0.05,
+        ],
+        'weaponization' => [
+            'recon' => 0.10, 'weaponization' => 0.30, 'delivery' => 0.70,
+            'exploitation' => 0.15, 'installation' => 0.15, 'c2' => 0.05, 'actions' => 0.05,
+        ],
+        'delivery' => [
+            'recon' => 0.05, 'weaponization' => 0.10, 'delivery' => 0.30,
+            'exploitation' => 0.70, 'installation' => 0.15, 'c2' => 0.15, 'actions' => 0.05,
+        ],
+        'exploitation' => [
+            'recon' => 0.10, 'weaponization' => 0.05, 'delivery' => 0.10,
+            'exploitation' => 0.30, 'installation' => 0.70, 'c2' => 0.15, 'actions' => 0.15,
+        ],
+        'installation' => [
+            'recon' => 0.05, 'weaponization' => 0.05, 'delivery' => 0.05,
+            'exploitation' => 0.10, 'installation' => 0.30, 'c2' => 0.70, 'actions' => 0.15,
+        ],
+        'c2' => [
+            'recon' => 0.05, 'weaponization' => 0.05, 'delivery' => 0.05,
+            'exploitation' => 0.05, 'installation' => 0.10, 'c2' => 0.30, 'actions' => 0.70,
+        ],
+        'actions' => [
+            'recon' => 0.10, 'weaponization' => 0.05, 'delivery' => 0.05,
+            'exploitation' => 0.05, 'installation' => 0.05, 'c2' => 0.10, 'actions' => 0.30,
+        ],
+    ];
+
     /** 意图类别 -> 人类可读标签 */
     private static $intent_labels = [
         'sql_injection'      => 'SQL 注入',
@@ -142,6 +182,28 @@ class IntentInference {
         'path_traversal'     => ['process_recon', 'file_explore', 'code_inject_delivery', 'code_read', 'bypass_construction', 'config_read', 'credential_read', 'lateral_movement'],
         'code_execution'     => ['payload_delivery', 'code_inject_delivery', 'payload_construction', 'webshell_install', 'rce_invoke', 'command_exec', 'persistence'],
         'ssti'               => ['template_probe', 'sandbox_escape', 'data_extract'],
+    ];
+
+    /* =====================================================================
+     * 意图转移图（G 意图转移异常推理）
+     * 定义意图类别间的转移关系概率。用于检测攻击者切换攻击向量的行为。
+     * 典型提权链：sql_injection -> code_execution -> command_injection
+     * 未列出的意图对视为未知转移（概率 0.0），异常评分最高。
+     * ===================================================================== */
+    private static $intentTransitions = [
+        'sql_injection' => [
+            'path_traversal'    => 0.4,  // 数据获取转向文件读取
+            'code_execution'    => 0.3,  // SQL 注入转向 RCE，典型提权链
+        ],
+        'xss' => [
+            'command_injection' => 0.2,  // XSS 转向命令注入
+        ],
+        'path_traversal' => [
+            'code_execution'    => 0.5,  // 文件读取转向代码执行
+        ],
+        'code_execution' => [
+            'command_injection' => 0.6,  // RCE 转向命令执行
+        ],
     ];
 
     /* =====================================================================
@@ -226,12 +288,14 @@ class IntentInference {
      * @param string $text    归一化后的请求体文本
      * @param string $uri     请求 URI
      * @param array  $params  请求参数
-     * @param array  $history 历史请求记录（保留兼容，本层未使用）
+     * @param array  $history 历史请求记录（支持 previous_phase/previous_intent/request_count/time_elapsed；
+     *                        为空数组或 null 时按无历史处理，完全向后兼容）
      * @return array score, phase, phase_name, phase_desc, phase_confidence,
-     *               primary_intent(_name), intents, kill_chain_phase, legacy_phase,
-     *               chain_node, chain_depth(_score), attacker_profile(_name),
+     *               phase_confidence_detail, primary_intent(_name), intents, kill_chain_phase,
+     *               legacy_phase, chain_node, chain_depth(_score), attacker_profile(_name),
      *               context_zone, context_hint, indicators, next_actions,
-     *               evidence_count, confidence, phase_hits
+     *               evidence_count, confidence, phase_hits,
+     *               phase_transition, intent_transition
      */
     public static function analyze(string $text, string $uri = '', array $params = [], array $history = []): array {
         $paramText = self::collectParamText($params);
@@ -256,6 +320,9 @@ class IntentInference {
         // ============== B. Kill Chain 阶段推理（到达的最深阶段） ==============
         $phase = self::inferKillChainPhase($evidence);
 
+        // ============== B+. 阶段置信度精细化（独立于总置信度，按阶段证据独立计算） ==============
+        $phaseConfidenceDetail = self::calcPhaseConfidence($evidence, $phase['phase']);
+
         // ============== C. 意图置信度推理（伪贝叶斯累积） ==============
         $confidence = self::inferConfidence($evidence, $intents);
 
@@ -273,6 +340,30 @@ class IntentInference {
         $profileScore = min(15, $profile['score']);                                   // E 0-15
         $total = max(0, min(100, $intentScore + $phaseScore + $confScore + $chainScore + $profileScore));
 
+        // ============== G. 阶段/意图转移异常推理（基于历史请求，向后兼容：history 为空时不触发） ==============
+        $phaseTransition  = null;
+        $intentTransition = null;
+        if (!empty($history)) {
+            // G1. 阶段转移异常：对比上一请求阶段与当前阶段
+            $previousPhase = isset($history['previous_phase']) ? (string) $history['previous_phase'] : '';
+            if ($previousPhase !== '' && $previousPhase !== $phase['phase']) {
+                $phaseTransition = self::inferPhaseTransition($previousPhase, $phase['phase']);
+                // 阶段转移异常分：anomaly_score * 0.15（最多贡献 0-10 分）
+                $total += (int) round($phaseTransition['anomaly_score'] * 0.15);
+            }
+            // G2. 意图转移异常：对比上一请求主意图与当前主意图
+            $previousIntent = isset($history['previous_intent']) ? (string) $history['previous_intent'] : '';
+            if ($previousIntent !== '') {
+                $intentTransition = self::inferIntentTransition(
+                    $intents,
+                    [['class' => $previousIntent]]
+                );
+                // 意图转移异常分：anomaly_score * 0.10（最多贡献 0-7 分）
+                $total += (int) round($intentTransition['anomaly_score'] * 0.10);
+            }
+        }
+        $total = max(0, min(100, $total));
+
         $indicators = [];
         foreach ($evidence as $e) {
             $indicators[] = $e['label'];
@@ -285,29 +376,32 @@ class IntentInference {
         }
 
         return [
-            'score'                 => $total,
-            'phase'                 => $phase['phase'],
-            'phase_name'            => $phase['name'],
-            'phase_desc'            => $phase['desc'],
-            'phase_confidence'      => (int) round($confidence),
-            'primary_intent'        => $primary['class'],
-            'primary_intent_name'   => $primary['label'],
-            'intents'               => $intents,
-            'kill_chain_phase'      => $phase['phase'],
-            'legacy_phase'          => $phase['legacy_phase'],
-            'chain_node'            => $chain['node'],
-            'chain_depth'           => $chain['depth'],
-            'chain_depth_score'     => $chainScore,
-            'attacker_profile'      => $profile['profile'],
-            'attacker_profile_name' => $profile['profile_name'],
-            'profile_score'         => $profileScore,
-            'context_zone'          => $context['zone'],
-            'context_hint'          => $context['hint'],
-            'indicators'            => $indicators,
-            'next_actions'          => $chain['next_nodes'],
-            'evidence_count'        => count($evidence),
-            'confidence'             => round($confidence, 2),
-            'phase_hits'             => $phase['phase_hits'],
+            'score'                   => $total,
+            'phase'                   => $phase['phase'],
+            'phase_name'              => $phase['name'],
+            'phase_desc'              => $phase['desc'],
+            'phase_confidence'        => (int) round($confidence),
+            'phase_confidence_detail' => $phaseConfidenceDetail,
+            'primary_intent'          => $primary['class'],
+            'primary_intent_name'     => $primary['label'],
+            'intents'                 => $intents,
+            'kill_chain_phase'        => $phase['phase'],
+            'legacy_phase'            => $phase['legacy_phase'],
+            'chain_node'              => $chain['node'],
+            'chain_depth'             => $chain['depth'],
+            'chain_depth_score'       => $chainScore,
+            'attacker_profile'        => $profile['profile'],
+            'attacker_profile_name'   => $profile['profile_name'],
+            'profile_score'           => $profileScore,
+            'context_zone'            => $context['zone'],
+            'context_hint'            => $context['hint'],
+            'indicators'              => $indicators,
+            'next_actions'            => $chain['next_nodes'],
+            'evidence_count'          => count($evidence),
+            'confidence'              => round($confidence, 2),
+            'phase_hits'              => $phase['phase_hits'],
+            'phase_transition'        => $phaseTransition,
+            'intent_transition'       => $intentTransition,
         ];
     }
 
@@ -665,34 +759,226 @@ class IntentInference {
         return implode(' ', $parts);
     }
 
+    /* =====================================================================
+     * G1. Kill Chain 阶段转移异常推理
+     * 基于阶段转移概率矩阵计算从 $fromPhase 到 $toPhase 的转移异常程度。
+     * 异常评分规则（按规范）：
+     *   概率 < 0.05 -> 高度异常（取 60，对应规范 50-70 区间）
+     *   概率 < 0.10 -> 异常转移（取 40，对应规范 30-50 区间）
+     *   概率 >= 0.10 -> 正常转移（0）
+     *
+     * @param string $fromPhase 起始阶段（上一请求阶段）
+     * @param string $toPhase   目标阶段（当前请求阶段）
+     * @return array {probability, is_normal, transition_label, anomaly_score}
+     * ===================================================================== */
+    private static function inferPhaseTransition(string $fromPhase, string $toPhase): array {
+        // 未知阶段兜底：视为极低概率转移（高度异常）
+        if (!isset(self::$phaseTransitionMatrix[$fromPhase][$toPhase])) {
+            return [
+                'probability'      => 0.0,
+                'is_normal'        => false,
+                'transition_label' => '未知阶段转移',
+                'anomaly_score'    => 70,
+            ];
+        }
+
+        $probability = (float) self::$phaseTransitionMatrix[$fromPhase][$toPhase];
+
+        // 异常评分（按规范区间取代表值）
+        if ($probability < 0.05) {
+            $anomalyScore = 60;  // 高度异常（50-70 区间）
+        } elseif ($probability < 0.10) {
+            $anomalyScore = 40;  // 异常转移（30-50 区间）
+        } else {
+            $anomalyScore = 0;   // 正常转移
+        }
+
+        // 推断转移类型标签：依据阶段深度差（order 之差）
+        $fromOrder = isset(self::$kill_chain[$fromPhase]['order']) ? (int) self::$kill_chain[$fromPhase]['order'] : 0;
+        $toOrder   = isset(self::$kill_chain[$toPhase]['order'])   ? (int) self::$kill_chain[$toPhase]['order']   : 0;
+        $delta     = $toOrder - $fromOrder;
+
+        if ($delta === 0) {
+            $label = '同阶段停留';
+        } elseif ($delta === 1) {
+            $label = '正向推进';
+        } elseif ($delta === 2) {
+            $label = '跳跃推进';
+        } elseif ($delta > 2) {
+            $label = '大跳跃推进';
+        } else {
+            $label = '反向回退';
+        }
+
+        return [
+            'probability'      => $probability,
+            'is_normal'        => $anomalyScore === 0,
+            'transition_label' => $label,
+            'anomaly_score'    => $anomalyScore,
+        ];
+    }
+
+    /* =====================================================================
+     * B+. 阶段置信度精细化（独立于 inferConfidence 的总置信度）
+     * 基于该阶段的证据数量、阶段深度权重、证据强度独立计算阶段置信度。
+     *   证据数量：1 条 -> 40，2 条 -> 60，3+ 条 -> 80
+     *   阶段权重：浅阶段（recon/weaponization）0.8，深阶段（c2/actions）1.2，其余 1.0
+     *   证据强度：每条 weight>=24 的证据 +15
+     *
+     * @param array  $evidence 全量证据列表
+     * @param string $phase    目标阶段
+     * @return array {confidence, basis, stage_weight}
+     * ===================================================================== */
+    private static function calcPhaseConfidence(array $evidence, string $phase): array {
+        // 筛选属于该阶段的证据
+        $phaseEvidence = [];
+        foreach ($evidence as $e) {
+            if (isset($e['phase']) && $e['phase'] === $phase) {
+                $phaseEvidence[] = $e;
+            }
+        }
+        $count = count($phaseEvidence);
+
+        // 基础置信度：由该阶段证据数量决定
+        if ($count >= 3) {
+            $base = 80;
+        } elseif ($count === 2) {
+            $base = 60;
+        } elseif ($count === 1) {
+            $base = 40;
+        } else {
+            $base = 0;
+        }
+
+        // 阶段深度权重
+        $stageWeight = 1.0;
+        if ($phase === 'recon' || $phase === 'weaponization') {
+            $stageWeight = 0.8;
+        } elseif ($phase === 'c2' || $phase === 'actions') {
+            $stageWeight = 1.2;
+        }
+
+        // 证据强度加成：每条 weight>=24 的证据贡献 +15
+        $weightBonus = 0;
+        foreach ($phaseEvidence as $e) {
+            if (isset($e['weight']) && $e['weight'] >= 24) {
+                $weightBonus += 15;
+            }
+        }
+
+        $confidence = (int) round(min(100.0, $base * $stageWeight + $weightBonus));
+
+        $basis = sprintf(
+            '阶段=%s 证据数=%d 基础分=%d 阶段权重=%.1f 强证据加成=+%d',
+            $phase,
+            $count,
+            $base,
+            $stageWeight,
+            $weightBonus
+        );
+
+        return [
+            'confidence'   => $confidence,
+            'basis'        => $basis,
+            'stage_weight' => $stageWeight,
+        ];
+    }
+
+    /* =====================================================================
+     * G2. 意图转移异常推理
+     * 对比当前主意图与历史主意图，输出转移概率与异常评分。
+     *   历史为 null/空 -> 零异常结果（向后兼容）
+     *   同意图 -> 无转移，零异常
+     *   转移概率 < 0.2 -> anomaly_score 取 15-30
+     *
+     * @param array      $currentIntents  当前请求的意图列表（取 [0] 为主意图）
+     * @param array|null $previousIntents 历史请求的意图列表（取 [0] 为主意图）
+     * @return array {transition, probability, anomaly_score, is_lateral_movement}
+     * ===================================================================== */
+    private static function inferIntentTransition(array $currentIntents, ?array $previousIntents = null): array {
+        // 历史为空 -> 零异常结果
+        if (empty($previousIntents)) {
+            return [
+                'transition'          => 'none',
+                'probability'         => 1.0,
+                'anomaly_score'       => 0,
+                'is_lateral_movement' => false,
+            ];
+        }
+
+        $current  = isset($currentIntents[0]['class'])  ? $currentIntents[0]['class']  : 'unknown';
+        $previous = isset($previousIntents[0]['class']) ? $previousIntents[0]['class'] : 'unknown';
+
+        // 同意图 -> 无转移
+        if ($current === $previous) {
+            return [
+                'transition'          => $previous . '→' . $current,
+                'probability'         => 1.0,
+                'anomaly_score'       => 0,
+                'is_lateral_movement' => false,
+            ];
+        }
+
+        // 查询意图转移概率
+        $probability = isset(self::$intentTransitions[$previous][$current])
+            ? (float) self::$intentTransitions[$previous][$current]
+            : 0.0;
+
+        // 异常评分：转移概率 < 0.2 时取 15-30
+        if ($probability < 0.05) {
+            $anomalyScore = 30;  // 未知转移（概率为 0），最高异常
+        } elseif ($probability < 0.20) {
+            $anomalyScore = 20;  // 低概率已知转移
+        } else {
+            $anomalyScore = 0;   // 高概率已知转移（横向移动/提权链）
+        }
+
+        // 横向移动判定：转移发生在已定义的意图转移图中（攻击向量切换）
+        $isLateral = $probability > 0.0;
+
+        return [
+            'transition'          => $previous . '→' . $current,
+            'probability'         => $probability,
+            'anomaly_score'       => $anomalyScore,
+            'is_lateral_movement' => $isLateral,
+        ];
+    }
+
     /**
      * 空结果（无任何攻击证据时的统一返回）
      */
     private static function emptyResult(): array {
         return [
-            'score'                 => 0,
-            'phase'                 => 'none',
-            'phase_name'            => '无攻击意图',
-            'phase_desc'            => '',
-            'phase_confidence'      => 0,
-            'primary_intent'        => 'unknown',
-            'primary_intent_name'   => '未知',
-            'intents'               => [],
-            'kill_chain_phase'      => 'none',
-            'legacy_phase'          => 'none',
-            'chain_node'            => 'unknown',
-            'chain_depth'           => 0,
-            'chain_depth_score'     => 0,
-            'attacker_profile'      => 'unknown',
-            'attacker_profile_name' => '未知',
-            'profile_score'         => 0,
-            'context_zone'          => 'unknown',
-            'context_hint'          => '',
-            'indicators'            => [],
-            'next_actions'          => [],
-            'evidence_count'        => 0,
-            'confidence'             => 0.0,
-            'phase_hits'            => [],
+            'score'                   => 0,
+            'phase'                   => 'none',
+            'phase_name'              => '无攻击意图',
+            'phase_desc'              => '',
+            'phase_confidence'        => 0,
+            'phase_confidence_detail' => [
+                'confidence'   => 0,
+                'basis'        => '',
+                'stage_weight' => 1.0,
+            ],
+            'primary_intent'          => 'unknown',
+            'primary_intent_name'     => '未知',
+            'intents'                 => [],
+            'kill_chain_phase'        => 'none',
+            'legacy_phase'            => 'none',
+            'chain_node'              => 'unknown',
+            'chain_depth'             => 0,
+            'chain_depth_score'       => 0,
+            'attacker_profile'        => 'unknown',
+            'attacker_profile_name'   => '未知',
+            'profile_score'           => 0,
+            'context_zone'            => 'unknown',
+            'context_hint'            => '',
+            'indicators'              => [],
+            'next_actions'            => [],
+            'evidence_count'          => 0,
+            'confidence'              => 0.0,
+            'phase_hits'              => [],
+            'phase_transition'        => null,
+            'intent_transition'       => null,
         ];
     }
 }

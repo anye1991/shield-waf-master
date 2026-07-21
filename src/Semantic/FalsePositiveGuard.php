@@ -141,6 +141,48 @@ class FalsePositiveGuard {
                 'method' => 'POST',
             ],
         ],
+        // ========== 增强业务模式（v2 深度增强） ==========
+        'wp_heartbeat' => [
+            'name' => 'WordPress心跳',
+            'conditions' => [
+                'uri' => '/\/wp-admin\/admin-ajax\.php/i',
+                'method' => 'POST',
+                'params' => ['action'],
+            ],
+        ],
+        'graphql_request' => [
+            'name' => 'GraphQL请求',
+            'conditions' => [
+                'uri' => '/\/(?:api\/)?graphql\b/i',
+                'method' => 'POST',
+                'content_type' => '/application\/json/i',
+            ],
+        ],
+        'api_pagination' => [
+            'name' => '分页API',
+            'conditions' => [
+                'params' => ['page', 'per_page', 'p', 'offset', 'limit', 'pagesize'],
+            ],
+        ],
+        'i18n_param' => [
+            'name' => '国际化参数',
+            'conditions' => [
+                'params' => ['lang', 'language', 'locale'],
+            ],
+        ],
+        'csrf_token_param' => [
+            'name' => 'CSRF令牌参数',
+            'conditions' => [
+                'params' => ['_token', 'csrf_token', '_csrf', '_csrf_token'],
+            ],
+        ],
+        'wp_cron' => [
+            'name' => 'WordPress定时任务',
+            'conditions' => [
+                'uri' => '/\/wp-cron\.php/i',
+                'params' => ['doing_wp_cron'],
+            ],
+        ],
     ];
 
     /**
@@ -178,6 +220,23 @@ class FalsePositiveGuard {
     ];
 
     /**
+     * 运行时学习的业务模式（持久化到 logs/learned_patterns.json）
+     * 结构：['pattern_id' => ['name' => ..., 'conditions' => ..., 'sample_count' => ..., 'false_positive_count' => ...]]
+     */
+    private static $learnedPatterns = [];
+
+    /**
+     * 动态参数名白名单（基于历史行为观察）
+     * 结构：['param_name' => ['safe_count' => int, 'block_count' => int, 'confidence' => float]]
+     */
+    private static $paramWhitelist = [];
+
+    /**
+     * 学习模式是否已从磁盘加载（避免同一请求内重复 I/O）
+     */
+    private static $learnedPatternsLoaded = false;
+
+    /**
      * 误报控制分析
      *
      * @param string $uri 请求URI
@@ -202,6 +261,13 @@ class FalsePositiveGuard {
         $recommendations = [];
         $totalScore = $semanticResult['total_score'] ?? 0;
 
+        // 初始化 v2 新增字段（保证返回结构稳定，避免分支未命中时未定义）
+        $learnedMatch = null;
+        $paramWhitelistHits = [];
+        $paramWhitelistHit = false;
+        $contextConsistency = ['is_consistent' => true, 'inconsistency_score' => 0, 'reason' => '未检查'];
+        $reductionApplied = ['reduced_score' => $totalScore, 'reduction_reason' => '未应用', 'reduction_ratio' => 1.0];
+
         // ---- 高分保护：攻击评分极高时不轻易判定为误报 ----
         $highScoreProtection = $totalScore >= 80;
 
@@ -213,6 +279,14 @@ class FalsePositiveGuard {
             $recommendations[] = '业务模式匹配';
         }
 
+        // ---- 第1.5层：运行时学习业务模式匹配（豁免分 +15） ----
+        $learnedMatch = self::matchLearnedPattern($uri, $method, $params, $headers);
+        if ($learnedMatch && !$highScoreProtection) {
+            $confidence += 15;
+            $reason .= ($reason ? '; ' : '') . '匹配学习业务模式: ' . ($learnedMatch['name'] ?? '');
+            $recommendations[] = '学习模式匹配';
+        }
+
         // ---- 第2层：参数名白名单（权重降低） ----
         $trustedParamRatio = self::checkTrustedParams($params);
         if ($trustedParamRatio >= 0.8 && !$highScoreProtection) {
@@ -222,6 +296,19 @@ class FalsePositiveGuard {
         } elseif ($trustedParamRatio >= 0.5) {
             $confidence += 5;
             $recommendations[] = '部分参数可信';
+        }
+
+        // ---- 第2.5层：动态参数白名单（基于历史观察，豁免分 +10） ----
+        foreach (array_keys($params) as $paramName) {
+            if (self::isParamWhitelisted((string)$paramName)) {
+                $paramWhitelistHits[] = $paramName;
+            }
+        }
+        $paramWhitelistHit = !empty($paramWhitelistHits);
+        if ($paramWhitelistHit && !$highScoreProtection) {
+            $confidence += 10;
+            $reason .= ($reason ? '; ' : '') . '命中动态参数白名单: ' . implode(',', $paramWhitelistHits);
+            $recommendations[] = '动态参数白名单';
         }
 
         // ---- 第3层：语义指标质量检查 ----
@@ -265,11 +352,33 @@ class FalsePositiveGuard {
             $recommendations[] = '归一化后干净';
         }
 
+        // ---- 第7.5层：上下文一致性检查（高分但上下文不匹配 => 可能误报） ----
+        $contextConsistency = self::checkContextConsistency($semanticResult, $uri, $method);
+        if (!$contextConsistency['is_consistent'] && !$highScoreProtection) {
+            $confidence += $contextConsistency['inconsistency_score'];
+            $reason .= ($reason ? '; ' : '') . '上下文不一致: ' . $contextConsistency['reason'];
+            $recommendations[] = '上下文不一致';
+        }
+
         // ---- 高分保护强制覆盖 ----
         if ($highScoreProtection) {
             // 攻击评分 >=80 时，要求极高置信度才能判定为误报
             $confidence = min($confidence, 40);
             $reason .= ($reason ? '; ' : '') . '高分保护生效，置信度受限';
+        }
+
+        // ---- 智能降分策略（基于上下文降分，而非简单豁免） ----
+        $reductionContext = [
+            'matched_pattern' => $matchedPattern,
+            'learned_pattern_match' => $learnedMatch,
+            'param_whitelist_match' => $paramWhitelistHit,
+            'indicator_quality' => $indicatorQuality,
+        ];
+        $reductionApplied = self::smartScoreReduction($semanticResult, $reductionContext);
+        // 降分比例 <=0.5 时，说明上下文强烈指向误报，额外加置信度
+        if ($reductionApplied['reduction_ratio'] <= 0.5 && !$highScoreProtection) {
+            $confidence += 10;
+            $reason .= ($reason ? '; ' : '') . '智能降分: ' . $reductionApplied['reduction_reason'];
         }
 
         // ---- 最终判定 ----
@@ -301,6 +410,11 @@ class FalsePositiveGuard {
             'trusted_param_ratio' => $trustedParamRatio,
             'indicator_quality' => $indicatorQuality,
             'high_score_protection' => $highScoreProtection,
+            // v2 新增字段
+            'learned_pattern_match' => $learnedMatch,
+            'param_whitelist_match' => $paramWhitelistHit,
+            'context_consistency' => $contextConsistency,
+            'reduction_applied' => $reductionApplied,
         ];
     }
 
@@ -596,5 +710,559 @@ class FalsePositiveGuard {
         }
 
         return 'suspicious';
+    }
+
+    // ========================================================================
+    // v2 深度增强：业务模式自学习 / 动态参数白名单 / 上下文一致性 / 智能降分
+    // ========================================================================
+
+    /**
+     * 加载运行时学习的业务模式与动态参数白名单
+     * 持久化文件：WAF_LOG_PATH . '/learned_patterns.json'
+     *
+     * @return void
+     */
+    private static function loadLearnedPatterns(): void {
+        if (self::$learnedPatternsLoaded) {
+            return;
+        }
+        self::$learnedPatternsLoaded = true;
+
+        if (!defined('WAF_LOG_PATH')) {
+            return;
+        }
+
+        $file = WAF_LOG_PATH . '/learned_patterns.json';
+        if (!is_file($file)) {
+            return;
+        }
+
+        $content = @file_get_contents($file);
+        if ($content === false || $content === '') {
+            return;
+        }
+
+        $data = json_decode($content, true);
+        if (!is_array($data)) {
+            return;
+        }
+
+        if (isset($data['learned_patterns']) && is_array($data['learned_patterns'])) {
+            self::$learnedPatterns = $data['learned_patterns'];
+        }
+        if (isset($data['param_whitelist']) && is_array($data['param_whitelist'])) {
+            self::$paramWhitelist = $data['param_whitelist'];
+        }
+    }
+
+    /**
+     * 持久化运行时学习的业务模式与动态参数白名单
+     *
+     * @return void
+     */
+    private static function saveLearnedPatterns(): void {
+        if (!defined('WAF_LOG_PATH')) {
+            return;
+        }
+
+        $dir = WAF_LOG_PATH;
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0700, true);
+        }
+
+        $file = $dir . '/learned_patterns.json';
+        $data = [
+            'learned_patterns' => self::$learnedPatterns,
+            'param_whitelist' => self::$paramWhitelist,
+            'updated_at' => date('Y-m-d H:i:s'),
+        ];
+
+        $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+        if ($json === false) {
+            return;
+        }
+
+        @file_put_contents($file, $json, LOCK_EX);
+    }
+
+    /**
+     * 从请求中提取业务模式特征签名
+     * 通过将 URI 中的数字 ID 归一化为 {id}，并收集排序后的参数键，生成稳定的模式 ID
+     *
+     * @param string $uri 请求URI
+     * @param string $method 请求方法
+     * @param array $params 参数数组
+     * @return array|null 签名信息或 null
+     */
+    private static function extractPatternSignature(string $uri, string $method, array $params): ?array {
+        if ($uri === '') {
+            return null;
+        }
+
+        // 去除 query string
+        $uriPath = preg_replace('/\?.*$/', '', $uri);
+        // 将 URI 中的数字 ID 替换为 {id}，提高模式泛化能力
+        $uriTemplate = preg_replace('/\/\d+(?=\/|$)/', '/{id}', $uriPath);
+        if (empty($uriTemplate)) {
+            return null;
+        }
+
+        // 提取参数键并排序，保证同一模式签名稳定
+        $paramKeys = array_keys($params);
+        $paramKeys = array_map('strval', $paramKeys);
+        sort($paramKeys);
+
+        // 构造 URI 正则：将 {id} 转为 \d+，其他字符转义
+        $regex = '/^' . str_replace('\{id\}', '\d+', preg_quote($uriTemplate, '/')) . '/i';
+
+        $signature = strtoupper($method) . '|' . $uriTemplate . '|' . implode(',', $paramKeys);
+        $id = md5($signature);
+
+        return [
+            'id' => $id,
+            'uri_template' => $uriTemplate,
+            'uri_regex' => $regex,
+            'param_keys' => $paramKeys,
+            'signature' => $signature,
+        ];
+    }
+
+    /**
+     * 业务模式自学习：从正常请求中提取业务模式
+     * 当请求被识别为正常（score<30 且非攻击）时，累计该模式样本数
+     * 样本数 >=10 后，模式启用；同一模式误报触发 >=3 次后降级（不再使用）
+     *
+     * @param string $uri 请求URI
+     * @param string $method 请求方法
+     * @param array $params 参数数组
+     * @param array $headers 请求头
+     * @param array $baseResult 基础分析结果
+     * @return void
+     */
+    public static function learnPattern(string $uri, string $method, array $params, array $headers, array $baseResult): void {
+        $totalScore = $baseResult['total_score'] ?? 0;
+
+        // 仅当请求被识别为正常（score<30 且非攻击）时学习
+        if ($totalScore >= 30) {
+            return;
+        }
+        if (self::containsAttackKeyword($baseResult)) {
+            return;
+        }
+
+        $signature = self::extractPatternSignature($uri, $method, $params);
+        if (!$signature) {
+            return;
+        }
+
+        $patternId = $signature['id'];
+
+        self::loadLearnedPatterns();
+
+        if (!isset(self::$learnedPatterns[$patternId])) {
+            self::$learnedPatterns[$patternId] = [
+                'name' => '学习模式:' . $signature['uri_template'],
+                'conditions' => [
+                    'uri' => $signature['uri_regex'],
+                    'method' => strtoupper($method),
+                    'param_keys' => $signature['param_keys'],
+                ],
+                'sample_count' => 0,
+                'false_positive_count' => 0,
+                'created_at' => date('Y-m-d H:i:s'),
+                'source' => 'auto',
+            ];
+        }
+
+        self::$learnedPatterns[$patternId]['sample_count']++;
+        self::$learnedPatterns[$patternId]['last_seen'] = date('Y-m-d H:i:s');
+
+        // 同一模式误报触发 >=3 次后降级（不再使用）
+        if ((self::$learnedPatterns[$patternId]['false_positive_count'] ?? 0) >= 3) {
+            self::$learnedPatterns[$patternId]['degraded'] = true;
+        }
+
+        self::saveLearnedPatterns();
+    }
+
+    /**
+     * 匹配运行时学习的业务模式
+     * 匹配成功时豁免分 +15（在 analyze 中体现）
+     *
+     * @param string $uri 请求URI
+     * @param string $method 请求方法
+     * @param array $params 参数数组
+     * @param array $headers 请求头
+     * @return array|null 匹配的模式信息或 null
+     */
+    private static function matchLearnedPattern(string $uri, string $method, array $params, array $headers): ?array {
+        self::loadLearnedPatterns();
+
+        if (empty(self::$learnedPatterns)) {
+            return null;
+        }
+
+        $upperMethod = strtoupper($method);
+        $paramKeys = array_keys($params);
+
+        foreach (self::$learnedPatterns as $patternId => $pattern) {
+            // 降级模式不使用
+            if (!empty($pattern['degraded'])) {
+                continue;
+            }
+            // 样本数不足（<10）不启用
+            if (($pattern['sample_count'] ?? 0) < 10) {
+                continue;
+            }
+
+            $conditions = $pattern['conditions'] ?? [];
+
+            // 检查方法
+            if (isset($conditions['method']) && $upperMethod !== $conditions['method']) {
+                continue;
+            }
+
+            // 检查 URI
+            if (isset($conditions['uri']) && !preg_match($conditions['uri'], $uri)) {
+                continue;
+            }
+
+            // 检查参数键（至少 80% 匹配）
+            if (isset($conditions['param_keys']) && is_array($conditions['param_keys']) && !empty($conditions['param_keys'])) {
+                $expectedKeys = $conditions['param_keys'];
+                $intersection = array_intersect($expectedKeys, $paramKeys);
+                $ratio = count($intersection) / count($expectedKeys);
+                if ($ratio < 0.8) {
+                    continue;
+                }
+            }
+
+            return [
+                'pattern_id' => $patternId,
+                'name' => $pattern['name'] ?? 'learned',
+                'sample_count' => $pattern['sample_count'] ?? 0,
+                'source' => $pattern['source'] ?? 'auto',
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * 观察参数历史行为，动态调整参数白名单可信度
+     * - safe_count >=20 且 block_count=0 -> confidence=1.0（高可信）
+     * - safe_count >=5 且 block_count=0 -> confidence=0.7（中可信）
+     *
+     * @param string $name 参数名
+     * @param bool $wasSafe 该参数历史是否被判定为安全
+     * @return void
+     */
+    public static function observeParam(string $name, bool $wasSafe): void {
+        if ($name === '') {
+            return;
+        }
+
+        $name = strtolower($name);
+
+        self::loadLearnedPatterns();
+
+        if (!isset(self::$paramWhitelist[$name])) {
+            self::$paramWhitelist[$name] = [
+                'safe_count' => 0,
+                'block_count' => 0,
+                'confidence' => 0.0,
+            ];
+        }
+
+        if ($wasSafe) {
+            self::$paramWhitelist[$name]['safe_count']++;
+        } else {
+            self::$paramWhitelist[$name]['block_count']++;
+        }
+
+        // 重新计算 confidence
+        $safe = self::$paramWhitelist[$name]['safe_count'];
+        $block = self::$paramWhitelist[$name]['block_count'];
+
+        if ($safe >= 20 && $block === 0) {
+            self::$paramWhitelist[$name]['confidence'] = 1.0;
+        } elseif ($safe >= 5 && $block === 0) {
+            self::$paramWhitelist[$name]['confidence'] = 0.7;
+        } else {
+            // 有拦截记录或样本不足，confidence 归零
+            self::$paramWhitelist[$name]['confidence'] = 0.0;
+        }
+
+        self::$paramWhitelist[$name]['updated_at'] = date('Y-m-d H:i:s');
+
+        self::saveLearnedPatterns();
+    }
+
+    /**
+     * 检查参数名是否在动态白名单中（confidence >=0.7）
+     *
+     * @param string $name 参数名
+     * @return bool
+     */
+    private static function isParamWhitelisted(string $name): bool {
+        $name = strtolower($name);
+
+        self::loadLearnedPatterns();
+
+        if (!isset(self::$paramWhitelist[$name])) {
+            return false;
+        }
+
+        return (self::$paramWhitelist[$name]['confidence'] ?? 0.0) >= 0.7;
+    }
+
+    /**
+     * 上下文一致性检查
+     * 检测评分与上下文是否一致，返回不一致评分（0-30）
+     * 例如：高分但 URI 是静态资源路径 -> 不一致，建议降分
+     * 例如：高分但参数全是已知业务参数 -> 不一致，建议降分
+     *
+     * @param array $baseResult 基础分析结果
+     * @param string $uri 请求URI
+     * @param string $method 请求方法
+     * @return array{is_consistent:bool, inconsistency_score:int, reason:string}
+     */
+    private static function checkContextConsistency(array $baseResult, string $uri, string $method): array {
+        $totalScore = $baseResult['total_score'] ?? 0;
+        $inconsistencyScore = 0;
+        $reason = '';
+
+        // 低分请求无需检查一致性
+        if ($totalScore < 30) {
+            return [
+                'is_consistent' => true,
+                'inconsistency_score' => 0,
+                'reason' => '低分请求，无需一致性检查',
+            ];
+        }
+
+        // 1. 高分但 URI 是静态资源路径 -> 不一致
+        if ($totalScore >= 50 && preg_match('/\.(css|js|jpg|jpeg|png|gif|svg|ico|woff|woff2|ttf|eot|map|webp|mp4|mp3)(\?|$)/i', $uri)) {
+            $inconsistencyScore += 20;
+            $reason .= ($reason ? '; ' : '') . '静态资源路径出现高分攻击评分';
+        }
+
+        // 2. 高分但仅浅层指标高，无深度解析器命中 -> 不一致
+        $parserScores = [
+            $baseResult['sql_parser_score'] ?? 0,
+            $baseResult['html_parser_score'] ?? 0,
+            $baseResult['php_parser_score'] ?? 0,
+            $baseResult['path_parser_score'] ?? 0,
+            $baseResult['command_parser_score'] ?? 0,
+            $baseResult['xxe_parser_score'] ?? 0,
+            $baseResult['ssrf_parser_score'] ?? 0,
+            $baseResult['ssti_parser_score'] ?? 0,
+            $baseResult['deser_parser_score'] ?? 0,
+        ];
+        $maxParser = !empty($parserScores) ? max($parserScores) : 0;
+        $l1 = $baseResult['l1_char_score'] ?? 0;
+        $l2 = $baseResult['l2_word_score'] ?? 0;
+        $l3 = $baseResult['l3_structure_score'] ?? 0;
+
+        if ($totalScore >= 50 && $maxParser < 20 && ($l1 + $l2 + $l3) >= 60) {
+            $inconsistencyScore += 15;
+            $reason .= ($reason ? '; ' : '') . '仅浅层指标高，无深度解析器命中';
+        }
+
+        // 3. 高分但语义维度不一致 -> 不一致
+        $dimensionConsistency = self::checkDimensionConsistency($baseResult);
+        if ($totalScore >= 40 && $dimensionConsistency === 'inconsistent') {
+            $inconsistencyScore += 15;
+            $reason .= ($reason ? '; ' : '') . '语义维度不一致';
+        }
+
+        // 4. 极高分但 GET 公开页面 -> 不一致
+        if ($totalScore >= 60 && strtoupper($method) === 'GET'
+            && preg_match('/^\/(?:index|home|about|contact|products|services)\b/i', $uri)) {
+            $inconsistencyScore += 10;
+            $reason .= ($reason ? '; ' : '') . '公开页面 GET 请求出现极高分';
+        }
+
+        // 5. 极高分但无高危特征 -> 不一致
+        if ($totalScore >= 50 && !self::hasDangerousFeatures($baseResult)) {
+            $inconsistencyScore += 10;
+            $reason .= ($reason ? '; ' : '') . '高分但无高危特征';
+        }
+
+        $inconsistencyScore = min(30, $inconsistencyScore);
+        $isConsistent = $inconsistencyScore < 10;
+
+        return [
+            'is_consistent' => $isConsistent,
+            'inconsistency_score' => $inconsistencyScore,
+            'reason' => $reason ?: '上下文一致',
+        ];
+    }
+
+    /**
+     * 误报反馈机制
+     * 用户/管理员反馈误报：自动学习该请求为业务模式，并持久化
+     *
+     * @param string $uri 请求URI
+     * @param string $method 请求方法
+     * @param array $params 参数数组
+     * @param string $reason 反馈原因
+     * @return void
+     */
+    public static function reportFalsePositive(string $uri, string $method, array $params, string $reason = ''): void {
+        $signature = self::extractPatternSignature($uri, $method, $params);
+        if (!$signature) {
+            return;
+        }
+
+        $patternId = $signature['id'];
+
+        self::loadLearnedPatterns();
+
+        if (!isset(self::$learnedPatterns[$patternId])) {
+            self::$learnedPatterns[$patternId] = [
+                'name' => '反馈学习:' . $signature['uri_template'],
+                'conditions' => [
+                    'uri' => $signature['uri_regex'],
+                    'method' => strtoupper($method),
+                    'param_keys' => $signature['param_keys'],
+                ],
+                'sample_count' => 0,
+                'false_positive_count' => 0,
+                'created_at' => date('Y-m-d H:i:s'),
+                'source' => 'feedback',
+            ];
+        }
+
+        // 反馈触发的学习直接达到启用阈值（sample_count >= 10）
+        if ((self::$learnedPatterns[$patternId]['sample_count'] ?? 0) < 10) {
+            self::$learnedPatterns[$patternId]['sample_count'] = 10;
+        }
+        self::$learnedPatterns[$patternId]['last_feedback'] = date('Y-m-d H:i:s');
+        self::$learnedPatterns[$patternId]['feedback_reason'] = $reason;
+        self::$learnedPatterns[$patternId]['degraded'] = false;
+
+        self::saveLearnedPatterns();
+    }
+
+    /**
+     * 统计强证据解析器命中数（score >= 40）
+     *
+     * @param array $baseResult 基础分析结果
+     * @return int
+     */
+    private static function countStrongParsers(array $baseResult): int {
+        $parserScores = [
+            $baseResult['sql_parser_score'] ?? 0,
+            $baseResult['html_parser_score'] ?? 0,
+            $baseResult['php_parser_score'] ?? 0,
+            $baseResult['path_parser_score'] ?? 0,
+            $baseResult['command_parser_score'] ?? 0,
+            $baseResult['xxe_parser_score'] ?? 0,
+            $baseResult['ssrf_parser_score'] ?? 0,
+            $baseResult['ssti_parser_score'] ?? 0,
+            $baseResult['deser_parser_score'] ?? 0,
+            $baseResult['crlf_parser_score'] ?? 0,
+            $baseResult['expr_parser_score'] ?? 0,
+        ];
+        $count = 0;
+        foreach ($parserScores as $score) {
+            if ($score >= 40) {
+                $count++;
+            }
+        }
+        return $count;
+    }
+
+    /**
+     * 智能降分策略
+     * 基于上下文智能降分，而非简单豁免
+     * - 高可信业务模式 + 单一弱证据 -> 降 50%（而非完全豁免）
+     * - 高可信业务模式 + 多维强证据 -> 降 20%（保留检测）
+     * - 中可信业务模式 -> 降 30%
+     *
+     * @param array $baseResult 基础分析结果
+     * @param array $context 上下文信息（matched_pattern / learned_pattern_match / param_whitelist_match / indicator_quality）
+     * @return array{reduced_score:int, reduction_reason:string, reduction_ratio:float}
+     */
+    private static function smartScoreReduction(array $baseResult, array $context): array {
+        $totalScore = $baseResult['total_score'] ?? 0;
+
+        // 分数过低无需降分
+        if ($totalScore < 20) {
+            return [
+                'reduced_score' => $totalScore,
+                'reduction_reason' => '原始分数已很低，无需降分',
+                'reduction_ratio' => 1.0,
+            ];
+        }
+
+        // 默认不降分
+        $reductionRatio = 1.0;
+        $reason = '无可应用降分策略';
+
+        $matchedPattern = $context['matched_pattern'] ?? null;
+        $learnedMatch = $context['learned_pattern_match'] ?? null;
+        $paramWhitelistHit = $context['param_whitelist_match'] ?? false;
+        $indicatorQuality = $context['indicator_quality'] ?? 'strong';
+
+        // 统计业务模式命中数
+        $businessSignalCount = 0;
+        if ($matchedPattern !== null) $businessSignalCount++;
+        if ($learnedMatch !== null) $businessSignalCount++;
+        if ($paramWhitelistHit) $businessSignalCount++;
+
+        // 判断证据强度
+        $hasStrongEvidence = self::hasDangerousFeatures($baseResult) || $totalScore >= 60;
+        $hasMultipleStrongEvidence = !empty($baseResult['chain_detected'])
+            || $totalScore >= 80
+            || self::countStrongParsers($baseResult) >= 2;
+
+        // 高可信业务模式：至少 2 个业务信号
+        $highConfidence = $businessSignalCount >= 2;
+        // 中可信业务模式：至少 1 个业务信号
+        $mediumConfidence = $businessSignalCount >= 1;
+
+        if ($highConfidence) {
+            if ($hasMultipleStrongEvidence) {
+                // 高可信 + 多维强证据 -> 降 20%
+                $reductionRatio = 0.8;
+                $reason = '高可信业务模式+多维强证据，降20%';
+            } elseif ($hasStrongEvidence) {
+                // 高可信 + 单一证据 -> 降 50%
+                $reductionRatio = 0.5;
+                $reason = '高可信业务模式+单一证据，降50%';
+            } else {
+                // 高可信 + 无强证据 -> 降 70%
+                $reductionRatio = 0.3;
+                $reason = '高可信业务模式+无强证据，降70%';
+            }
+        } elseif ($mediumConfidence) {
+            if ($hasMultipleStrongEvidence) {
+                // 中可信 + 多维强证据 -> 降 10%
+                $reductionRatio = 0.9;
+                $reason = '中可信业务模式+多维强证据，降10%';
+            } else {
+                // 中可信 -> 降 30%
+                $reductionRatio = 0.7;
+                $reason = '中可信业务模式，降30%';
+            }
+        }
+
+        // 弱指标额外降分（无业务模式命中时也可应用）
+        if ($businessSignalCount === 0 && $indicatorQuality === 'weak' && !$hasStrongEvidence) {
+            $reductionRatio = min($reductionRatio, 0.7);
+            if ($reason === '无可应用降分策略') {
+                $reason = '弱指标+无强证据，降30%';
+            }
+        }
+
+        $reducedScore = (int)round($totalScore * $reductionRatio);
+
+        return [
+            'reduced_score' => $reducedScore,
+            'reduction_reason' => $reason,
+            'reduction_ratio' => $reductionRatio,
+        ];
     }
 }

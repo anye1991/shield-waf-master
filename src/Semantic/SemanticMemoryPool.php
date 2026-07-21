@@ -105,6 +105,48 @@ class SemanticMemoryPool {
             $anomalies[] = 'cohort_outlier';
         }
 
+        // === 深度增强检测（L9+） ===
+
+        // G. 基线漂移精细化检测（多维基线模型）
+        $baselineDrift = self::detectBaselineDrift($ip, $currentFeatures);
+        if ($baselineDrift['is_abnormal']) {
+            $anomalies[] = 'drift:multidim';
+            foreach ($baselineDrift['drift_dimensions'] as $dim) {
+                $anomalies[] = 'drift_dim:' . $dim;
+            }
+        }
+
+        // H. 多维特征向量距离检测
+        $featureDistance = 0.0;
+        $hasFeatureDistance = false;
+        $records = self::$histories[$ip]['records'];
+        $last = end($records);
+        if ($last !== false && isset($last['feature_vector']) && is_array($last['feature_vector'])) {
+            $baselineFv = self::computeAvgFeatureVector($ip);
+            if ($baselineFv !== null) {
+                $featureDistance = self::calcFeatureDistance($last['feature_vector'], $baselineFv);
+                $hasFeatureDistance = true;
+                if ($featureDistance > 0.5) {
+                    $anomalies[] = 'feature_distance';
+                }
+            }
+        }
+
+        // I. 群体离群点检测（全局群体对比）
+        $population = self::compareWithPopulation($ip);
+        if ($population['is_outlier']) {
+            $anomalies[] = 'population_outlier';
+        }
+
+        // J. 行为序列模式异常
+        $behaviorAnomaly = self::detectBehaviorAnomaly($ip);
+        if ($behaviorAnomaly['pattern_changed']) {
+            $anomalies[] = 'behavior_pattern_change';
+        }
+
+        // K. 加权异常累积（维度差异化权重：drift 0.5x / pattern 0.8x / velocity 0.6x）
+        $weightedAccum = self::accumulateWithWeights($ip, $anomalies);
+
         // 评分汇总 + 多维交叉加成：2维+5, 3维+10, 4+维+15
         $devScore = $deviations['score'];
         $dimCount = $deviations['dimension_count'];
@@ -116,14 +158,40 @@ class SemanticMemoryPool {
             $devScore += 5;
         }
 
-        $total = $devScore + $drift['score'] + $accumulated['score'] + $actor['bonus'] + $cohort['deviation'];
+        $total = $devScore
+            + $drift['score']
+            + $accumulated['score']
+            + $actor['bonus']
+            + $cohort['deviation']
+            + $baselineDrift['drift_score']
+            + ($featureDistance > 0.5 ? 15 : 0)
+            + ($population['is_outlier'] ? 20 : 0)
+            + $behaviorAnomaly['change_score']
+            + $weightedAccum;
         $total = max(0, min(100, (int) round($total)));
 
-        return [
+        $result = [
             'score' => $total,
             'anomalies' => array_values(array_unique($anomalies)),
             'baseline_exists' => true,
         ];
+
+        // 新增字段（仅在数据充足时填充）
+        if ($baselineDrift['drift_score'] > 0 || !empty($baselineDrift['drift_dimensions'])) {
+            $result['drift_score'] = $baselineDrift['drift_score'];
+            $result['drift_dimensions'] = $baselineDrift['drift_dimensions'];
+        }
+        if ($hasFeatureDistance) {
+            $result['feature_distance'] = round($featureDistance, 4);
+        }
+        if ($population['is_outlier'] || $population['deviation'] > 0.0) {
+            $result['is_outlier'] = $population['is_outlier'];
+        }
+        if ($behaviorAnomaly['change_score'] > 0) {
+            $result['behavior_change_score'] = $behaviorAnomaly['change_score'];
+        }
+
+        return $result;
     }
 
     /** A. 行为基线建模：最近 BASELINE_WINDOW 条加权样本（越近权重越大），含 URI/参数/频率/时段/复杂度/风险等统计量。 */
@@ -475,7 +543,7 @@ class SemanticMemoryPool {
         return ['deviation' => 0];
     }
 
-    /** 构建单条请求记录 */
+    /** 构建单条请求记录（含多维特征向量、UA、HTTP 方法，供 L9+ 深度分析使用） */
     private static function buildRecord(string $text, string $uri, array $params, array $features, $ts): array {
         $lScores = [
             'l1' => $features['l1_char_score'] ?? 0, 'l2' => $features['l2_word_score'] ?? 0,
@@ -496,6 +564,9 @@ class SemanticMemoryPool {
             'attack_phase' => $features['attack_phase'] ?? 'none',
             'l_scores' => $lScores,
             'indicators_count' => count($features['indicators'] ?? []),
+            'feature_vector' => self::extractFeatureVector($text, $uri, $params, $features),
+            'ua' => (string) ($features['ua'] ?? $features['user_agent'] ?? ''),
+            'method' => (string) ($features['method'] ?? 'GET'),
         ];
     }
 
@@ -686,5 +757,727 @@ class SemanticMemoryPool {
         }
         if (!is_writable($dir)) { return ''; }
         return $dir . '/' . self::PERSIST_FILE;
+    }
+
+    /**
+     * G. 多维基线建模：构建精细化的多维基线模型
+     * 包含 URI 频率集中度、参数数量统计、payload 大小、活跃小时、风险趋势、UA 多样性
+     * @param string $ip 客户端 IP
+     * @return array 多维基线模型
+     */
+    private static function buildMultiDimBaseline(string $ip): array {
+        $records = self::$histories[$ip]['records'] ?? [];
+        $n = count($records);
+        if ($n === 0) {
+            return ['sample_count' => 0];
+        }
+
+        // URI 频率与集中度
+        $uriFreq = [];
+        foreach ($records as $r) {
+            $uriFreq[$r['uri_hash']] = ($uriFreq[$r['uri_hash']] ?? 0) + 1;
+        }
+        arsort($uriFreq);
+        $mostCommonUri = (string) array_key_first($uriFreq);
+        $mostCommonCount = (int) reset($uriFreq);
+        $concentration = $n > 0 ? $mostCommonCount / $n : 0.0;
+
+        // 参数数量统计
+        $paramCounts = array_column($records, 'param_count');
+        $paramMean = !empty($paramCounts) ? array_sum($paramCounts) / count($paramCounts) : 0.0;
+        $paramStd = self::stdDev($paramCounts);
+
+        // payload 大小统计
+        $payloadSizes = array_column($records, 'text_length');
+        $payloadMean = !empty($payloadSizes) ? array_sum($payloadSizes) / count($payloadSizes) : 0.0;
+        $payloadStd = self::stdDev($payloadSizes);
+
+        // 活跃小时统计
+        $activeHours = [];
+        foreach ($records as $r) {
+            $hour = (int) gmdate('G', (int) $r['ts']);
+            $activeHours[$hour] = ($activeHours[$hour] ?? 0) + 1;
+        }
+        arsort($activeHours);
+        $topHours = array_keys($activeHours);
+
+        // 风险趋势（线性回归斜率）
+        $riskScores = array_column($records, 'risk_score');
+        $slope = self::linearTrend($riskScores);
+        $isIncreasing = $slope > 0.0;
+
+        // UA 多样性
+        $uas = [];
+        foreach ($records as $r) {
+            $ua = $r['ua'] ?? '';
+            if ($ua !== '') {
+                $uas[$ua] = true;
+            }
+        }
+        $uaCount = count($uas);
+        $uaChanging = $uaCount > 1;
+
+        return [
+            'sample_count' => $n,
+            'uri_freq' => [
+                'most_common' => $mostCommonUri,
+                'concentration' => round($concentration, 4),
+            ],
+            'param_count' => [
+                'mean' => round($paramMean, 2),
+                'stddev' => round($paramStd, 2),
+            ],
+            'payload_size' => [
+                'mean' => round($payloadMean, 2),
+                'stddev' => round($payloadStd, 2),
+            ],
+            'active_hours' => $topHours,
+            'risk_trend' => [
+                'slope' => round($slope, 4),
+                'is_increasing' => $isIncreasing,
+            ],
+            'ua_diversity' => [
+                'count' => $uaCount,
+                'is_changing' => $uaChanging,
+            ],
+        ];
+    }
+
+    /**
+     * G. 基线漂移精细化检测：对比当前请求与多维基线
+     * - URI 集中度突变（如 0.6→0.2）→ drift_score +15
+     * - payload 大小偏离 2σ → drift_score +10
+     * - 活跃小时突变（白天→凌晨） → drift_score +20
+     * - UA 切换 → drift_score +15
+     * - 风险趋势斜率突然上升 → drift_score +25
+     * @param string $ip 客户端 IP
+     * @param array $currentFeatures 当前请求特征
+     * @return array{drift_score:int, drift_dimensions:array, is_abnormal:bool}
+     */
+    private static function detectBaselineDrift(string $ip, array $currentFeatures): array {
+        $empty = ['drift_score' => 0, 'drift_dimensions' => [], 'is_abnormal' => false];
+        if (!isset(self::$histories[$ip])) {
+            return $empty;
+        }
+        $records = self::$histories[$ip]['records'];
+        if (count($records) < self::BASELINE_MIN_SAMPLES) {
+            return $empty;
+        }
+
+        $baseline = self::buildMultiDimBaseline($ip);
+        if (($baseline['sample_count'] ?? 0) < self::BASELINE_MIN_SAMPLES) {
+            return $empty;
+        }
+
+        $last = end($records);
+        if ($last === false) {
+            return $empty;
+        }
+
+        $driftScore = 0;
+        $driftDimensions = [];
+
+        // 1. URI 集中度突变：基线高集中度突然分散
+        $uriFreq = $baseline['uri_freq'];
+        $baseConcentration = $uriFreq['concentration'];
+        $currentUriHash = $last['uri_hash'];
+        $currentUriCount = 0;
+        foreach ($records as $r) {
+            if ($r['uri_hash'] === $currentUriHash) { $currentUriCount++; }
+        }
+        $currentConcentration = count($records) > 0 ? $currentUriCount / count($records) : 0.0;
+        if ($baseConcentration >= 0.5 && $currentConcentration < $baseConcentration * 0.4) {
+            $driftScore += 15;
+            $driftDimensions[] = 'uri_concentration_drop';
+        }
+
+        // 2. payload 大小偏离 2σ
+        $payloadStats = $baseline['payload_size'];
+        if ($payloadStats['stddev'] > 0) {
+            $zScore = abs($last['text_length'] - $payloadStats['mean']) / $payloadStats['stddev'];
+            if ($zScore >= 2.0) {
+                $driftScore += 10;
+                $driftDimensions[] = 'payload_size_deviation';
+            }
+        }
+
+        // 3. 活跃小时突变（白天突然凌晨活跃）
+        $currentHour = (int) gmdate('G', (int) $last['ts']);
+        $activeHours = $baseline['active_hours'];
+        $isNightHour = ($currentHour < 6 || $currentHour >= 22);
+        $baselineHasNight = false;
+        foreach ($activeHours as $h) {
+            if ($h < 6 || $h >= 22) {
+                $baselineHasNight = true;
+                break;
+            }
+        }
+        if ($isNightHour && !$baselineHasNight) {
+            $driftScore += 20;
+            $driftDimensions[] = 'active_hours_shift';
+        }
+
+        // 4. UA 切换检测（当前 UA 不在历史中出现过）
+        $currentUa = $last['ua'] ?? '';
+        if ($currentUa !== '') {
+            $uaSeen = false;
+            foreach ($records as $r) {
+                if (($r['ua'] ?? '') === $currentUa) {
+                    $uaSeen = true;
+                    break;
+                }
+            }
+            if (!$uaSeen) {
+                $driftScore += 15;
+                $driftDimensions[] = 'ua_switch';
+            }
+        }
+
+        // 5. 风险趋势斜率突然上升
+        $riskTrend = $baseline['risk_trend'];
+        if ($riskTrend['is_increasing'] && $riskTrend['slope'] > 1.0) {
+            $driftScore += 25;
+            $driftDimensions[] = 'risk_trend_spike';
+        }
+
+        $driftScore = min(100, $driftScore);
+        return [
+            'drift_score' => $driftScore,
+            'drift_dimensions' => $driftDimensions,
+            'is_abnormal' => $driftScore >= 20,
+        ];
+    }
+
+    /**
+     * H. 多维特征向量提取：提取 12 维归一化特征向量
+     * 维度：payload_length / param_count / entropy / special_char_ratio
+     *       numeric_ratio / uppercase_ratio / non_ascii_ratio
+     *       url_depth / path_segment_count / query_param_count
+     *       risk_score / encoding_depth
+     * @param string $text 请求文本
+     * @param string $uri 请求 URI
+     * @param array $params 请求参数
+     * @param array $features 特征数组
+     * @return array 12 维归一化（0-1）特征向量
+     */
+    private static function extractFeatureVector(string $text, string $uri, array $params, array $features): array {
+        $len = strlen($text);
+        $paramCount = count($params);
+
+        // payload_length 归一化（基准 4096 字节）
+        $payloadLength = min(1.0, $len / 4096.0);
+
+        // param_count 归一化（基准 20 个参数）
+        $paramCountNorm = min(1.0, $paramCount / 20.0);
+
+        // entropy 归一化（最大 8 bit）
+        $entropy = self::shannonEntropy($text);
+        $entropyNorm = min(1.0, $entropy / 8.0);
+
+        // special_char_ratio 归一化
+        $special = self::specialRatio($text) / 100.0;
+        $specialNorm = min(1.0, max(0.0, $special));
+
+        // numeric_ratio：数字字符占比
+        $numericRatio = $len > 0 ? self::countNumeric($text) / $len : 0.0;
+
+        // uppercase_ratio：大写字母占比
+        $uppercaseRatio = $len > 0 ? self::countUppercase($text) / $len : 0.0;
+
+        // non_ascii_ratio：非 ASCII 字节占比
+        $nonAsciiRatio = $len > 0 ? self::countNonAscii($text) / $len : 0.0;
+
+        // url_depth：URI 中斜杠深度（基准 10）
+        $urlDepth = min(1.0, substr_count($uri, '/') / 10.0);
+
+        // path_segment_count：路径段数（归一化）
+        $parsedPath = parse_url($uri, PHP_URL_PATH);
+        $path = ($parsedPath === false || $parsedPath === null) ? $uri : (string) $parsedPath;
+        $pathSegments = $path !== '' ? explode('/', trim($path, '/')) : [];
+        $pathSegments = array_filter($pathSegments, function ($s) { return $s !== ''; });
+        $pathSegmentCount = min(1.0, count($pathSegments) / 10.0);
+
+        // query_param_count：查询参数数量（归一化）
+        $queryParamCount = min(1.0, $paramCount / 20.0);
+
+        // risk_score 归一化
+        $riskScore = min(1.0, self::numericRiskScore($features) / 100.0);
+
+        // encoding_depth：URL 编码层数（基准 3 层）
+        $encodingDepth = min(1.0, self::detectEncodingDepth($text) / 3.0);
+
+        return [
+            'payload_length' => $payloadLength,
+            'param_count' => $paramCountNorm,
+            'entropy' => $entropyNorm,
+            'special_char_ratio' => $specialNorm,
+            'numeric_ratio' => $numericRatio,
+            'uppercase_ratio' => $uppercaseRatio,
+            'non_ascii_ratio' => $nonAsciiRatio,
+            'url_depth' => $urlDepth,
+            'path_segment_count' => $pathSegmentCount,
+            'query_param_count' => $queryParamCount,
+            'risk_score' => $riskScore,
+            'encoding_depth' => $encodingDepth,
+        ];
+    }
+
+    /**
+     * H. 特征向量欧氏距离计算
+     * 距离 >0.5 → 异常分 +15
+     * @param array $v1 特征向量 1
+     * @param array $v2 特征向量 2
+     * @return float 欧氏距离
+     */
+    private static function calcFeatureDistance(array $v1, array $v2): float {
+        $sum = 0.0;
+        foreach ($v1 as $key => $val) {
+            $other = $v2[$key] ?? 0.0;
+            $diff = (float) $val - (float) $other;
+            $sum += $diff * $diff;
+        }
+        return sqrt($sum);
+    }
+
+    /**
+     * K. 加权异常累积评分：不同维度异常差异化权重
+     * - drift 0.5x / pattern 0.8x / velocity 0.6x
+     * - 单次累积上限 30（防止短时间误判封死）
+     * @param string $ip 客户端 IP
+     * @param array $anomalies 异常标签数组
+     * @return int 本次累积分数
+     */
+    private static function accumulateWithWeights(string $ip, array $anomalies): int {
+        if (empty($anomalies)) {
+            return 0;
+        }
+
+        $weights = [
+            'drift' => 0.5,
+            'pattern' => 0.8,
+            'velocity' => 0.6,
+        ];
+
+        // 每个异常的基础分
+        $baseScore = 10;
+        $totalScore = 0;
+
+        foreach ($anomalies as $anomaly) {
+            $dim = self::classifyAnomalyDimension($anomaly);
+            $weight = $weights[$dim] ?? 1.0;
+            $totalScore += (int) round($baseScore * $weight);
+        }
+
+        // 单次累积上限 30
+        return min(30, $totalScore);
+    }
+
+    /**
+     * I. 群体对比增强：对比当前 IP 与全局群体基线（前 100 个 IP 聚合）
+     * 检测离群点（如访问频率超过群体 95 分位）→ 异常分 +20
+     * @param string $ip 客户端 IP
+     * @return array{is_outlier:bool, deviation:float, outlier_dimensions:array}
+     */
+    private static function compareWithPopulation(string $ip): array {
+        $empty = ['is_outlier' => false, 'deviation' => 0.0, 'outlier_dimensions' => []];
+        if (!isset(self::$histories[$ip])) {
+            return $empty;
+        }
+
+        // 聚合全局群体基线（最多 100 个 IP）
+        $population = [];
+        foreach (self::$histories as $otherIp => $h) {
+            if (count($population) >= 100) { break; }
+            $recs = $h['records'];
+            if (empty($recs)) { continue; }
+
+            $riskSum = 0;
+            $paramSum = 0;
+            $payloadSum = 0;
+            foreach ($recs as $r) {
+                $riskSum += $r['risk_score'];
+                $paramSum += $r['param_count'];
+                $payloadSum += $r['text_length'];
+            }
+            $n = count($recs);
+            $population[] = [
+                'ip' => $otherIp,
+                'avg_risk' => $riskSum / $n,
+                'avg_param' => $paramSum / $n,
+                'avg_payload' => $payloadSum / $n,
+                'request_count' => $n,
+            ];
+        }
+
+        // 群体样本数不足 5 个时跳过
+        if (count($population) < 5) {
+            return $empty;
+        }
+
+        // 群体统计量
+        $riskValues = array_column($population, 'avg_risk');
+        $paramValues = array_column($population, 'avg_param');
+        $payloadValues = array_column($population, 'avg_payload');
+        $requestCounts = array_column($population, 'request_count');
+
+        sort($riskValues);
+        sort($requestCounts);
+
+        $riskP95 = self::percentile($riskValues, 95.0);
+        $requestP95 = self::percentile($requestCounts, 95.0);
+        $paramMean = array_sum($paramValues) / count($paramValues);
+        $paramStd = self::stdDev($paramValues);
+        $payloadMean = array_sum($payloadValues) / count($payloadValues);
+        $payloadStd = self::stdDev($payloadValues);
+
+        // 当前 IP 统计
+        $myRecs = self::$histories[$ip]['records'];
+        $myRiskSum = 0; $myParamSum = 0; $myPayloadSum = 0;
+        foreach ($myRecs as $r) {
+            $myRiskSum += $r['risk_score'];
+            $myParamSum += $r['param_count'];
+            $myPayloadSum += $r['text_length'];
+        }
+        $myN = count($myRecs);
+        $myAvgRisk = $myN > 0 ? $myRiskSum / $myN : 0.0;
+        $myAvgParam = $myN > 0 ? $myParamSum / $myN : 0.0;
+        $myAvgPayload = $myN > 0 ? $myPayloadSum / $myN : 0.0;
+
+        $isOutlier = false;
+        $deviation = 0.0;
+        $outlierDims = [];
+
+        // 风险分数超过群体 95 分位
+        if ($riskP95 > 0 && $myAvgRisk > $riskP95) {
+            $isOutlier = true;
+            $deviation += $myAvgRisk - $riskP95;
+            $outlierDims[] = 'risk_score';
+        }
+
+        // 访问频率超过群体 95 分位
+        if ($requestP95 > 0 && $myN > $requestP95) {
+            $isOutlier = true;
+            $deviation += ($myN - $requestP95) * 5;
+            $outlierDims[] = 'request_count';
+        }
+
+        // 参数数量离群（>2σ）
+        if ($paramStd > 0 && abs($myAvgParam - $paramMean) > 2 * $paramStd) {
+            $isOutlier = true;
+            $deviation += abs($myAvgParam - $paramMean) * 10;
+            $outlierDims[] = 'param_count';
+        }
+
+        // payload 大小离群（>2σ）
+        if ($payloadStd > 0 && abs($myAvgPayload - $payloadMean) > 2 * $payloadStd) {
+            $isOutlier = true;
+            $deviation += abs($myAvgPayload - $payloadMean) / 100;
+            $outlierDims[] = 'payload_size';
+        }
+
+        return [
+            'is_outlier' => $isOutlier,
+            'deviation' => round($deviation, 2),
+            'outlier_dimensions' => $outlierDims,
+        ];
+    }
+
+    /**
+     * J. 行为序列提取：提取最近 N 个请求的行为序列
+     * 每个行为 = ['uri_pattern' => '/api/*', 'method' => 'GET', 'phase' => 'recon', 'risk' => 'low']
+     * @param string $ip 客户端 IP
+     * @param int $windowSize 窗口大小（默认 10）
+     * @return array 行为序列数组
+     */
+    private static function extractBehaviorSequence(string $ip, int $windowSize = 10): array {
+        if (!isset(self::$histories[$ip])) {
+            return [];
+        }
+        $records = self::$histories[$ip]['records'];
+        if (empty($records)) {
+            return [];
+        }
+
+        if ($windowSize < 1) {
+            $windowSize = 10;
+        }
+
+        $recent = array_slice($records, -$windowSize);
+        $sequence = [];
+        foreach ($recent as $r) {
+            $uriPattern = self::normalizeUriPattern($r['uri']);
+            $risk = 'low';
+            if ($r['risk_score'] >= 70) {
+                $risk = 'critical';
+            } elseif ($r['risk_score'] >= 50) {
+                $risk = 'high';
+            } elseif ($r['risk_score'] >= 25) {
+                $risk = 'medium';
+            }
+
+            $sequence[] = [
+                'uri_pattern' => $uriPattern,
+                'method' => $r['method'] ?? 'GET',
+                'phase' => $r['attack_phase'] ?? 'none',
+                'risk' => $risk,
+            ];
+        }
+        return $sequence;
+    }
+
+    /**
+     * J. 行为序列异常检测：对比当前行为序列与历史模式
+     * 检测行为模式突变（如 GET→POST / 查询→上传 / 风险等级跃迁）
+     * @param string $ip 客户端 IP
+     * @return array{pattern_changed:bool, change_score:int}
+     */
+    private static function detectBehaviorAnomaly(string $ip): array {
+        $empty = ['pattern_changed' => false, 'change_score' => 0];
+        $sequence = self::extractBehaviorSequence($ip, 10);
+        if (count($sequence) < self::BASELINE_MIN_SAMPLES) {
+            return $empty;
+        }
+
+        $half = (int) floor(count($sequence) / 2);
+        if ($half < 2) {
+            return $empty;
+        }
+
+        $firstHalf = array_slice($sequence, 0, $half);
+        $secondHalf = array_slice($sequence, $half);
+
+        $changeScore = 0;
+        $changes = 0;
+
+        // 1. URI 模式突变：后半段出现大量前半段未访问的 URI
+        $firstUris = array_column($firstHalf, 'uri_pattern');
+        $secondUris = array_column($secondHalf, 'uri_pattern');
+        $firstUriSet = array_unique($firstUris);
+        $secondUriSet = array_unique($secondUris);
+        $newUris = array_diff($secondUriSet, $firstUriSet);
+        if (count($newUris) > 0 && count($secondUriSet) > 0
+            && count($newUris) / count($secondUriSet) > 0.5) {
+            $changeScore += 10;
+            $changes++;
+        }
+
+        // 2. 风险等级突变：后半段平均风险显著高于前半段
+        $riskMap = ['low' => 0, 'medium' => 1, 'high' => 2, 'critical' => 3];
+        $firstRisks = array_column($firstHalf, 'risk');
+        $secondRisks = array_column($secondHalf, 'risk');
+        $firstRiskSum = 0;
+        foreach ($firstRisks as $r) {
+            $firstRiskSum += $riskMap[$r] ?? 0;
+        }
+        $secondRiskSum = 0;
+        foreach ($secondRisks as $r) {
+            $secondRiskSum += $riskMap[$r] ?? 0;
+        }
+        $firstRiskAvg = count($firstRisks) > 0 ? $firstRiskSum / count($firstRisks) : 0.0;
+        $secondRiskAvg = count($secondRisks) > 0 ? $secondRiskSum / count($secondRisks) : 0.0;
+        if ($secondRiskAvg > $firstRiskAvg + 1) {
+            $changeScore += 10;
+            $changes++;
+        }
+
+        // 3. 攻击阶段突变：后半段攻击阶段显著高于前半段
+        $phaseMap = ['none' => 0, 'recon' => 1, 'probe' => 2, 'attempt' => 3, 'attack' => 4, 'exploit' => 5];
+        $firstPhases = array_column($firstHalf, 'phase');
+        $secondPhases = array_column($secondHalf, 'phase');
+        $firstPhaseSum = 0;
+        foreach ($firstPhases as $p) {
+            $firstPhaseSum += $phaseMap[$p] ?? 0;
+        }
+        $secondPhaseSum = 0;
+        foreach ($secondPhases as $p) {
+            $secondPhaseSum += $phaseMap[$p] ?? 0;
+        }
+        $firstPhaseAvg = count($firstPhases) > 0 ? $firstPhaseSum / count($firstPhases) : 0.0;
+        $secondPhaseAvg = count($secondPhases) > 0 ? $secondPhaseSum / count($secondPhases) : 0.0;
+        if ($secondPhaseAvg > $firstPhaseAvg + 1) {
+            $changeScore += 10;
+            $changes++;
+        }
+
+        $changeScore = min(30, $changeScore);
+        return [
+            'pattern_changed' => $changes >= 2,
+            'change_score' => $changeScore,
+        ];
+    }
+
+    /**
+     * 计算历史平均特征向量（不含当前最后一条记录）
+     * @param string $ip 客户端 IP
+     * @return array|null 平均特征向量，数据不足返回 null
+     */
+    private static function computeAvgFeatureVector(string $ip): ?array {
+        if (!isset(self::$histories[$ip])) {
+            return null;
+        }
+        $records = self::$histories[$ip]['records'];
+        $n = count($records);
+        if ($n < 2) {
+            return null;
+        }
+
+        // 排除最后一条（当前请求），仅用历史
+        $historyRecords = array_slice($records, 0, -1);
+        $sum = [];
+        $count = 0;
+        foreach ($historyRecords as $r) {
+            if (!isset($r['feature_vector']) || !is_array($r['feature_vector'])) {
+                continue;
+            }
+            $count++;
+            foreach ($r['feature_vector'] as $key => $val) {
+                $sum[$key] = ($sum[$key] ?? 0.0) + (float) $val;
+            }
+        }
+
+        if ($count === 0) {
+            return null;
+        }
+
+        $avg = [];
+        foreach ($sum as $key => $total) {
+            $avg[$key] = $total / $count;
+        }
+        return $avg;
+    }
+
+    /**
+     * 分类异常标签到维度（drift / pattern / velocity）
+     * @param string $anomaly 异常标签
+     * @return string 维度名称
+     */
+    private static function classifyAnomalyDimension(string $anomaly): string {
+        if (strpos($anomaly, 'drift:') === 0 || strpos($anomaly, 'drift_dim:') === 0) {
+            return 'drift';
+        }
+        if (strpos($anomaly, 'dev:freq') === 0) {
+            return 'velocity';
+        }
+        if (strpos($anomaly, 'dev:off_hours') === 0) {
+            return 'velocity';
+        }
+        return 'pattern';
+    }
+
+    /**
+     * 统计文本中数字字符数量
+     * @param string $text 文本
+     * @return int 数字字符数
+     */
+    private static function countNumeric(string $text): int {
+        $len = strlen($text);
+        $count = 0;
+        for ($i = 0; $i < $len; $i++) {
+            if ($text[$i] >= '0' && $text[$i] <= '9') {
+                $count++;
+            }
+        }
+        return $count;
+    }
+
+    /**
+     * 统计文本中大写字母数量
+     * @param string $text 文本
+     * @return int 大写字母数
+     */
+    private static function countUppercase(string $text): int {
+        $len = strlen($text);
+        $count = 0;
+        for ($i = 0; $i < $len; $i++) {
+            if ($text[$i] >= 'A' && $text[$i] <= 'Z') {
+                $count++;
+            }
+        }
+        return $count;
+    }
+
+    /**
+     * 统计文本中非 ASCII 字节数量
+     * @param string $text 文本
+     * @return int 非 ASCII 字节数
+     */
+    private static function countNonAscii(string $text): int {
+        $len = strlen($text);
+        $count = 0;
+        for ($i = 0; $i < $len; $i++) {
+            if (ord($text[$i]) > 127) {
+                $count++;
+            }
+        }
+        return $count;
+    }
+
+    /**
+     * 检测 URL 编码层数（最多 3 层）
+     * @param string $text 文本
+     * @return int 编码层数
+     */
+    private static function detectEncodingDepth(string $text): int {
+        $depth = 0;
+        $current = $text;
+        while ($depth < 3) {
+            $decoded = @urldecode($current);
+            if ($decoded === $current || $decoded === '') {
+                break;
+            }
+            $depth++;
+            $current = $decoded;
+        }
+        return $depth;
+    }
+
+    /**
+     * 计算已排序数组的百分位数
+     * @param array $sortedValues 已排序的值数组
+     * @param float $p 百分位（0-100）
+     * @return float 百分位值
+     */
+    private static function percentile(array $sortedValues, float $p): float {
+        $n = count($sortedValues);
+        if ($n === 0) {
+            return 0.0;
+        }
+        if ($n === 1) {
+            return (float) $sortedValues[0];
+        }
+        $rank = ($p / 100.0) * ($n - 1);
+        $lower = (int) floor($rank);
+        $upper = (int) ceil($rank);
+        if ($lower === $upper) {
+            return (float) $sortedValues[$lower];
+        }
+        $frac = $rank - $lower;
+        return (float) $sortedValues[$lower] + $frac * ((float) $sortedValues[$upper] - (float) $sortedValues[$lower]);
+    }
+
+    /**
+     * URI 模式归一化：将数字段替换为 {id}，长十六进制串替换为 {hash}
+     * 例如 /api/users/123/posts/abc123def456 → /api/users/{id}/posts/{hash}
+     * @param string $uri 原始 URI
+     * @return string 归一化后的 URI 模式
+     */
+    private static function normalizeUriPattern(string $uri): string {
+        $parsedPath = parse_url($uri, PHP_URL_PATH);
+        $path = ($parsedPath === false || $parsedPath === null) ? $uri : (string) $parsedPath;
+        $segments = $path !== '' ? explode('/', trim($path, '/')) : [];
+        $pattern = [];
+        foreach ($segments as $seg) {
+            if ($seg === '') {
+                continue;
+            }
+            if (preg_match('/^\d+$/', $seg)) {
+                $pattern[] = '{id}';
+            } elseif (preg_match('/^[0-9a-f]{8,}$/i', $seg)) {
+                $pattern[] = '{hash}';
+            } else {
+                $pattern[] = $seg;
+            }
+        }
+        return '/' . implode('/', $pattern);
     }
 }

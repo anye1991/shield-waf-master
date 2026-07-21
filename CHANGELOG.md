@@ -7,6 +7,93 @@
 
 ---
 
+## [v5.1.0] - 2026-07-21
+
+### 🧬 语义上下文分析器体系（L7-L12 六大分析器）
+
+本次版本完成"语义上下文分析器深入骨髓"增强，构建从单请求到跨请求的完整上下文分析体系。现有 4 个分析器全面增强，新增 2 个分析器，全部接入 SemanticEngine 权重融合。
+
+#### 增强 4 个现有分析器
+
+**L7 IntentInference（攻击意图链推理）**
+- 新增 7×7 Kill Chain 阶段转移概率矩阵 `$phaseTransitionMatrix`：定义阶段间转移概率（正向推进 0.7 / 同阶段停留 0.3 / 大跳跃 0.05 等）
+- 新增意图转移图 `$intentTransitions`：5 条跨意图转移边（sql→path / sql→code / xss→cmd / path→code / code→cmd）
+- 新增方法 `inferPhaseTransition()`：基于概率矩阵返回转移异常分（0-70）
+- 新增方法 `calcPhaseConfidence()`：基于证据数+阶段深度+证据强度的精细化置信度
+- 新增方法 `inferIntentTransition()`：检测意图切换（横向移动信号）
+- `analyze()` 激活 `$history` 参数，新增 3 个返回字段：`phase_confidence_detail` / `phase_transition` / `intent_transition`
+
+**L8 AttackChainAnalyzer（攻击链时序关联）**
+- 新增 7×7 阶段转移概率矩阵 `$phaseTransitionProbabilities`
+- 新增 3 个攻击链模板（共 8 个）：`lateral_movement_chain` / `ssrf_to_rce_chain` / `credential_stuffing_chain`
+- 新增方法 `detectMultiChains()`：多链并行检测 + 链切换识别
+- 新增方法 `analyzeTimingPattern()`：三窗口时序分析（Burst/Sustained/Slow Burn）
+- 新增方法 `detectLateralMovement()`：跨 URI 路径横向移动检测
+- 新增方法 `calcTransitionAnomaly()`：基于概率矩阵的转移异常评分
+- 新增方法 `calcEnhancedScore()`：整合四类异常分的增强评分
+- `getPrediction()` 新增 4 个返回字段：`active_chain_count` / `timing_pattern` / `lateral_movement` / `transition_anomaly`
+
+**L9 SemanticMemoryPool（行为基线偏差检测）**
+- 新增方法 `buildMultiDimBaseline()`：6 维基线建模（URI 集中度/参数统计/payload/活跃小时/风险趋势/UA 多样性）
+- 新增方法 `detectBaselineDrift()`：精细化漂移检测（URI 突变 +15 / payload 2σ +10 / 时段 +20 / UA +15 / 趋势 +25）
+- 新增方法 `extractFeatureVector()`：12 维归一化特征向量
+- 新增方法 `calcFeatureDistance()`：欧氏距离计算（>0.5 触发 +15）
+- 新增方法 `accumulateWithWeights()`：加权累积（drift 0.5x / pattern 0.8x / velocity 0.6x，单次上限 30）
+- 新增方法 `compareWithPopulation()`：全局群体对比（前 100 IP，95 分位离群 +20）
+- 新增方法 `extractBehaviorSequence()` / `detectBehaviorAnomaly()`：行为序列模式突变检测
+- `analyzeEvolution()` 新增 5 个返回字段：`drift_score` / `drift_dimensions` / `feature_distance` / `is_outlier` / `behavior_change_score`
+
+**FalsePositiveGuard（误报控制引擎）**
+- 业务模式库扩展：17 → 23 个模式（新增 wp_heartbeat / graphql_request / api_pagination / i18n_param / csrf_token_param / wp_cron）
+- 新增 `$learnedPatterns`：运行时业务模式自学习（样本 ≥10 启用，误报 ≥3 降级）
+- 新增 `$paramWhitelist`：动态参数白名单（safe ≥20 + block=0 → confidence=1.0）
+- 新增公共方法 `learnPattern()` / `observeParam()` / `reportFalsePositive()`
+- 新增私有方法 `matchLearnedPattern()` / `isParamWhitelisted()` / `checkContextConsistency()` / `smartScoreReduction()`
+- 智能降分策略：高可信业务模式 + 单一弱证据 → 降 50%（而非完全豁免）
+- `analyze()` 新增 4 个返回字段：`learned_pattern_match` / `param_whitelist_match` / `context_consistency` / `reduction_applied`
+
+#### 新增 2 个分析器
+
+**L11 ParamPositionAnalyzer（参数位置语义分析）**
+- 新文件：[src/Semantic/ParamPositionAnalyzer.php](file:///workspace/shield-waf-master/src/Semantic/ParamPositionAnalyzer.php)
+- 核心理念：同一 payload 在不同位置威胁等级不同（`id` 在 query 是 IDOR，在 cookie 是会话篡改，在 header 是注入）
+- 5 个位置权重：query=1.0 / post=1.1 / cookie=1.3 / header=1.4 / json=1.2
+- 13 个参数名位置规则：id / redirect / url / file / cmd / template / user-agent / referer / x-forwarded-for / token / session / q / search
+- 跨位置模式检测：同名参数在多处出现 +10 / 跨位置值不一致 +15
+- 位置异常检测：Cookie 含查询串 / Header 含 SQL/XSS / JSON 深度 >5 / 参数数 >20
+- 高风险参数识别：规则匹配 / 超长值 / 特殊字符
+
+**L12 RequestContextAnalyzer（跨请求上下文分析）**
+- 新文件：[src/Semantic/RequestContextAnalyzer.php](file:///workspace/shield-waf-master/src/Semantic/RequestContextAnalyzer.php)
+- 核心理念：识别需要跨请求上下文才能判断的攻击（CSRF / 重放 / 会话伪造 / 自动化 / API 滥用）
+- CSRF 风险评估：Referer/Origin 不匹配 +30 / Origin/Host 不一致 +25 / POST 无 Token +15
+- 重放攻击检测：请求签名 MD5 + 60s 内 ≥3 次相同 +25 / 5 分钟重复率 >50% +20
+- 会话异常检测：同 session UA 切换 +20 / IP 切换 +25 / 新 session 访问敏感端点 +30
+- 时序异常检测：间隔 σ<0.5s +25 / 变异系数 <5% +20 / 连续 5 间隔 <100ms +30
+- API 滥用检测：5 分钟 >20 不同端点 +30 / 覆盖率 >50% +25 / 后台扫描 +20
+- 跨请求模式识别：参数枚举 / payload 演进 / 横向移动
+- 持久化到 `WAF_STORAGE_DIR/request_context/`，30 分钟过期清理
+
+#### SemanticEngine 集成
+
+- 新增权重：`param_position=0.05` / `request_context=0.06`
+- 跨位置加成：参数位置异常 + 注入证据 → +10 / 跨位置模式 → +8
+- 跨请求强证据直接加成：CSRF +12 / 重放 +10 / 会话异常 +12 / 时序异常 +8 / API 滥用 +10
+- `baseEmpty()` 同步补全新字段，保证结构一致
+- 配置开关：`WAF_PARAM_POSITION_ANALYZER` / `WAF_REQUEST_CONTEXT_ANALYZER`（默认启用，可通过 .env 关闭）
+- `Scorer.php` 新增 `cookie_array` 字段供位置分析器使用
+
+### 📊 测试验证
+
+- **71/71 极限测试全部通过**（无回归）
+- 首页访问正常（无拦截）
+- SQL 注入 payload 检测正常（score=100）
+- CSRF 攻击场景检测正常（Origin 不匹配触发拦截）
+- 重放攻击场景检测正常（10 次重复请求触发拦截）
+- 5 个新增/增强文件 `php -l` 语法检查全部通过
+
+---
+
 ## [v5.0.0] - 2026-07-21
 
 ### 🧠 语义引擎架构级重构

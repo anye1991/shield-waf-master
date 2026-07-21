@@ -222,6 +222,7 @@ class WafScorer {
             'ua'               => $_SERVER['HTTP_USER_AGENT'] ?? '',
             'referer'          => $_SERVER['HTTP_REFERER'] ?? '',
             'cookie'           => !empty($_COOKIE) ? http_build_query($_COOKIE) : '',
+            'cookie_array'     => $_COOKIE,
             'raw_body'         => defined('WAF_RAW_BODY') ? WAF_RAW_BODY : '',
         ];
 
