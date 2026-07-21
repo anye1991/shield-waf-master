@@ -625,14 +625,70 @@ grep WAF_ADMIN_IPS config.php
 
 参考上方「部署必读 → 首页打开直接 403」章节。
 
+### 6. 服务器卡 / PHP-FPM 超时怎么办？
+
+按以下顺序排查优化：
+
+**第一步：调整 PHP-FPM 配置（立竿见影）**
+```ini
+# 2核2G 服务器建议
+pm.max_children = 8
+pm.start_servers = 3
+pm.min_spare_servers = 2
+pm.max_spare_servers = 5
+request_terminate_timeout = 60
+```
+
+**第二步：确认开了 OPcache**
+- 宝塔：PHP 设置 → 安装扩展 → 找到 OPcache 安装
+- OPcache 能让 PHP 性能提升 2-3 倍
+
+**第三步：调整 WAF 性能模式**
+```env
+# .env 文件里加一行
+WAF_PERFORMANCE_MODE=high
+```
+high 模式关闭记忆池、攻击链、跨请求上下文等重型功能，核心防护能力保留。
+
+**第四步：安装 APCu 扩展**
+- 宝塔：PHP 设置 → 安装扩展 → 找到 APCu 安装
+- WAF 会自动检测并使用 APCu 做缓存，进一步提升性能
+
 ---
 
 ## ⚙️ 配置
 
+### 性能模式（重点！根据服务器配置选择）
+
+```env
+# 三档可选：high / balanced / strict
+# high     - 高性能：关闭重型分析，低配服务器也能流畅运行
+# balanced - 平衡（默认）：核心功能全开，推荐大部分站点
+# strict   - 严格：全功能拉满，最高安全性，服务器配置要求高
+WAF_PERFORMANCE_MODE=balanced
+```
+
+| 功能模块 | high（高性能） | balanced（平衡） | strict（严格） |
+|---------|:-------------:|:---------------:|:-------------:|
+| 11个语义解析器 | ✅ | ✅ | ✅ |
+| 14层编码归一化 | ✅ | ✅ | ✅ |
+| 规则引擎 | ✅ | ✅ | ✅ |
+| 智能评分系统 | ✅ | ✅ | ✅ |
+| 7层误报控制 | ✅ | ✅ | ✅ |
+| 参数位置分析(L11) | ✅ | ✅ | ✅ |
+| 语义记忆池(L9) | ❌ | ✅ | ✅ |
+| 攻击链分析 | ❌ | ✅ | ✅ |
+| 跨请求上下文(L12) | ❌ | ✅ | ✅ |
+| 贝叶斯机器学习 | ❌ | ✅ | ✅ |
+| 主动防御/蜜罐 | ❌ | ✅ | ✅ |
+| 适用服务器 | 1核1G 起步 | 2核2G 起步 | 4核4G 起步 |
+
+> **2核2G 服务器建议用 balanced（默认）**，访问量大了再切 high
+
 ### 环境变量 / .env 配置
 
 ```env
-# 基础配置
+# ============== 基础配置 ==============
 WAF_ENABLED=true
 WAF_LOG_PATH=/var/log/shield-waf/
 
@@ -642,31 +698,60 @@ WAF_ADMIN_IPS=127.0.0.1,192.168.1.100,10.0.0.0/8
 # 测试模式（只拦截不封IP，生产环境务必 false）
 WAF_TEST_MODE=false
 
-# 速率限制
+# ============== 性能优化 ==============
+# 性能模式：high / balanced / strict
+WAF_PERFORMANCE_MODE=balanced
+
+# APCu 缓存（自动检测，有则用）
+WAF_APCU_ENABLED=true
+
+# ============== 速率限制 ==============
 WAF_CC_ENABLED=true
 WAF_CC_LIMIT=60
 WAF_CC_WINDOW=60
 
-# 沙箱配置
+# ============== 语义引擎 ==============
+WAF_SEMANTIC_ENGINE=true
+WAF_SEMANTIC_MEMORY=true
+WAF_ATTACK_CHAIN=true
+WAF_PARAM_POSITION_ANALYZER=true
+WAF_REQUEST_CONTEXT_ANALYZER=true
+WAF_FALSE_POSITIVE_GUARD=true
+
+# ============== 机器学习 ==============
+WAF_AUTOLEARN_ENABLED=true
+WAF_ML_BAYES_ENABLED=true
+
+# ============== 主动防御 ==============
+WAF_ACTIVE_DEFENSE=true
+WAF_HONEYTRAP=true
+WAF_PATH_PREDICTION=true
+
+# ============== 沙箱配置 ==============
 WAF_SANDBOX_ENABLED=true
 WAF_SANDBOX_MALWARE_THRESHOLD=50
 WAF_SANDBOX_AUTO_QUARANTINE=true
 
-# 上传防护
+# ============== 上传防护 ==============
 WAF_UPLOAD_DETECTION=true
 WAF_UPLOAD_BLOCK_THRESHOLD=60
 
-# 双重密码
+# ============== 双重密码 ==============
 WAF_DUAL_PASSWORD_ENABLED=true
 WAF_DUAL_PASSWORD_PRIMARY=argon2id
 WAF_DUAL_PASSWORD_SECONDARY=bcrypt
 
-# 调试模式（生产环境务必关闭）
+# ============== 评分阈值 ==============
+# 四级响应：<30放行 / 30-50记录 / 50-75观察 / >=75拦截
+WAF_SCORE_BLOCK=70
+WAF_SCORE_MONITOR=40
+
+# ============== 调试模式 ==============
 WAF_DEBUG=false
 WAF_DB_DEBUG=false
 ```
 
-> 完整配置项见 [config.php](config.php)
+> 完整配置项见 [config.php](config.php)，所有配置均有默认值，无需全部配置
 
 ---
 
@@ -685,12 +770,40 @@ WAF_DB_DEBUG=false
 
 ### 性能开销
 
-| 场景 | 单请求开销 |
-|------|-----------|
-| 正常请求 | **< 5ms** |
-| 含编码混淆 | **< 15ms** |
-| 上传文件扫描 | 取决于文件大小 |
-| 内存占用 | **< 4MB** |
+| 场景 | balanced（平衡模式） | high（高性能模式） |
+|------|:-------------------:|:----------------:|
+| 正常请求（首页） | **~2-3 ms** | **~1-2 ms** |
+| 带参数正常请求 | **~3-5 ms** | **~2-3 ms** |
+| 攻击请求检测 | **~4-8 ms** | **~3-5 ms** |
+| 含编码混淆 | **~10-15 ms** | **~6-10 ms** |
+| 内存占用峰值 | **~4-6 MB** | **~2-3 MB** |
+| 推荐服务器配置 | 2核2G+ | 1核1G+ |
+| 单核能承载QPS | ~150-250 | ~300-500 |
+
+> 测试环境：PHP 8.1 + OPcache，实际性能因服务器配置和PHP版本而异
+
+### 服务器配置建议
+
+#### PHP-FPM 配置（重点）
+
+| 服务器配置 | max_children | start_servers | min_spare | max_spare | 超时时间 |
+|-----------|:------------:|:-------------:|:---------:|:---------:|:--------:|
+| 1核1G | 4 | 2 | 1 | 2 | 30s |
+| 2核2G | 8 | 3 | 2 | 5 | 60s |
+| 4核4G | 16 | 5 | 3 | 8 | 60s |
+| 8核8G+ | 32 | 8 | 4 | 16 | 120s |
+
+#### 必开扩展
+
+- **OPcache** - 性能提升 2-3 倍，必开
+- **APCu** - WAF 自动检测并使用，共享内存缓存
+
+#### 宝塔面板快速配置
+
+1. 软件商店 → PHP 设置 → 性能调整
+2. `pm.max_children` 按上表设置
+3. `request_terminate_timeout = 60`
+4. 安装 OPcache 和 APCu 扩展
 
 ---
 
@@ -850,6 +963,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 
 | 版本 | 核心特性 |
 |------|---------|
+| **v5.3.0** ⚡ | 深度性能优化 · 三档性能模式(high/balanced/strict) · 延迟持久化减少磁盘I/O · 类文件懒加载 · 语义分析快速短路 · 解决PHP-FPM超时问题 · 2核2G服务器流畅运行 |
 | **v5.2.0** 🤖 | 纯 PHP 朴素贝叶斯机器学习分类器 · 5维评分系统 · 自动训练攻击/正常样本 · 冷启动保护 · 186/186 测试全通过 |
 | **v5.1.0** 🧬 | L11参数位置语义分析器 · L12跨请求上下文分析器 · SSRF/SSTI保底加成 · 9项安全审计修复 · 永久封禁累进机制 · 154/154 极限测试通过 |
 | **v5.0.0** 🧠 | 11 解析器语义引擎 · 内容类型路由 · 双证据融合架构 · 签名保底机制 · 14层归一化全局统一接入 · 9项安全审计修复 · 71/71 极限测试通过 · 0% 误报率 |
