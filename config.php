@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 }
 
 // ======================== 版本号 ========================
-define('SHIELD_WAF_VERSION', '4.2.0');
+define('SHIELD_WAF_VERSION', '5.0.0');
 
 // ======================== 简易 .env 加载（带白名单） ========================
 function waf_load_env($dir) {
@@ -407,12 +407,14 @@ define('WAF_FALSE_POSITIVE_GUARD', getenv('WAF_FALSE_POSITIVE_GUARD') !== false 
 define('WAF_SCORER_ENABLED', getenv('WAF_SCORER_ENABLED') !== false ? (getenv('WAF_SCORER_ENABLED') === 'true') : true);
 // 自动学习是否启用
 define('WAF_AUTOLEARN_ENABLED', getenv('WAF_AUTOLEARN_ENABLED') !== false ? (getenv('WAF_AUTOLEARN_ENABLED') === 'true') : true);
-// 拦截阈值（总分>=此值拦截）- 与 shield-waf.php 中 $blockThreshold 保持一致
-// 注：原默认值 60 与 shield-waf.php 硬编码的 70 不一致，导致 Scorer 拦截后 Detector 未拦截
+// 拦截阈值（总分>=此值拦截），与 shield-waf.php 中 $blockThreshold 保持一致
+// 四级响应：<30 放行 / 30-50 记录 / 50-75 观察 / >=75 拦截
+// 注：当前架构为规则引擎+语义解析器双路评分，取较高值作为最终判定
 define('WAF_SCORE_BLOCK', getenv('WAF_SCORE_BLOCK') !== false ? (int)getenv('WAF_SCORE_BLOCK') : 70);
 // 监控阈值（总分>=此值记录日志但不拦截）
 define('WAF_SCORE_MONITOR', getenv('WAF_SCORE_MONITOR') !== false ? (int)getenv('WAF_SCORE_MONITOR') : 40);
-// 语义分析权重（四维评分中语义占比，范围0-100，其余三维度均分剩余）
+// 语义分析权重（暂未使用，保留供未来四维评分架构使用）
+// 当前语义证据通过 SemanticEngine 直接与规则引擎融合计算，不使用此配置
 define('WAF_SEMANTIC_WEIGHT', 30);
 
 // ======================== 性能优化配置 ========================
