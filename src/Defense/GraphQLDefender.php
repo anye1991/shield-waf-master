@@ -1,17 +1,19 @@
 <?php
 defined('ABSPATH') || exit;
 class GraphQLDefender {
-    public static function check() {
+    public static function check($body = null) {
         // 使用 parse_url 提取 path 后做后缀匹配，避免误判 /api/notgraphql 等
         $uri = $_SERVER['REQUEST_URI'] ?? '';
         $path = parse_url($uri, PHP_URL_PATH);
         if ($path === false) $path = $uri;
         if (strpos($path, '/graphql') === false) return;
 
-        // 优先使用原始 body，缺失时回退到 GET 参数（GET 也可能携带 query）
-        $body = defined('WAF_RAW_BODY') ? WAF_RAW_BODY : '';
-        if (empty($body)) {
-            $body = isset($_GET['query']) ? $_GET['query'] : '';
+        // 优先使用传入的归一化 body，缺失时回退到原始 body
+        if ($body === null) {
+            $body = defined('WAF_RAW_BODY') ? WAF_RAW_BODY : '';
+            if (empty($body)) {
+                $body = isset($_GET['query']) ? $_GET['query'] : '';
+            }
         }
         if (empty($body)) return;
 

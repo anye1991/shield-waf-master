@@ -19,7 +19,7 @@ class SessionHijack {
         'regeneration'     => 20,
     ];
 
-    public static function detect() {
+    public static function detect($cookie = null) {
         $score = 0;
         $details = [];
         $detected = false;

@@ -168,8 +168,8 @@ class TemplateInjection {
     // 缓存的合并大正则（首次使用时构建），避免每条输入跑 ~150 条正则
     private static $combinedPattern = null;
 
-    public static function check() {
-        $inputs = self::collectInputs();
+    public static function check($get = null, $post = null) {
+        $inputs = self::collectInputs($get, $post);
         foreach ($inputs as $key => $value) {
             $result = self::analyzeValue($key, $value);
             if ($result['is_attack']) {
@@ -221,14 +221,27 @@ class TemplateInjection {
         return self::patternSplit($pattern)[0];
     }
 
-    private static function collectInputs() {
+    private static function collectInputs($get = null, $post = null) {
         $inputs = [];
 
-        foreach ($_GET as $k => $v) {
-            $inputs[strtolower($k)] = (string)$v;
+        if ($get !== null) {
+            foreach ($get as $k => $v) {
+                $inputs[strtolower($k)] = (string)$v;
+            }
+        } else {
+            foreach ($_GET as $k => $v) {
+                $inputs[strtolower($k)] = (string)$v;
+            }
         }
-        foreach ($_POST as $k => $v) {
-            $inputs[strtolower($k)] = (string)$v;
+
+        if ($post !== null) {
+            foreach ($post as $k => $v) {
+                $inputs[strtolower($k)] = (string)$v;
+            }
+        } else {
+            foreach ($_POST as $k => $v) {
+                $inputs[strtolower($k)] = (string)$v;
+            }
         }
 
         $body = defined('WAF_RAW_BODY') ? WAF_RAW_BODY : file_get_contents('php://input');

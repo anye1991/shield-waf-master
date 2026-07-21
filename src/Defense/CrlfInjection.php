@@ -125,8 +125,8 @@ class CrlfInjection {
         return self::$combinedNewlineI;
     }
 
-    public static function check() {
-        $targets = self::collectTargets();
+    public static function check($get = null, $post = null, $headers = '') {
+        $targets = self::collectTargets($get, $post);
 
         foreach ($targets as $target) {
             if (!is_string($target)) continue;
@@ -170,19 +170,37 @@ class CrlfInjection {
         self::checkHeaderInjectionInRequest();
     }
 
-    private static function collectTargets() {
+    private static function collectTargets($get = null, $post = null) {
         $targets = [];
 
-        foreach ($_GET as $v) {
-            foreach (self::flattenValue($v) as $fv) {
-                $targets[] = $fv;
+        if ($get !== null) {
+            foreach ($get as $v) {
+                foreach (self::flattenValue($v) as $fv) {
+                    $targets[] = $fv;
+                }
+            }
+        } else {
+            foreach ($_GET as $v) {
+                foreach (self::flattenValue($v) as $fv) {
+                    $targets[] = $fv;
+                }
             }
         }
-        foreach ($_POST as $v) {
-            foreach (self::flattenValue($v) as $fv) {
-                $targets[] = $fv;
+
+        if ($post !== null) {
+            foreach ($post as $v) {
+                foreach (self::flattenValue($v) as $fv) {
+                    $targets[] = $fv;
+                }
+            }
+        } else {
+            foreach ($_POST as $v) {
+                foreach (self::flattenValue($v) as $fv) {
+                    $targets[] = $fv;
+                }
             }
         }
+
         foreach ($_COOKIE as $v) {
             foreach (self::flattenValue($v) as $fv) {
                 $targets[] = $fv;

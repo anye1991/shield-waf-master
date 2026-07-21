@@ -239,6 +239,7 @@ require_once __DIR__ . '/src/Semantic/AdversarialDefense.php';
 require_once __DIR__ . '/src/Core/Detector.php';
 require_once __DIR__ . '/src/Semantic/SemanticEngine.php';
 require_once __DIR__ . '/src/Admin/Sandbox.php';
+require_once __DIR__ . '/src/Core/Normalizer.php';
 WafSandbox::init();
 
 // ====================== 输入采集与分块解码 ======================
@@ -269,6 +270,67 @@ if (!empty($body) && !empty($contentType)) {
     }
 }
 
+// ====================== 全局14层编码归一化 ======================
+// 修复：之前各防御模块直接查原始输入（$_GET/$_POST/WAF_RAW_BODY），
+// PHP 只自动做一次 URL decode，导致双重编码的攻击 payload 漏检。
+// 现在在所有防御模块之前，统一用 WafNormalizer 做14层归一化：
+//   L1: 递归 URL 解码 → L2: HTML 实体解码 → L3: Unicode 实体解码 → ... → L14: 语义上下文
+// 各模块统一使用归一化后的输入，确保任何编码手法都绕不过。
+function waf_normalize_inputs() {
+    $result = [];
+    
+    // 归一化 $_GET
+    $result['get'] = [];
+    foreach ($_GET as $k => $v) {
+        $normKey = WafNormalizer::normalize((string)$k);
+        $normVal = is_array($v) 
+            ? array_map(function($item) { return WafNormalizer::normalize((string)$item); }, $v)
+            : WafNormalizer::normalize((string)$v);
+        $result['get'][$normKey] = $normVal;
+    }
+    
+    // 归一化 $_POST
+    $result['post'] = [];
+    foreach ($_POST as $k => $v) {
+        $normKey = WafNormalizer::normalize((string)$k);
+        $normVal = is_array($v) 
+            ? array_map(function($item) { return WafNormalizer::normalize((string)$item); }, $v)
+            : WafNormalizer::normalize((string)$v);
+        $result['post'][$normKey] = $normVal;
+    }
+    
+    // 归一化 $_COOKIE
+    $result['cookie'] = [];
+    foreach ($_COOKIE as $k => $v) {
+        $normKey = WafNormalizer::normalize((string)$k);
+        $normVal = WafNormalizer::normalize((string)$v);
+        $result['cookie'][$normKey] = $normVal;
+    }
+    
+    // 归一化 URI
+    $result['uri'] = WafNormalizer::normalize($_SERVER['REQUEST_URI'] ?? '/');
+    
+    // 归一化请求体
+    global $body;
+    $result['body'] = WafNormalizer::normalize($body);
+    
+    // 归一化请求头（供 CrlfInjection 等模块使用）
+    $result['headers'] = '';
+    foreach (['HTTP_USER_AGENT','HTTP_REFERER','HTTP_X_FORWARDED_FOR','HTTP_ACCEPT_LANGUAGE','HTTP_HOST'] as $h) {
+        if (!empty($_SERVER[$h])) {
+            $result['headers'] .= WafNormalizer::normalize($_SERVER[$h]) . ' ';
+        }
+    }
+    
+    // 归一化合并输入（供需要 array_merge 的模块使用）
+    $result['inputs'] = array_merge($result['get'], $result['post'], $result['cookie']);
+    
+    return $result;
+}
+
+// 执行归一化（所有模块调用之前）
+$waf_normalized = waf_normalize_inputs();
+
 // ====================== HTTP 参数污染检测 ======================
 if (!empty($_SERVER['QUERY_STRING']) && !$isHardSkip) {
     parse_str($_SERVER['QUERY_STRING'], $query_params);
@@ -286,7 +348,7 @@ if (!empty($_SERVER['QUERY_STRING']) && !$isHardSkip) {
 // ====================== GraphQL 注入检测 ======================
 require_once __DIR__ . '/src/Defense/GraphQLDefender.php';
 if (!$isHardSkip) {
-    GraphQLDefender::check();
+    GraphQLDefender::check($waf_normalized['body']);
 }
 
 // ====================== 高级防护模块 ======================
@@ -310,7 +372,7 @@ if (!$isHardSkip) {
 
 require_once __DIR__ . '/src/Defense/TemplateInjection.php';
 if (!$isHardSkip) {
-    TemplateInjection::check();
+    TemplateInjection::check($waf_normalized['get'], $waf_normalized['post']);
 }
 
 require_once __DIR__ . '/src/Defense/ApiSecurity.php';
@@ -320,7 +382,7 @@ if (!$isHardSkip) {
 
 require_once __DIR__ . '/src/Defense/CrlfInjection.php';
 if (!$isHardSkip) {
-    CrlfInjection::check();
+    CrlfInjection::check($waf_normalized['get'], $waf_normalized['post'], $waf_normalized['headers'] ?? '');
 }
 
 require_once __DIR__ . '/src/Defense/CachePoisoning.php';
@@ -339,7 +401,7 @@ require_once __DIR__ . '/src/Defense/OpenRedirect.php';
 require_once __DIR__ . '/src/Defense/IdorDetection.php';
 require_once __DIR__ . '/src/Defense/RaceCondition.php';
 
-$waf_inputs = array_merge($_GET, $_POST, $_COOKIE);
+$waf_inputs = $waf_normalized['inputs'];
 
 // 高可信场景（登录/支付回调等）：跳过基于输入的注入检测
 // 敏感输入场景（评论/搜索等）：也跳过这些黑名单关键字检测（密码/富文本易误判）
@@ -354,12 +416,12 @@ if (!RequestContext::shouldSkipSignature()) {
         waf_block('XPath Injection attack detected - ' . json_encode($xpathResult['details']));
     }
 
-    $xxeResult = XxeInjection::detect(WAF_RAW_BODY, $waf_inputs);
+    $xxeResult = XxeInjection::detect($waf_normalized['body'], $waf_inputs);
     if ($xxeResult['detected']) {
         waf_block('XXE Injection attack detected - ' . json_encode($xxeResult['details']));
     }
 
-    $deserResult = Deserialization::detect($waf_inputs, WAF_RAW_BODY);
+    $deserResult = Deserialization::detect($waf_inputs, $waf_normalized['body']);
     if ($deserResult['detected']) {
         waf_block('Deserialization attack detected - ' . json_encode($deserResult['details']));
     }
@@ -376,12 +438,12 @@ if (!RequestContext::shouldSkipSignature()) {
 }
 
 // Session 相关检测保留（所有场景都需要防会话固定/劫持）
-$sfResult = SessionFixation::detect();
+$sfResult = SessionFixation::detect($waf_normalized['cookie']);
 if ($sfResult['detected']) {
     waf_block('Session Fixation attack detected - ' . json_encode($sfResult['details']));
 }
 
-$shResult = SessionHijack::detect();
+$shResult = SessionHijack::detect($waf_normalized['cookie']);
 if ($shResult['detected']) {
     waf_block('Session Hijacking attack detected - ' . json_encode($shResult['details']));
 }

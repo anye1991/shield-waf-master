@@ -29,7 +29,7 @@ class SessionFixation {
         ['pattern' => '/^(http|ftp|file|php):/i', 'severity' => 70, 'name' => 'URL scheme in session ID', 'category' => 'suspicious'],
     ];
 
-    public static function detect() {
+    public static function detect($cookie = null) {
         $score = 0;
         $details = [];
         $detected = false;
@@ -61,7 +61,7 @@ class SessionFixation {
             }
         }
 
-        $formatAnomaly = self::checkSessionIdFormat();
+        $formatAnomaly = self::checkSessionIdFormat($cookie);
         if ($formatAnomaly['score'] > 0) {
             $score = max($score, $formatAnomaly['score']);
             $details[] = $formatAnomaly;
@@ -171,13 +171,15 @@ class SessionFixation {
         ];
     }
 
-    private static function checkSessionIdFormat() {
+    private static function checkSessionIdFormat($cookie = null) {
         $findings = [];
         $score = 0;
         $sessionName = session_name() ?: 'PHPSESSID';
 
         $sessionId = null;
-        if (isset($_COOKIE[$sessionName])) {
+        if ($cookie !== null && isset($cookie[$sessionName])) {
+            $sessionId = $cookie[$sessionName];
+        } elseif (isset($_COOKIE[$sessionName])) {
             $sessionId = $_COOKIE[$sessionName];
         }
 
