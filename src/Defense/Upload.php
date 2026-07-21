@@ -417,10 +417,20 @@ function waf_upload_svg_check($content) {
     $cleanContent = html_entity_decode($cleanContent, ENT_QUOTES | ENT_XML1, 'UTF-8');
     // 处理 unicode 转义
     $cleanContent = preg_replace_callback('/&#x([0-9a-fA-F]+);?/', function($m) {
-        return chr(hexdec($m[1]));
+        $code = hexdec($m[1]);
+        if ($code < 0x80) return chr($code);
+        if ($code < 0x800) return chr(0xC0 | ($code >> 6)) . chr(0x80 | ($code & 0x3F));
+        if ($code < 0x10000) return chr(0xE0 | ($code >> 12)) . chr(0x80 | (($code >> 6) & 0x3F)) . chr(0x80 | ($code & 0x3F));
+        if ($code < 0x110000) return chr(0xF0 | ($code >> 18)) . chr(0x80 | (($code >> 12) & 0x3F)) . chr(0x80 | (($code >> 6) & 0x3F)) . chr(0x80 | ($code & 0x3F));
+        return '';
     }, $cleanContent);
     $cleanContent = preg_replace_callback('/&#(\d+);?/', function($m) {
-        return chr($m[1]);
+        $code = (int)$m[1];
+        if ($code < 0x80) return chr($code);
+        if ($code < 0x800) return chr(0xC0 | ($code >> 6)) . chr(0x80 | ($code & 0x3F));
+        if ($code < 0x10000) return chr(0xE0 | ($code >> 12)) . chr(0x80 | (($code >> 6) & 0x3F)) . chr(0x80 | ($code & 0x3F));
+        if ($code < 0x110000) return chr(0xF0 | ($code >> 18)) . chr(0x80 | (($code >> 12) & 0x3F)) . chr(0x80 | (($code >> 6) & 0x3F)) . chr(0x80 | ($code & 0x3F));
+        return '';
     }, $cleanContent);
 
     // 1. XXE 检测（外部实体引用）
@@ -738,7 +748,9 @@ function waf_upload_block($file, $reason, $code = '', $detail = []) {
     $safeIp = is_string($rawIp) ? str_replace(["\n", "\r", "|", "\t"], '', $rawIp) : '';
     $safeFilename = is_string($filename) ? str_replace(["\n", "\r", "|", "\t"], '', $filename) : 'unknown';
     $safeCode = is_string($code) ? str_replace(["\n", "\r", "|", "\t"], '', $code) : '';
-    $safeReason = is_string($reason) ? str_replace(["\n", "\r"], '', $reason) : '';
+    // 修复：safeReason 之前只过滤 \n \r，但日志使用 ' | ' 作为字段分隔符，
+    // 攻击者可在 reason 中塞入 '|fake_code|' 伪造额外字段，污染日志分析。
+    $safeReason = is_string($reason) ? str_replace(["\n", "\r", "|", "\t"], '', $reason) : '';
 
     // 记录上传拦截日志
     $logDir = WAF_LOG_PATH;
@@ -777,7 +789,9 @@ function waf_upload_log($file, $reason, $detail = []) {
     $rawIp = waf_get_real_ip();
     $safeIp = is_string($rawIp) ? str_replace(["\n", "\r", "|", "\t"], '', $rawIp) : '';
     $safeFilename = is_string($filename) ? str_replace(["\n", "\r", "|", "\t"], '', $filename) : 'unknown';
-    $safeReason = is_string($reason) ? str_replace(["\n", "\r"], '', $reason) : '';
+    // 修复：safeReason 之前只过滤 \n \r，但日志使用 ' | ' 作为字段分隔符，
+    // 攻击者可在 reason 中塞入 '|fake_code|' 伪造额外字段，污染日志分析。
+    $safeReason = is_string($reason) ? str_replace(["\n", "\r", "|", "\t"], '', $reason) : '';
 
     $logDir = WAF_LOG_PATH;
     $logFile = $logDir . 'upload_suspicious_' . date('Y-m-d') . '.log';

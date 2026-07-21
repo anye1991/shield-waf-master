@@ -320,8 +320,24 @@ class OpenRedirect {
         }
 
         // 裸域名（不含协议）——排除当前域名本身
-        if (preg_match('/^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}(\/|$)/', $value)) {
-            if ($currentHost && stripos($value, $currentHost) !== false) {
+        // 兼容 example.com / example.com:8080 / example.com:8080/path / example.com?a=1 / example.com#x
+        if (preg_match('/^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}(:\d+)?([\/\?#]|$)/', $value)) {
+            // 提取 host（去除端口/路径），再与当前域名对比
+            $bareHost = $value;
+            $stop = strlen($bareHost);
+            foreach (['/', '?', '#'] as $sep) {
+                $p = strpos($bareHost, $sep);
+                if ($p !== false && $p < $stop) {
+                    $stop = $p;
+                }
+            }
+            $colon = strpos($bareHost, ':', strpos($bareHost, '.') + 1);
+            if ($colon !== false && $colon < $stop) {
+                $stop = $colon;
+            }
+            $bareHost = substr($bareHost, 0, $stop);
+
+            if ($currentHost && strcasecmp($bareHost, $currentHost) === 0) {
                 return false;
             }
             return true;

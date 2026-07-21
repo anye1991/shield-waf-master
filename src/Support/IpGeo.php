@@ -427,6 +427,13 @@ class WafIpGeo {
     public static function lookup($ip) {
         self::initRanges();
 
+        // 严格 IP 格式校验：必须为合法 IPv4 字符串
+        // 修复：原代码未校验直接传 ip2long()，非法输入返回 false，
+        // (int)false === 0 会被 0.0.0.0/8 的 LOCAL 段命中，导致任意垃圾输入都被标为内网
+        if (!is_string($ip) || !filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            return self::formatResult('UNKNOWN');
+        }
+
         // 检查本地/私有 IP
         if (self::isPrivateIp($ip)) {
             return self::formatResult('LOCAL');
@@ -434,17 +441,10 @@ class WafIpGeo {
 
         $ipLong = (int)sprintf("%u", ip2long($ip));
 
-        // 二分查找
-        $left = 0;
-        $right = count(self::$ipRanges) - 1;
-        $country = 'UNKNOWN';
-
-        // 由于范围有重叠（同一个 /8 段可能对应多个国家），
-        // 我们用线性搜索找到第一个匹配，优先匹配后面（更具体）的条目
-        // 但为了性能，先用第一 octet 快速过滤
-        $firstOctet = (int)explode('.', $ip)[0];
-
         // 简化：线性搜索（范围数量有限，性能足够）
+        // 由于范围有重叠（同一个 /8 段可能对应多个国家），
+        // 保留最后一次匹配（更具体的国家覆盖前面的粗粒度）
+        $country = 'UNKNOWN';
         foreach (self::$ipRanges as $range) {
             if ($ipLong >= $range[0] && $ipLong <= $range[1]) {
                 $country = $range[2];
@@ -473,6 +473,12 @@ class WafIpGeo {
      * 判断是否为私有/本地 IP
      */
     private static function isPrivateIp($ip) {
+        // 严格 IP 格式校验：必须为合法 IPv4 字符串
+        // 修复：原代码未校验直接传 ip2long()，非法输入返回 false，
+        // (int)false === 0 会被 127.0.0.0/8 段命中，错误地标为本地 IP
+        if (!is_string($ip) || !filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            return false;
+        }
         $long = (int)sprintf("%u", ip2long($ip));
         $localStart = (int)sprintf("%u", ip2long('127.0.0.0'));
         $localEnd = (int)sprintf("%u", ip2long('127.255.255.255'));

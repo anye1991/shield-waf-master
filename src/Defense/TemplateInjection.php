@@ -5,158 +5,158 @@ class TemplateInjection {
     private static $templatePatterns = [
         // 注意：通用的 /\{\{.*?\}\}/ 不在此处，因为会与 Angular/Vue.js 冲突，
         // 通用 {{ }} 仅当内含 dunder 或 Python 内建时才在 analyzeValue 中单独判定
-        ['pattern' => '/\{\%.*?\%\}/', 'name' => 'Jinja2/Twig statement'],
-        ['pattern' => '/\{\#.*?\#\}/', 'name' => 'Jinja2/Twig comment'],
-        ['pattern' => '/\{\$.*?\}/', 'name' => 'Smarty variable'],
-        ['pattern' => '/\{\*.*?\*\}/', 'name' => 'Smarty comment'],
-        ['pattern' => '/\{\$smarty\.\w+\}/', 'name' => 'Smarty superglobal'],
-        ['pattern' => '/\{\{.*?\.__class__.*?\}\}/', 'name' => 'Template __class__ access'],
-        ['pattern' => '/\{\{.*?\.__bases__.*?\}\}/', 'name' => 'Template __bases__ access'],
-        ['pattern' => '/\{\{.*?\.__subclasses__\(\).*?\}\}/', 'name' => 'Template __subclasses__ call'],
-        ['pattern' => '/\{\{.*?\.__globals__.*?\}\}/', 'name' => 'Template __globals__ access'],
-        ['pattern' => '/\{\{.*?\.__init__.*?\}\}/', 'name' => 'Template __init__ access'],
-        ['pattern' => '/\{\{.*?\.__dict__.*?\}\}/', 'name' => 'Template __dict__ access'],
-        ['pattern' => '/\{\{.*?\.__module__.*?\}\}/', 'name' => 'Template __module__ access'],
-        ['pattern' => '/\{\{.*?\.__name__.*?\}\}/', 'name' => 'Template __name__ access'],
-        ['pattern' => '/\{\{.*?\.__doc__.*?\}\}/', 'name' => 'Template __doc__ access'],
-        ['pattern' => '/\{\{.*?\.__repr__.*?\}\}/', 'name' => 'Template __repr__ access'],
-        ['pattern' => '/\{\{.*?\.__str__.*?\}\}/', 'name' => 'Template __str__ access'],
-        ['pattern' => '/\{\{.*?\.__hash__.*?\}\}/', 'name' => 'Template __hash__ access'],
-        ['pattern' => '/\{\{.*?\.__eq__.*?\}\}/', 'name' => 'Template __eq__ access'],
-        ['pattern' => '/\{\{.*?\.__ne__.*?\}\}/', 'name' => 'Template __ne__ access'],
-        ['pattern' => '/\{\{.*?\.__lt__.*?\}\}/', 'name' => 'Template __lt__ access'],
-        ['pattern' => '/\{\{.*?\.__le__.*?\}\}/', 'name' => 'Template __le__ access'],
-        ['pattern' => '/\{\{.*?\.__gt__.*?\}\}/', 'name' => 'Template __gt__ access'],
-        ['pattern' => '/\{\{.*?\.__ge__.*?\}\}/', 'name' => 'Template __ge__ access'],
-        ['pattern' => '/\{\{.*?\.__bool__.*?\}\}/', 'name' => 'Template __bool__ access'],
-        ['pattern' => '/\{\{.*?\.__len__.*?\}\}/', 'name' => 'Template __len__ access'],
-        ['pattern' => '/\{\{.*?\.__iter__.*?\}\}/', 'name' => 'Template __iter__ access'],
-        ['pattern' => '/\{\{.*?\.__next__.*?\}\}/', 'name' => 'Template __next__ access'],
-        ['pattern' => '/\{\{.*?\.__getitem__.*?\}\}/', 'name' => 'Template __getitem__ access'],
-        ['pattern' => '/\{\{.*?\.__setitem__.*?\}\}/', 'name' => 'Template __setitem__ access'],
-        ['pattern' => '/\{\{.*?\.__delitem__.*?\}\}/', 'name' => 'Template __delitem__ access'],
-        ['pattern' => '/\{\{.*?\.__contains__.*?\}\}/', 'name' => 'Template __contains__ access'],
-        ['pattern' => '/\{\{.*?\.__getattr__.*?\}\}/', 'name' => 'Template __getattr__ access'],
-        ['pattern' => '/\{\{.*?\.__setattr__.*?\}\}/', 'name' => 'Template __setattr__ access'],
-        ['pattern' => '/\{\{.*?\.__delattr__.*?\}\}/', 'name' => 'Template __delattr__ access'],
-        ['pattern' => '/\{\{.*?\.__call__.*?\}\}/', 'name' => 'Template __call__ access'],
-        ['pattern' => '/\{\{.*?\.__enter__.*?\}\}/', 'name' => 'Template __enter__ access'],
-        ['pattern' => '/\{\{.*?\.__exit__.*?\}\}/', 'name' => 'Template __exit__ access'],
-        ['pattern' => '/\{\{.*?\.__getstate__.*?\}\}/', 'name' => 'Template __getstate__ access'],
-        ['pattern' => '/\{\{.*?\.__setstate__.*?\}\}/', 'name' => 'Template __setstate__ access'],
-        ['pattern' => '/\{\{.*?\.__reduce__.*?\}\}/', 'name' => 'Template __reduce__ access'],
-        ['pattern' => '/\{\{.*?\.__reduce_ex__.*?\}\}/', 'name' => 'Template __reduce_ex__ access'],
-        ['pattern' => '/\{\{.*?\.__sizeof__.*?\}\}/', 'name' => 'Template __sizeof__ access'],
-        ['pattern' => '/\{\{.*?\.__dir__.*?\}\}/', 'name' => 'Template __dir__ access'],
-        ['pattern' => '/\{\{.*?\.__class_getitem__.*?\}\}/', 'name' => 'Template __class_getitem__ access'],
-        ['pattern' => '/\{\{.*?\.__match_args__.*?\}\}/', 'name' => 'Template __match_args__ access'],
-        ['pattern' => '/\{\{.*?\.__orig_bases__.*?\}\}/', 'name' => 'Template __orig_bases__ access'],
-        ['pattern' => '/\{\{.*?\.__parameters__.*?\}\}/', 'name' => 'Template __parameters__ access'],
-        ['pattern' => '/\{\{.*?\.__args__.*?\}\}/', 'name' => 'Template __args__ access'],
-        ['pattern' => '/\{\{.*?\.__origin__.*?\}\}/', 'name' => 'Template __origin__ access'],
-        ['pattern' => '/\{\{.*?\.__annotations__.*?\}\}/', 'name' => 'Template __annotations__ access'],
-        ['pattern' => '/\{\{.*?\.__wrapped__.*?\}\}/', 'name' => 'Template __wrapped__ access'],
-        ['pattern' => '/\{\{.*?\.__code__.*?\}\}/', 'name' => 'Template __code__ access'],
-        ['pattern' => '/\{\{.*?\.__func__.*?\}\}/', 'name' => 'Template __func__ access'],
-        ['pattern' => '/\{\{.*?\.__self__.*?\}\}/', 'name' => 'Template __self__ access'],
-        ['pattern' => '/\{\{.*?\.__closure__.*?\}\}/', 'name' => 'Template __closure__ access'],
-        ['pattern' => '/\{\{.*?\.__defaults__.*?\}\}/', 'name' => 'Template __defaults__ access'],
-        ['pattern' => '/\{\{.*?\.__kwdefaults__.*?\}\}/', 'name' => 'Template __kwdefaults__ access'],
-        ['pattern' => '/\{\{.*?\.__qualname__.*?\}\}/', 'name' => 'Template __qualname__ access'],
-        ['pattern' => '/\{\{.*?\.__import__.*?\}\}/', 'name' => 'Template __import__ access'],
-        ['pattern' => '/\{\{.*?\.__build_class__.*?\}\}/', 'name' => 'Template __build_class__ access'],
-        ['pattern' => '/\{\{.*?\.__package__.*?\}\}/', 'name' => 'Template __package__ access'],
-        ['pattern' => '/\{\{.*?\.__loader__.*?\}\}/', 'name' => 'Template __loader__ access'],
-        ['pattern' => '/\{\{.*?\.__spec__.*?\}\}/', 'name' => 'Template __spec__ access'],
-        ['pattern' => '/\{\{.*?\.__file__.*?\}\}/', 'name' => 'Template __file__ access'],
-        ['pattern' => '/\{\{.*?\.__cached__.*?\}\}/', 'name' => 'Template __cached__ access'],
-        ['pattern' => '/\{\{.*?\.__error__.*?\}\}/', 'name' => 'Template __error__ access'],
-        ['pattern' => '/\{\{.*?\.__traceback__.*?\}\}/', 'name' => 'Template __traceback__ access'],
-        ['pattern' => '/\{\{.*?\.__context__.*?\}\}/', 'name' => 'Template __context__ access'],
-        ['pattern' => '/\{\{.*?\.__cause__.*?\}\}/', 'name' => 'Template __cause__ access'],
-        ['pattern' => '/\{\{.*?\.__suppress_context__.*?\}\}/', 'name' => 'Template __suppress_context__ access'],
-        ['pattern' => '/\{\{.*?\.__traceback_hide__.*?\}\}/', 'name' => 'Template __traceback_hide__ access'],
-        ['pattern' => '/\{\{.*?\.__bytes__.*?\}\}/', 'name' => 'Template __bytes__ access'],
-        ['pattern' => '/\{\{.*?\.__format__.*?\}\}/', 'name' => 'Template __format__ access'],
-        ['pattern' => '/\{\{.*?\.__get__.*?\}\}/', 'name' => 'Template __get__ access'],
-        ['pattern' => '/\{\{.*?\.__set__.*?\}\}/', 'name' => 'Template __set__ access'],
-        ['pattern' => '/\{\{.*?\.__delete__.*?\}\}/', 'name' => 'Template __delete__ access'],
-        ['pattern' => '/\{\{.*?\.__instancecheck__.*?\}\}/', 'name' => 'Template __instancecheck__ access'],
-        ['pattern' => '/\{\{.*?\.__subclasscheck__.*?\}\}/', 'name' => 'Template __subclasscheck__ access'],
-        ['pattern' => '/\{\{.*?\.__subclasshook__.*?\}\}/', 'name' => 'Template __subclasshook__ access'],
-        ['pattern' => '/\{\{.*?\.__prepare__.*?\}\}/', 'name' => 'Template __prepare__ access'],
-        ['pattern' => '/\{\{.*?\.__init_subclass__.*?\}\}/', 'name' => 'Template __init_subclass__ access'],
-        ['pattern' => '/\{\{.*?\.__abstractmethods__.*?\}\}/', 'name' => 'Template __abstractmethods__ access'],
-        ['pattern' => '/\{\{.*?\.__mro__.*?\}\}/', 'name' => 'Template __mro__ access'],
-        ['pattern' => '/\{\{.*?\.__base__.*?\}\}/', 'name' => 'Template __base__ access'],
-        ['pattern' => '/\{\{.*?\.__weakref__.*?\}\}/', 'name' => 'Template __weakref__ access'],
-        ['pattern' => '/\{\{.*?\.__slots__.*?\}\}/', 'name' => 'Template __slots__ access'],
-        ['pattern' => '/\{\{.*?\|\s*(safe|escape|trim|lower|upper|capitalize|title|replace|default|sort|unique|reverse|random|first|last|length|sum|min|max|round|int|float|string|list|dict|join|split|format|striptags|truncate|raw|e|nl2br|date|url_encode|url_decode|json_encode|json_decode)\s*\}\}/', 'name' => 'Template filter injection'],
-        ['pattern' => '/\{\{.*?\|\s*attr\(.*?\)\s*\}\}/', 'name' => 'Template attr filter'],
-        ['pattern' => '/\{\{.*?\|\s*method\(.*?\)\s*\}\}/', 'name' => 'Template method filter'],
-        ['pattern' => '/\{\{.*?\.__class__\.__bases__\[0\]\.__subclasses__\(\).*?\}\}/', 'name' => 'Template class chain traversal'],
-        ['pattern' => '/\{\{.*?\.__class__\.__mro__\[1\]\.__subclasses__\(\).*?\}\}/', 'name' => 'Template mro chain traversal'],
-        ['pattern' => '/\{\{.*?\.subclasses\(\).*?\}\}/', 'name' => 'Template subclasses call'],
-        ['pattern' => '/\{\{.*?\.__globals__\["__builtins__"\].*?\}\}/', 'name' => 'Template builtins access'],
-        ['pattern' => '/\{\{.*?\.__globals__\["os"\].*?\}\}/', 'name' => 'Template os module access'],
-        ['pattern' => '/\{\{.*?\.__globals__\["subprocess"\].*?\}\}/', 'name' => 'Template subprocess access'],
-        ['pattern' => '/\{\{.*?\.__globals__\["sys"\].*?\}\}/', 'name' => 'Template sys module access'],
-        ['pattern' => '/\{\{.*?\.__globals__\["importlib"\].*?\}\}/', 'name' => 'Template importlib access'],
-        ['pattern' => '/\{\{.*?\.read\(\).*?\}\}/', 'name' => 'Template file read'],
-        ['pattern' => '/\{\{.*?\.write\(.*?\).*?\}\}/', 'name' => 'Template file write'],
-        ['pattern' => '/\{\{.*?\.exec\(.*?\).*?\}\}/', 'name' => 'Template exec call'],
-        ['pattern' => '/\{\{.*?\.eval\(.*?\).*?\}\}/', 'name' => 'Template eval call'],
-        ['pattern' => '/\{\{.*?\.system\(.*?\).*?\}\}/', 'name' => 'Template system call'],
-        ['pattern' => '/\{\{.*?\.popen\(.*?\).*?\}\}/', 'name' => 'Template popen call'],
-        ['pattern' => '/\{\{.*?\.spawn\(.*?\).*?\}\}/', 'name' => 'Template spawn call'],
-        ['pattern' => '/\{\{.*?\.fork\(\).*?\}\}/', 'name' => 'Template fork call'],
-        ['pattern' => '/\{\{.*?\.pipe\(\).*?\}\}/', 'name' => 'Template pipe call'],
-        ['pattern' => '/\{\{.*?\.dup\(\).*?\}\}/', 'name' => 'Template dup call'],
-        ['pattern' => '/\{\{.*?\.dup2\(.*?\).*?\}\}/', 'name' => 'Template dup2 call'],
-        ['pattern' => '/\{\{.*?\.close\(\).*?\}\}/', 'name' => 'Template close call'],
-        ['pattern' => '/\{\{.*?\.open\(.*?\).*?\}\}/', 'name' => 'Template open call'],
-        ['pattern' => '/\{\{.*?\.chmod\(.*?\).*?\}\}/', 'name' => 'Template chmod call'],
-        ['pattern' => '/\{\{.*?\.chown\(.*?\).*?\}\}/', 'name' => 'Template chown call'],
-        ['pattern' => '/\{\{.*?\.stat\(.*?\).*?\}\}/', 'name' => 'Template stat call'],
-        ['pattern' => '/\{\{.*?\.lstat\(.*?\).*?\}\}/', 'name' => 'Template lstat call'],
-        ['pattern' => '/\{\{.*?\.fstat\(.*?\).*?\}\}/', 'name' => 'Template fstat call'],
-        ['pattern' => '/\{\{.*?\.access\(.*?\).*?\}\}/', 'name' => 'Template access call'],
-        ['pattern' => '/\{\{.*?\.listdir\(.*?\).*?\}\}/', 'name' => 'Template listdir call'],
-        ['pattern' => '/\{\{.*?\.mkdir\(.*?\).*?\}\}/', 'name' => 'Template mkdir call'],
-        ['pattern' => '/\{\{.*?\.rmdir\(.*?\).*?\}\}/', 'name' => 'Template rmdir call'],
-        ['pattern' => '/\{\{.*?\.remove\(.*?\).*?\}\}/', 'name' => 'Template remove call'],
-        ['pattern' => '/\{\{.*?\.rename\(.*?\).*?\}\}/', 'name' => 'Template rename call'],
-        ['pattern' => '/\{\{.*?\.symlink\(.*?\).*?\}\}/', 'name' => 'Template symlink call'],
-        ['pattern' => '/\{\{.*?\.link\(.*?\).*?\}\}/', 'name' => 'Template link call'],
-        ['pattern' => '/\{\{.*?\.unlink\(.*?\).*?\}\}/', 'name' => 'Template unlink call'],
-        ['pattern' => '/\{\{.*?\.readlink\(.*?\).*?\}\}/', 'name' => 'Template readlink call'],
-        ['pattern' => '/\{\{.*?\.realpath\(.*?\).*?\}\}/', 'name' => 'Template realpath call'],
-        ['pattern' => '/\{\{.*?\.abspath\(.*?\).*?\}\}/', 'name' => 'Template abspath call'],
-        ['pattern' => '/\{\{.*?\.path\.join\(.*?\).*?\}\}/', 'name' => 'Template path.join'],
-        ['pattern' => '/\{\{.*?\.path\.dirname\(.*?\).*?\}\}/', 'name' => 'Template path.dirname'],
-        ['pattern' => '/\{\{.*?\.path\.basename\(.*?\).*?\}\}/', 'name' => 'Template path.basename'],
-        ['pattern' => '/\{\{.*?\.path\.exists\(.*?\).*?\}\}/', 'name' => 'Template path.exists'],
-        ['pattern' => '/\{\{.*?\.path\.isfile\(.*?\).*?\}\}/', 'name' => 'Template path.isfile'],
-        ['pattern' => '/\{\{.*?\.path\.isdir\(.*?\).*?\}\}/', 'name' => 'Template path.isdir'],
-        ['pattern' => '/\{\{.*?\.path\.isabs\(.*?\).*?\}\}/', 'name' => 'Template path.isabs'],
-        ['pattern' => '/\{\{.*?\.path\.split\(.*?\).*?\}\}/', 'name' => 'Template path.split'],
-        ['pattern' => '/\{\{.*?\.path\.splitext\(.*?\).*?\}\}/', 'name' => 'Template path.splitext'],
-        ['pattern' => '/\{\{.*?\.path\.expanduser\(.*?\).*?\}\}/', 'name' => 'Template path.expanduser'],
-        ['pattern' => '/\{\{.*?\.path\.expandvars\(.*?\).*?\}\}/', 'name' => 'Template path.expandvars'],
-        ['pattern' => '/\{\{.*?\.path\.normpath\(.*?\).*?\}\}/', 'name' => 'Template path.normpath'],
-        ['pattern' => '/\{\{.*?\.path\.normcase\(.*?\).*?\}\}/', 'name' => 'Template path.normcase'],
-        ['pattern' => '/\{\{.*?\.path\.relpath\(.*?\).*?\}\}/', 'name' => 'Template path.relpath'],
-        ['pattern' => '/\{\{.*?\.path\.samefile\(.*?\).*?\}\}/', 'name' => 'Template path.samefile'],
-        ['pattern' => '/\{\{.*?\.path\.sameopenfile\(.*?\).*?\}\}/', 'name' => 'Template path.sameopenfile'],
-        ['pattern' => '/\{\{.*?\.path\.samestat\(.*?\).*?\}\}/', 'name' => 'Template path.samestat'],
-        ['pattern' => '/\{\{.*?\.path\.walk\(.*?\).*?\}\}/', 'name' => 'Template path.walk'],
-        ['pattern' => '/\{\{.*?\.path\.getsize\(.*?\).*?\}\}/', 'name' => 'Template path.getsize'],
-        ['pattern' => '/\{\{.*?\.path\.getmtime\(.*?\).*?\}\}/', 'name' => 'Template path.getmtime'],
-        ['pattern' => '/\{\{.*?\.path\.getctime\(.*?\).*?\}\}/', 'name' => 'Template path.getctime'],
-        ['pattern' => '/\{\{.*?\.path\.getatime\(.*?\).*?\}\}/', 'name' => 'Template path.getatime'],
-        ['pattern' => '/\{\{.*?\.path\.readlink\(.*?\).*?\}\}/', 'name' => 'Template path.readlink'],
-        ['pattern' => '/\{\{.*?\.path\.realpath\(.*?\).*?\}\}/', 'name' => 'Template path.realpath'],
-        ['pattern' => '/\{\{.*?\.path\.abspath\(.*?\).*?\}\}/', 'name' => 'Template path.abspath'],
+        ['pattern' => '/\{\%.*?\%\}/s', 'name' => 'Jinja2/Twig statement'],
+        ['pattern' => '/\{\#.*?\#\}/s', 'name' => 'Jinja2/Twig comment'],
+        ['pattern' => '/\{\$.*?\}/s', 'name' => 'Smarty variable'],
+        ['pattern' => '/\{\*.*?\*\}/s', 'name' => 'Smarty comment'],
+        ['pattern' => '/\{\$smarty\.\w+\}/s', 'name' => 'Smarty superglobal'],
+        ['pattern' => '/\{\{.*?\.__class__.*?\}\}/s', 'name' => 'Template __class__ access'],
+        ['pattern' => '/\{\{.*?\.__bases__.*?\}\}/s', 'name' => 'Template __bases__ access'],
+        ['pattern' => '/\{\{.*?\.__subclasses__\(\).*?\}\}/s', 'name' => 'Template __subclasses__ call'],
+        ['pattern' => '/\{\{.*?\.__globals__.*?\}\}/s', 'name' => 'Template __globals__ access'],
+        ['pattern' => '/\{\{.*?\.__init__.*?\}\}/s', 'name' => 'Template __init__ access'],
+        ['pattern' => '/\{\{.*?\.__dict__.*?\}\}/s', 'name' => 'Template __dict__ access'],
+        ['pattern' => '/\{\{.*?\.__module__.*?\}\}/s', 'name' => 'Template __module__ access'],
+        ['pattern' => '/\{\{.*?\.__name__.*?\}\}/s', 'name' => 'Template __name__ access'],
+        ['pattern' => '/\{\{.*?\.__doc__.*?\}\}/s', 'name' => 'Template __doc__ access'],
+        ['pattern' => '/\{\{.*?\.__repr__.*?\}\}/s', 'name' => 'Template __repr__ access'],
+        ['pattern' => '/\{\{.*?\.__str__.*?\}\}/s', 'name' => 'Template __str__ access'],
+        ['pattern' => '/\{\{.*?\.__hash__.*?\}\}/s', 'name' => 'Template __hash__ access'],
+        ['pattern' => '/\{\{.*?\.__eq__.*?\}\}/s', 'name' => 'Template __eq__ access'],
+        ['pattern' => '/\{\{.*?\.__ne__.*?\}\}/s', 'name' => 'Template __ne__ access'],
+        ['pattern' => '/\{\{.*?\.__lt__.*?\}\}/s', 'name' => 'Template __lt__ access'],
+        ['pattern' => '/\{\{.*?\.__le__.*?\}\}/s', 'name' => 'Template __le__ access'],
+        ['pattern' => '/\{\{.*?\.__gt__.*?\}\}/s', 'name' => 'Template __gt__ access'],
+        ['pattern' => '/\{\{.*?\.__ge__.*?\}\}/s', 'name' => 'Template __ge__ access'],
+        ['pattern' => '/\{\{.*?\.__bool__.*?\}\}/s', 'name' => 'Template __bool__ access'],
+        ['pattern' => '/\{\{.*?\.__len__.*?\}\}/s', 'name' => 'Template __len__ access'],
+        ['pattern' => '/\{\{.*?\.__iter__.*?\}\}/s', 'name' => 'Template __iter__ access'],
+        ['pattern' => '/\{\{.*?\.__next__.*?\}\}/s', 'name' => 'Template __next__ access'],
+        ['pattern' => '/\{\{.*?\.__getitem__.*?\}\}/s', 'name' => 'Template __getitem__ access'],
+        ['pattern' => '/\{\{.*?\.__setitem__.*?\}\}/s', 'name' => 'Template __setitem__ access'],
+        ['pattern' => '/\{\{.*?\.__delitem__.*?\}\}/s', 'name' => 'Template __delitem__ access'],
+        ['pattern' => '/\{\{.*?\.__contains__.*?\}\}/s', 'name' => 'Template __contains__ access'],
+        ['pattern' => '/\{\{.*?\.__getattr__.*?\}\}/s', 'name' => 'Template __getattr__ access'],
+        ['pattern' => '/\{\{.*?\.__setattr__.*?\}\}/s', 'name' => 'Template __setattr__ access'],
+        ['pattern' => '/\{\{.*?\.__delattr__.*?\}\}/s', 'name' => 'Template __delattr__ access'],
+        ['pattern' => '/\{\{.*?\.__call__.*?\}\}/s', 'name' => 'Template __call__ access'],
+        ['pattern' => '/\{\{.*?\.__enter__.*?\}\}/s', 'name' => 'Template __enter__ access'],
+        ['pattern' => '/\{\{.*?\.__exit__.*?\}\}/s', 'name' => 'Template __exit__ access'],
+        ['pattern' => '/\{\{.*?\.__getstate__.*?\}\}/s', 'name' => 'Template __getstate__ access'],
+        ['pattern' => '/\{\{.*?\.__setstate__.*?\}\}/s', 'name' => 'Template __setstate__ access'],
+        ['pattern' => '/\{\{.*?\.__reduce__.*?\}\}/s', 'name' => 'Template __reduce__ access'],
+        ['pattern' => '/\{\{.*?\.__reduce_ex__.*?\}\}/s', 'name' => 'Template __reduce_ex__ access'],
+        ['pattern' => '/\{\{.*?\.__sizeof__.*?\}\}/s', 'name' => 'Template __sizeof__ access'],
+        ['pattern' => '/\{\{.*?\.__dir__.*?\}\}/s', 'name' => 'Template __dir__ access'],
+        ['pattern' => '/\{\{.*?\.__class_getitem__.*?\}\}/s', 'name' => 'Template __class_getitem__ access'],
+        ['pattern' => '/\{\{.*?\.__match_args__.*?\}\}/s', 'name' => 'Template __match_args__ access'],
+        ['pattern' => '/\{\{.*?\.__orig_bases__.*?\}\}/s', 'name' => 'Template __orig_bases__ access'],
+        ['pattern' => '/\{\{.*?\.__parameters__.*?\}\}/s', 'name' => 'Template __parameters__ access'],
+        ['pattern' => '/\{\{.*?\.__args__.*?\}\}/s', 'name' => 'Template __args__ access'],
+        ['pattern' => '/\{\{.*?\.__origin__.*?\}\}/s', 'name' => 'Template __origin__ access'],
+        ['pattern' => '/\{\{.*?\.__annotations__.*?\}\}/s', 'name' => 'Template __annotations__ access'],
+        ['pattern' => '/\{\{.*?\.__wrapped__.*?\}\}/s', 'name' => 'Template __wrapped__ access'],
+        ['pattern' => '/\{\{.*?\.__code__.*?\}\}/s', 'name' => 'Template __code__ access'],
+        ['pattern' => '/\{\{.*?\.__func__.*?\}\}/s', 'name' => 'Template __func__ access'],
+        ['pattern' => '/\{\{.*?\.__self__.*?\}\}/s', 'name' => 'Template __self__ access'],
+        ['pattern' => '/\{\{.*?\.__closure__.*?\}\}/s', 'name' => 'Template __closure__ access'],
+        ['pattern' => '/\{\{.*?\.__defaults__.*?\}\}/s', 'name' => 'Template __defaults__ access'],
+        ['pattern' => '/\{\{.*?\.__kwdefaults__.*?\}\}/s', 'name' => 'Template __kwdefaults__ access'],
+        ['pattern' => '/\{\{.*?\.__qualname__.*?\}\}/s', 'name' => 'Template __qualname__ access'],
+        ['pattern' => '/\{\{.*?\.__import__.*?\}\}/s', 'name' => 'Template __import__ access'],
+        ['pattern' => '/\{\{.*?\.__build_class__.*?\}\}/s', 'name' => 'Template __build_class__ access'],
+        ['pattern' => '/\{\{.*?\.__package__.*?\}\}/s', 'name' => 'Template __package__ access'],
+        ['pattern' => '/\{\{.*?\.__loader__.*?\}\}/s', 'name' => 'Template __loader__ access'],
+        ['pattern' => '/\{\{.*?\.__spec__.*?\}\}/s', 'name' => 'Template __spec__ access'],
+        ['pattern' => '/\{\{.*?\.__file__.*?\}\}/s', 'name' => 'Template __file__ access'],
+        ['pattern' => '/\{\{.*?\.__cached__.*?\}\}/s', 'name' => 'Template __cached__ access'],
+        ['pattern' => '/\{\{.*?\.__error__.*?\}\}/s', 'name' => 'Template __error__ access'],
+        ['pattern' => '/\{\{.*?\.__traceback__.*?\}\}/s', 'name' => 'Template __traceback__ access'],
+        ['pattern' => '/\{\{.*?\.__context__.*?\}\}/s', 'name' => 'Template __context__ access'],
+        ['pattern' => '/\{\{.*?\.__cause__.*?\}\}/s', 'name' => 'Template __cause__ access'],
+        ['pattern' => '/\{\{.*?\.__suppress_context__.*?\}\}/s', 'name' => 'Template __suppress_context__ access'],
+        ['pattern' => '/\{\{.*?\.__traceback_hide__.*?\}\}/s', 'name' => 'Template __traceback_hide__ access'],
+        ['pattern' => '/\{\{.*?\.__bytes__.*?\}\}/s', 'name' => 'Template __bytes__ access'],
+        ['pattern' => '/\{\{.*?\.__format__.*?\}\}/s', 'name' => 'Template __format__ access'],
+        ['pattern' => '/\{\{.*?\.__get__.*?\}\}/s', 'name' => 'Template __get__ access'],
+        ['pattern' => '/\{\{.*?\.__set__.*?\}\}/s', 'name' => 'Template __set__ access'],
+        ['pattern' => '/\{\{.*?\.__delete__.*?\}\}/s', 'name' => 'Template __delete__ access'],
+        ['pattern' => '/\{\{.*?\.__instancecheck__.*?\}\}/s', 'name' => 'Template __instancecheck__ access'],
+        ['pattern' => '/\{\{.*?\.__subclasscheck__.*?\}\}/s', 'name' => 'Template __subclasscheck__ access'],
+        ['pattern' => '/\{\{.*?\.__subclasshook__.*?\}\}/s', 'name' => 'Template __subclasshook__ access'],
+        ['pattern' => '/\{\{.*?\.__prepare__.*?\}\}/s', 'name' => 'Template __prepare__ access'],
+        ['pattern' => '/\{\{.*?\.__init_subclass__.*?\}\}/s', 'name' => 'Template __init_subclass__ access'],
+        ['pattern' => '/\{\{.*?\.__abstractmethods__.*?\}\}/s', 'name' => 'Template __abstractmethods__ access'],
+        ['pattern' => '/\{\{.*?\.__mro__.*?\}\}/s', 'name' => 'Template __mro__ access'],
+        ['pattern' => '/\{\{.*?\.__base__.*?\}\}/s', 'name' => 'Template __base__ access'],
+        ['pattern' => '/\{\{.*?\.__weakref__.*?\}\}/s', 'name' => 'Template __weakref__ access'],
+        ['pattern' => '/\{\{.*?\.__slots__.*?\}\}/s', 'name' => 'Template __slots__ access'],
+        ['pattern' => '/\{\{.*?\|\s*(safe|escape|trim|lower|upper|capitalize|title|replace|default|sort|unique|reverse|random|first|last|length|sum|min|max|round|int|float|string|list|dict|join|split|format|striptags|truncate|raw|e|nl2br|date|url_encode|url_decode|json_encode|json_decode)\s*\}\}/s', 'name' => 'Template filter injection'],
+        ['pattern' => '/\{\{.*?\|\s*attr\(.*?\)\s*\}\}/s', 'name' => 'Template attr filter'],
+        ['pattern' => '/\{\{.*?\|\s*method\(.*?\)\s*\}\}/s', 'name' => 'Template method filter'],
+        ['pattern' => '/\{\{.*?\.__class__\.__bases__\[0\]\.__subclasses__\(\).*?\}\}/s', 'name' => 'Template class chain traversal'],
+        ['pattern' => '/\{\{.*?\.__class__\.__mro__\[1\]\.__subclasses__\(\).*?\}\}/s', 'name' => 'Template mro chain traversal'],
+        ['pattern' => '/\{\{.*?\.subclasses\(\).*?\}\}/s', 'name' => 'Template subclasses call'],
+        ['pattern' => '/\{\{.*?\.__globals__\["__builtins__"\].*?\}\}/s', 'name' => 'Template builtins access'],
+        ['pattern' => '/\{\{.*?\.__globals__\["os"\].*?\}\}/s', 'name' => 'Template os module access'],
+        ['pattern' => '/\{\{.*?\.__globals__\["subprocess"\].*?\}\}/s', 'name' => 'Template subprocess access'],
+        ['pattern' => '/\{\{.*?\.__globals__\["sys"\].*?\}\}/s', 'name' => 'Template sys module access'],
+        ['pattern' => '/\{\{.*?\.__globals__\["importlib"\].*?\}\}/s', 'name' => 'Template importlib access'],
+        ['pattern' => '/\{\{.*?\.read\(\).*?\}\}/s', 'name' => 'Template file read'],
+        ['pattern' => '/\{\{.*?\.write\(.*?\).*?\}\}/s', 'name' => 'Template file write'],
+        ['pattern' => '/\{\{.*?\.exec\(.*?\).*?\}\}/s', 'name' => 'Template exec call'],
+        ['pattern' => '/\{\{.*?\.eval\(.*?\).*?\}\}/s', 'name' => 'Template eval call'],
+        ['pattern' => '/\{\{.*?\.system\(.*?\).*?\}\}/s', 'name' => 'Template system call'],
+        ['pattern' => '/\{\{.*?\.popen\(.*?\).*?\}\}/s', 'name' => 'Template popen call'],
+        ['pattern' => '/\{\{.*?\.spawn\(.*?\).*?\}\}/s', 'name' => 'Template spawn call'],
+        ['pattern' => '/\{\{.*?\.fork\(\).*?\}\}/s', 'name' => 'Template fork call'],
+        ['pattern' => '/\{\{.*?\.pipe\(\).*?\}\}/s', 'name' => 'Template pipe call'],
+        ['pattern' => '/\{\{.*?\.dup\(\).*?\}\}/s', 'name' => 'Template dup call'],
+        ['pattern' => '/\{\{.*?\.dup2\(.*?\).*?\}\}/s', 'name' => 'Template dup2 call'],
+        ['pattern' => '/\{\{.*?\.close\(\).*?\}\}/s', 'name' => 'Template close call'],
+        ['pattern' => '/\{\{.*?\.open\(.*?\).*?\}\}/s', 'name' => 'Template open call'],
+        ['pattern' => '/\{\{.*?\.chmod\(.*?\).*?\}\}/s', 'name' => 'Template chmod call'],
+        ['pattern' => '/\{\{.*?\.chown\(.*?\).*?\}\}/s', 'name' => 'Template chown call'],
+        ['pattern' => '/\{\{.*?\.stat\(.*?\).*?\}\}/s', 'name' => 'Template stat call'],
+        ['pattern' => '/\{\{.*?\.lstat\(.*?\).*?\}\}/s', 'name' => 'Template lstat call'],
+        ['pattern' => '/\{\{.*?\.fstat\(.*?\).*?\}\}/s', 'name' => 'Template fstat call'],
+        ['pattern' => '/\{\{.*?\.access\(.*?\).*?\}\}/s', 'name' => 'Template access call'],
+        ['pattern' => '/\{\{.*?\.listdir\(.*?\).*?\}\}/s', 'name' => 'Template listdir call'],
+        ['pattern' => '/\{\{.*?\.mkdir\(.*?\).*?\}\}/s', 'name' => 'Template mkdir call'],
+        ['pattern' => '/\{\{.*?\.rmdir\(.*?\).*?\}\}/s', 'name' => 'Template rmdir call'],
+        ['pattern' => '/\{\{.*?\.remove\(.*?\).*?\}\}/s', 'name' => 'Template remove call'],
+        ['pattern' => '/\{\{.*?\.rename\(.*?\).*?\}\}/s', 'name' => 'Template rename call'],
+        ['pattern' => '/\{\{.*?\.symlink\(.*?\).*?\}\}/s', 'name' => 'Template symlink call'],
+        ['pattern' => '/\{\{.*?\.link\(.*?\).*?\}\}/s', 'name' => 'Template link call'],
+        ['pattern' => '/\{\{.*?\.unlink\(.*?\).*?\}\}/s', 'name' => 'Template unlink call'],
+        ['pattern' => '/\{\{.*?\.readlink\(.*?\).*?\}\}/s', 'name' => 'Template readlink call'],
+        ['pattern' => '/\{\{.*?\.realpath\(.*?\).*?\}\}/s', 'name' => 'Template realpath call'],
+        ['pattern' => '/\{\{.*?\.abspath\(.*?\).*?\}\}/s', 'name' => 'Template abspath call'],
+        ['pattern' => '/\{\{.*?\.path\.join\(.*?\).*?\}\}/s', 'name' => 'Template path.join'],
+        ['pattern' => '/\{\{.*?\.path\.dirname\(.*?\).*?\}\}/s', 'name' => 'Template path.dirname'],
+        ['pattern' => '/\{\{.*?\.path\.basename\(.*?\).*?\}\}/s', 'name' => 'Template path.basename'],
+        ['pattern' => '/\{\{.*?\.path\.exists\(.*?\).*?\}\}/s', 'name' => 'Template path.exists'],
+        ['pattern' => '/\{\{.*?\.path\.isfile\(.*?\).*?\}\}/s', 'name' => 'Template path.isfile'],
+        ['pattern' => '/\{\{.*?\.path\.isdir\(.*?\).*?\}\}/s', 'name' => 'Template path.isdir'],
+        ['pattern' => '/\{\{.*?\.path\.isabs\(.*?\).*?\}\}/s', 'name' => 'Template path.isabs'],
+        ['pattern' => '/\{\{.*?\.path\.split\(.*?\).*?\}\}/s', 'name' => 'Template path.split'],
+        ['pattern' => '/\{\{.*?\.path\.splitext\(.*?\).*?\}\}/s', 'name' => 'Template path.splitext'],
+        ['pattern' => '/\{\{.*?\.path\.expanduser\(.*?\).*?\}\}/s', 'name' => 'Template path.expanduser'],
+        ['pattern' => '/\{\{.*?\.path\.expandvars\(.*?\).*?\}\}/s', 'name' => 'Template path.expandvars'],
+        ['pattern' => '/\{\{.*?\.path\.normpath\(.*?\).*?\}\}/s', 'name' => 'Template path.normpath'],
+        ['pattern' => '/\{\{.*?\.path\.normcase\(.*?\).*?\}\}/s', 'name' => 'Template path.normcase'],
+        ['pattern' => '/\{\{.*?\.path\.relpath\(.*?\).*?\}\}/s', 'name' => 'Template path.relpath'],
+        ['pattern' => '/\{\{.*?\.path\.samefile\(.*?\).*?\}\}/s', 'name' => 'Template path.samefile'],
+        ['pattern' => '/\{\{.*?\.path\.sameopenfile\(.*?\).*?\}\}/s', 'name' => 'Template path.sameopenfile'],
+        ['pattern' => '/\{\{.*?\.path\.samestat\(.*?\).*?\}\}/s', 'name' => 'Template path.samestat'],
+        ['pattern' => '/\{\{.*?\.path\.walk\(.*?\).*?\}\}/s', 'name' => 'Template path.walk'],
+        ['pattern' => '/\{\{.*?\.path\.getsize\(.*?\).*?\}\}/s', 'name' => 'Template path.getsize'],
+        ['pattern' => '/\{\{.*?\.path\.getmtime\(.*?\).*?\}\}/s', 'name' => 'Template path.getmtime'],
+        ['pattern' => '/\{\{.*?\.path\.getctime\(.*?\).*?\}\}/s', 'name' => 'Template path.getctime'],
+        ['pattern' => '/\{\{.*?\.path\.getatime\(.*?\).*?\}\}/s', 'name' => 'Template path.getatime'],
+        ['pattern' => '/\{\{.*?\.path\.readlink\(.*?\).*?\}\}/s', 'name' => 'Template path.readlink'],
+        ['pattern' => '/\{\{.*?\.path\.realpath\(.*?\).*?\}\}/s', 'name' => 'Template path.realpath'],
+        ['pattern' => '/\{\{.*?\.path\.abspath\(.*?\).*?\}\}/s', 'name' => 'Template path.abspath'],
     ];
 
     private static $templateParamNames = [
@@ -181,8 +181,10 @@ class TemplateInjection {
     /**
      * 构建并缓存合并后的 alternation 大正则，用于廉价快速筛除无命中输入。
      * 仅作"是否命中任一模式"的预筛；具体命中名称仍由逐条 preg_match 兜底返回。
-     * 注意：原 patterns 均无修饰符（既无 i 也无 s），合并大正则也不加任何修饰符，
-     * 避免改变 . 是否跨行、是否区分大小写等行为，确保不漏检、不误报。
+     * 使用 patternBody 提取 body（剥离尾部 /flags），合并大正则统一加 /s
+     * 修饰符以检测跨行 payload，规避以下 bypass：
+     *   {%\n  set x = __class__\n%}
+     *   {{\n  ''.__class__.__mro__[1].__subclasses__()\n}}
      */
     private static function getCombinedPattern() {
         if (self::$combinedPattern !== null) {
@@ -191,10 +193,32 @@ class TemplateInjection {
         $parts = [];
         foreach (self::$templatePatterns as $p) {
             // 每条单独包裹非捕获组，防止 pattern 内部有顶层 | 破坏整体 alternation 优先级
-            $parts[] = '(?:' . trim($p['pattern'], '/') . ')';
+            $parts[] = '(?:' . self::patternBody($p['pattern']) . ')';
         }
-        self::$combinedPattern = '/' . implode('|', $parts) . '/';
+        self::$combinedPattern = '/' . implode('|', $parts) . '/s';
         return self::$combinedPattern;
+    }
+
+    /**
+     * 把 '/body/flags' 形式的 pattern 解析为 body 与 flags 两部分，
+     * 去除尾部 modifiers，避免合并时把 /i /s /m 等修饰符错认作 body。
+     * 返回数组 [body, flags]。
+     */
+    private static function patternSplit($pattern) {
+        $lastSlash = strrpos($pattern, '/');
+        if ($lastSlash === false || $lastSlash === 0) {
+            return [substr($pattern, 1), ''];
+        }
+        $body = substr($pattern, 1, $lastSlash - 1);
+        $flags = substr($pattern, $lastSlash + 1);
+        return [$body, $flags];
+    }
+
+    /**
+     * 仅返回 body（剥离 '/flags'），供合并大正则使用。
+     */
+    private static function patternBody($pattern) {
+        return self::patternSplit($pattern)[0];
     }
 
     private static function collectInputs() {
@@ -276,18 +300,18 @@ class TemplateInjection {
             }
 
             // 通用 {{ }} 模式与 Angular/Vue.js 冲突，仅当内含 dunder 访问或 Python 内建时才判定
-            if (preg_match('/\{\{.*?\}\}/', $value)) {
+            if (preg_match('/\{\{.*?\}\}/s', $value)) {
                 if (preg_match('/__\w+__/', $value)
                     || preg_match('/\b(os|subprocess|sys|importlib|builtins)\b/', $value)) {
                     return ['is_attack' => true, 'reason' => 'Template expression with dangerous attributes'];
                 }
             }
 
-            if (preg_match('/\{\%.*?\%\}/', $value)) {
+            if (preg_match('/\{\%.*?\%\}/s', $value)) {
                 return ['is_attack' => true, 'reason' => 'Template statement detected'];
             }
 
-            if (preg_match('/\{\$.*?\}/', $value)) {
+            if (preg_match('/\{\$.*?\}/s', $value)) {
                 return ['is_attack' => true, 'reason' => 'Smarty variable detected'];
             }
         }

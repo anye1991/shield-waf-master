@@ -48,12 +48,12 @@ class ApiRateLimit {
      * APCu 后端：单次原子自增，O(1) 复杂度
      */
     private static function checkLimitApcu($key, $ip, $limit, $window) {
-        $apcuKey = 'waf_api_' . md5($key . '|' . $ip);
+        $prefix = defined('WAF_MAGIC_KEY') ? substr(md5(WAF_MAGIC_KEY), 0, 8) : 'def';
+        $apcuKey = 'waf_api_' . $prefix . '_' . md5($key . '|' . $ip);
         $found = false;
         $count = apcu_inc($apcuKey, 1, $found);
         if (!$found) {
             if (apcu_store($apcuKey, 1, $window) === false) {
-                // APCu 写入失败，降级到文件后端
                 self::checkLimitFile($key, $ip, $limit, $window);
                 return;
             }

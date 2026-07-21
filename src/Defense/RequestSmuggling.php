@@ -54,7 +54,7 @@ class RequestSmuggling {
 
         if ($hasCl) {
             $clValue = $headers['content-length'];
-            if (preg_match('/^\s*\d+\s*,\s*\d+\s*$/', $clValue)) {
+            if (preg_match('/^\s*\d+\s*(,\s*\d+\s*)+$/', $clValue)) {
                 return ['is_smuggling' => true, 'reason' => 'Multiple Content-Length values'];
             }
 

@@ -106,9 +106,9 @@ td{padding:10px;border-bottom:1px solid #111827}
     <tr>
         <td><?= date('H:i:s', $event['time'] ?? 0) ?></td>
         <td><?= htmlspecialchars($event['ip'] ?? '-') ?></td>
-        <td><span class="tag tag-<?= $event['category'] ?? 'unknown' ?>"><?= $event['category'] ?? '-' ?></span></td>
-        <td><?= $event['score'] ?? '-' ?></td>
-        <td><span class="tag tag-<?= $event['action'] ?? 'allow' ?>"><?= $event['action'] ?? '-' ?></span></td>
+        <td><span class="tag tag-<?= htmlspecialchars($event['category'] ?? 'unknown', ENT_QUOTES) ?>"><?= htmlspecialchars($event['category'] ?? '-', ENT_QUOTES) ?></span></td>
+        <td><?= htmlspecialchars((string)($event['score'] ?? '-'), ENT_QUOTES) ?></td>
+        <td><span class="tag tag-<?= htmlspecialchars($event['action'] ?? 'allow', ENT_QUOTES) ?>"><?= htmlspecialchars($event['action'] ?? '-', ENT_QUOTES) ?></span></td>
         <td><?= htmlspecialchars($event['reason'] ?? '-') ?></td>
     </tr>
     <?php endforeach; ?>

@@ -78,18 +78,16 @@ function self_is_ajax_request() {
  */
 function waf_cc_check_apcu($ip, $limit = null) {
     if ($limit === null) $limit = WAF_CC_LIMIT;
-    $key = 'waf_cc_' . md5($ip);
+    $prefix = defined('WAF_MAGIC_KEY') ? substr(md5(WAF_MAGIC_KEY), 0, 8) : 'def';
+    $key = 'waf_cc_' . $prefix . '_' . md5($ip);
     $found = false;
     $count = apcu_inc($key, 1, $found);
     if (!$found) {
-        // 首次访问：初始化计数并设置窗口 TTL
         if (apcu_store($key, 1, WAF_CC_WINDOW) === false) {
-            // APCu 写入失败，降级到文件后端
             return waf_cc_check_file($ip, $limit);
         }
         $count = 1;
     }
-    // 计数超过阈值即拦截（含本次请求）
     return $count <= $limit;
 }
 
@@ -204,15 +202,22 @@ function waf_cc_check_file($ip, $limit = null) {
  * 计数器自身存储在独立文件，依赖主锁同步（fp 已持有 LOCK_EX）。
  */
 function waf_cc_bump_counter($counterFile) {
-    // 主文件已持有 LOCK_EX，计数器文件无需再加锁
-    $cnt = 0;
-    if (is_file($counterFile)) {
-        $raw = @file_get_contents($counterFile);
-        if ($raw !== false && is_numeric($raw)) {
+    $fp = fopen($counterFile, 'c+');
+    if ($fp) {
+        flock($fp, LOCK_EX);
+        $raw = stream_get_contents($fp);
+        $cnt = 0;
+        if (is_numeric($raw)) {
             $cnt = (int)$raw;
         }
+        $cnt++;
+        ftruncate($fp, 0);
+        rewind($fp);
+        fwrite($fp, (string)$cnt);
+        fflush($fp);
+        flock($fp, LOCK_UN);
+        fclose($fp);
+        return $cnt;
     }
-    $cnt++;
-    @file_put_contents($counterFile, (string)$cnt);
-    return $cnt;
+    return 1;
 }

@@ -219,7 +219,7 @@ class CachePoisoning {
             waf_block('Cache poisoning - Host header injection');
         }
 
-        if (preg_match('/^(127\.|10\.|172\.(?:1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|0\.0\.0\.0)/', $hostHeader)) {
+        if (self::isPrivateHost($hostHeader)) {
             waf_block('Cache poisoning - private IP in Host header');
         }
 
@@ -227,6 +227,79 @@ class CachePoisoning {
         if (preg_match('/(?:\r\n|\n|\r|%0d%0a|%0a%0d|%0d|%0a)/i', $xForwardedHost)) {
             waf_block('Cache poisoning - X-Forwarded-Host header injection');
         }
+        if (self::isPrivateHost($xForwardedHost)) {
+            waf_block('Cache poisoning - private IP in X-Forwarded-Host');
+        }
+    }
+
+    /**
+     * 检测 Host/X-Forwarded-Host 是否指向内网/回环地址
+     * 覆盖：
+     *   IPv4: 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 0.0.0.0, 169.254.0.0/16
+     *   IPv6: ::1, ::, ::ffff:0:0/96 (IPv4-mapped), fc00::/7 (ULA), fe80::/10 (link-local)
+     * 兼容可选方括号包裹的 IPv6 文本：[::1] / [::ffff:127.0.0.1]
+     */
+    private static function isPrivateHost($host) {
+        if ($host === '') {
+            return false;
+        }
+        // 去掉 IPv6 字面量的方括号（用于请求行中的 Host: [::1]:80 形式）
+        $stripped = $host;
+        if ($stripped[0] === '[') {
+            $rb = strpos($stripped, ']');
+            if ($rb !== false) {
+                $stripped = substr($stripped, 1, $rb - 1);
+            }
+        }
+        // 去掉尾部端口
+        // IPv4:  host:port   e.g. 127.0.0.1:8080
+        // IPv6:  [::1]:port  已剥括号，剩下 "::1:port" 形式；
+        //   这里用最末一个 ':' 切分需谨慎。优先看是否含多个 ':'：含则视为 IPv6+端口。
+        $colonCount = substr_count($stripped, ':');
+        if ($colonCount === 1) {
+            // IPv4 + 端口
+            $stripped = strstr($stripped, ':', true);
+        } elseif ($colonCount > 1) {
+            // IPv6 文本 + 端口：最末 ':数字' 是端口
+            if (preg_match('/^(.*):(\d+)$/', $stripped, $m)) {
+                $stripped = $m[1];
+            }
+        }
+
+        // IPv4 私网/回环
+        if (preg_match('/^(127\.|10\.|172\.(?:1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|0\.0\.0\.0|169\.254\.)/', $stripped)) {
+            return true;
+        }
+
+        // IPv6 回环 ::1 / 未指定 ::
+        if ($stripped === '::1' || $stripped === '::') {
+            return true;
+        }
+        // IPv4-mapped IPv6: ::ffff:0:0/96 —— 任意 ::ffff:a.b.c.d
+        if (preg_match('/^::ffff:[0-9a-fA-F:\.]+$/', $stripped)) {
+            // 提取最后的 IPv4 段（最后 4 段以 . 分隔）
+            $lastColon = strrpos($stripped, ':');
+            $ipv4Part = $lastColon !== false ? substr($stripped, $lastColon + 1) : $stripped;
+            if (preg_match('/^(127\.|10\.|172\.(?:1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|0\.0\.0\.0|169\.254\.)/', $ipv4Part)) {
+                return true;
+            }
+            // 任何 ::ffff: 前缀都算走 IPv4-mapped 段，本身就属于私网映射（攻击面 100%）
+            return true;
+        }
+        // IPv6 ULA fc00::/7  (fc00-fdff)
+        if (preg_match('/^f[cd][0-9a-fA-F]{2}:/i', $stripped)) {
+            return true;
+        }
+        // IPv6 link-local fe80::/10
+        if (preg_match('/^fe[89ab][0-9a-fA-F]?:/i', $stripped)) {
+            return true;
+        }
+        // 环回主机名
+        $lower = strtolower($stripped);
+        if ($lower === 'localhost' || strpos($lower, 'localhost.') === 0) {
+            return true;
+        }
+        return false;
     }
 
     private static function collectInputs() {

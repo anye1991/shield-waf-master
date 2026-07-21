@@ -161,10 +161,13 @@ class XxeInjection {
         $isXmlParam = in_array($lowerKey, self::$xmlParamNames);
         $hasXmlHeader = strpos($lowerValue, '<?xml') !== false;
         // 更精确的 DOCTYPE 判定：要求同时存在 XML 声明、内部 DTD 子集（[）或 SYSTEM 标识
+        // 注意：原正则使用 \s+ 要求至少 1 个空白，但 XML 规范允许 0 个或多个空白，
+        // 攻击者可构造 <!DOCTYPEfoo[SYSTEM "evil"> 等无空格 payload 绕过。
+        // 改为 \s*（零或多个空白）以彻底检测。
         $hasDoctype = (stripos($value, '<!DOCTYPE') !== false) &&
                       (stripos($value, '<?xml') !== false ||
-                       preg_match('/<!DOCTYPE\s+\w+\s+\[/i', $value) ||
-                       preg_match('/<!DOCTYPE\s+\w+\s+SYSTEM/i', $value));
+                       preg_match('/<!DOCTYPE\s*\w*\s*\[/i', $value) ||
+                       preg_match('/<!DOCTYPE\s*\w*\s*SYSTEM/i', $value));
         $contextMultiplier = ($isXmlParam || $hasXmlHeader || $hasDoctype) ? 1.0 : 0.5;
 
         // 廉价预筛：所有 5 类 patterns 都至少需要以下字符/子串之一才可能命中

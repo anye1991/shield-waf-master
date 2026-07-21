@@ -33,14 +33,14 @@ class SecurityHeaders {
 
     private static $defaultCsp = [
         'default-src' => ["'self'"],
-        'script-src' => ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        'script-src' => ["'self'"],
         'style-src' => ["'self'", "'unsafe-inline'"],
-        'img-src' => ["'self'", 'data:', 'blob:', '*'],
+        'img-src' => ["'self'", 'data:', 'blob:'],
         'font-src' => ["'self'", 'data:'],
-        'connect-src' => ["'self'", '*'],
+        'connect-src' => ["'self'"],
         'object-src' => ["'none'"],
         'base-uri' => ["'self'"],
-        'form-action' => ['*'],
+        'form-action' => ["'self'"],
         'frame-ancestors' => ["'self'"],
     ];
 

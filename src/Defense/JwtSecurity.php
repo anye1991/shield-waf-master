@@ -242,28 +242,28 @@ class JwtSecurity {
     private static function minSignatureLength($alg) {
         switch ($alg) {
             case 'hs256':
-                return 32;
+                return 43;
             case 'hs384':
-                return 48;
-            case 'hs512':
                 return 64;
+            case 'hs512':
+                return 86;
             case 'rs256':
             case 'ps256':
-                return 256;
+                return 342;
             case 'rs384':
             case 'ps384':
-                return 384;
+                return 512;
             case 'rs512':
             case 'ps512':
-                return 512;
+                return 683;
             case 'es256':
-                return 64;
+                return 86;
             case 'es384':
-                return 96;
+                return 128;
             case 'es512':
-                return 132;
+                return 176;
             case 'eddsa':
-                return 64;
+                return 86;
             default:
                 return 0;
         }
