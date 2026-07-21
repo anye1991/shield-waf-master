@@ -29,8 +29,27 @@ if (!class_exists('DualPassword', false)) {
     require_once __DIR__ . '/DualPassword.php';
 }
 
+// 环境变量读取封装（独立使用时的降级方案）
+if (!function_exists('waf_getenv')) {
+    function waf_getenv($key) {
+        if (isset($_ENV[$key])) {
+            return $_ENV[$key];
+        }
+        if (isset($_SERVER[$key]) && strpos($key, 'HTTP_') !== 0) {
+            return $_SERVER[$key];
+        }
+        if (function_exists('getenv')) {
+            $val = getenv($key);
+            if ($val !== false) {
+                return $val;
+            }
+        }
+        return false;
+    }
+}
+
 // 检查是否启用 WordPress 集成
-$wpIntegration = getenv('WAF_PASSWORD_WP_INTEGRATION');
+$wpIntegration = waf_getenv('WAF_PASSWORD_WP_INTEGRATION');
 if ($wpIntegration === false || $wpIntegration !== 'false') {
     // 默认启用
 
