@@ -18,23 +18,8 @@ require_once __DIR__ . '/CaptchaHandler.php';
 require_once __DIR__ . '/HoneypotLinks.php';
 
 class BotManager {
-    // 动作阈值
-    const ALLOW_THRESHOLD     = 25;
-    const CHALLENGE_THRESHOLD = 45;
-    const LIMIT_THRESHOLD     = 65;
-
-    // 受信任分类（合法爬虫，默认放行）
     private static $trusted_categories = ['search_engine', 'social_media', 'ai'];
 
-    /**
-     * 统一入口检查
-     * @param array $request 请求上下文：
-     *   - headers:  array  请求头
-     *   - uri:      string  请求 URI
-     *   - ua:       string  User-Agent（若不传则从 headers 提取）
-     *   - behavior: array   额外行为数据（可选，如 request_rate / attack_chain / probe_count / error_rate）
-     * @return array ['action'=>'allow|challenge|limit|block', 'category'=>'...', 'score'=>0-100, 'reason'=>'...']
-     */
     public static function check(array $request): array {
         $headers = $request['headers'] ?? [];
         $uri     = $request['uri']     ?? ($_SERVER['REQUEST_URI'] ?? '/');
@@ -42,23 +27,8 @@ class BotManager {
         $ip      = $request['ip']      ?? '';
         $extra   = $request['behavior'] ?? [];
 
-        // ========== 最高优先级：蜜罐触发 → 立即标记恶意 ==========
-        if (HoneypotLinks::checkRequest()) {
-            return [
-                'action'   => 'block',
-                'category' => 'malicious_bot',
-                'score'    => 100,
-                'reason'   => '命中蜜罐链接（爬虫/扫描器特征）',
-                'confidence' => 99,
-                'detail'   => ['honeypot' => true],
-            ];
-        }
-
-        // ---------- 1. 指纹分析 ----------
         $fingerprint = BotFingerprint::analyze($headers, $ua, $ip);
 
-        // ========== 已验证搜索引擎 → bot检测层面100%放行 ==========
-        // 注意：这只跳过机器人拦截，攻击载荷仍会被 Detector/Scorer 独立检测
         if (!empty($fingerprint['verified_search_engine'])) {
             return [
                 'action'   => 'allow',
@@ -67,6 +37,17 @@ class BotManager {
                 'reason'   => '已验证搜索引擎: ' . ($fingerprint['engine_name'] ?? 'unknown') . '（DNS/头特征验证通过）',
                 'confidence' => 95,
                 'detail'   => ['fingerprint' => $fingerprint],
+            ];
+        }
+
+        if (HoneypotLinks::checkRequest()) {
+            return [
+                'action'   => 'block',
+                'category' => 'malicious_bot',
+                'score'    => 100,
+                'reason'   => '命中蜜罐链接（爬虫/扫描器特征）',
+                'confidence' => 99,
+                'detail'   => ['honeypot' => true],
             ];
         }
 

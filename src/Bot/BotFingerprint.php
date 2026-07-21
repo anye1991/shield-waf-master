@@ -91,10 +91,10 @@ class BotFingerprint {
 
     // AI 爬虫指纹
     private static $ai_bots = [
-        '/\bGPTBot\b/i', '/\bClaudeBot\b/i', '/\bCCBot\b/i',
-        '/\banthropic-ai\b/i', '/\bPerplexityBot\b/i', '/\bGoogle-Extended\b/i',
-        '/\bDiffbot\b/i', '/\bOAI-SearchBot\b/i', '/\bAI2Bot\b/i',
-        '/\bAmazonbot\b/i', '/\bApplebot\b/i',
+        '/\bGPTBot\b/i', '/\bChatGPT-User\b/i', '/\bClaudeBot\b/i',
+        '/\bClaude-Web\b/i', '/\bCCBot\b/i', '/\banthropic-ai\b/i',
+        '/\bPerplexityBot\b/i', '/\bDiffbot\b/i', '/\bOAI-SearchBot\b/i',
+        '/\bAI2Bot\b/i', '/\bcohere-ai\b/i',
     ];
 
     // DNS验证后缀映射（扩展版）
@@ -107,7 +107,7 @@ class BotFingerprint {
         'Sogou'              => ['.sogou.com'],
         '360'                => ['.360.cn', '.360.com', '.haosou.com'],
         'Shenma_UC'          => ['.sm.cn', '.uc.cn', '.alibaba.com'],
-        'ByteDance_Toutiao'  => ['.bytedance.com', '.toutiao.com'],
+        'ByteDance_Toutiao'  => ['.bytedance.com', '.toutiao.com', '.byteintelligence.com'],
         'Apple_Siri'         => ['.apple.com'],
         'Facebook'           => ['.facebook.com', '.fb.com'],
         'Twitter_X'          => ['.twitter.com', '.x.com'],
@@ -120,6 +120,17 @@ class BotFingerprint {
         'Moz_Roger'          => ['.moz.com'],
         'Naver'              => ['.naver.com'],
         'Seznam'             => ['.seznam.cz'],
+        'Tencent_Soso'       => ['.qq.com', '.soso.com'],
+        'Yisou'              => ['.yisou.com'],
+        'Youdao'             => ['.youdao.com'],
+        'Jike'               => ['.jike.com'],
+        'Searchmetrics'      => ['.searchmetrics.com'],
+        'SEO_Tools'          => ['.seobility.net', '.seokicks.de'],
+        'Slack'              => ['.slack.com'],
+        'Discord'            => ['.discord.com'],
+        'Telegram'           => ['.telegram.org'],
+        'WhatsApp'           => ['.whatsapp.com', '.fb.com'],
+        'Skype'              => ['.skype.com', '.microsoft.com'],
     ];
 
     // 正常浏览器必备的请求头
@@ -301,7 +312,7 @@ class BotFingerprint {
         // ---------- 7. 请求头指纹分析 ----------
         // 已验证的搜索引擎跳过头异常检测（蜘蛛天然不发送某些浏览器头）
         if (!$is_verified_search_engine) {
-            $header_signals = self::analyzeHeaders($h, $ua_empty, $matched_engine !== null);
+            $header_signals = self::analyzeHeaders($h, $ua_empty, $is_verified_search_engine);
             foreach ($header_signals as $s) {
                 $signals[] = $s;
                 $score += $s['weight'];
@@ -337,15 +348,67 @@ class BotFingerprint {
      * 注意：头特征验证是辅助手段，DNS反查是最可靠的方法
      */
     private static function verifySearchEngine(array $h, string $ua, array $engine): array {
-        // Googlebot 版本号格式校验
-        if (stripos($ua, 'Googlebot') !== false && stripos($ua, 'Googlebot/') === false) {
-            return ['valid' => false, 'reason' => 'Googlebot 版本号格式不符'];
+        $engine_name = $engine['name'] ?? '';
+        $fail_reason = '';
+
+        if (stripos($ua, 'Googlebot') !== false) {
+            if (stripos($ua, 'Googlebot/') === false) {
+                return ['valid' => false, 'reason' => 'Googlebot 版本号格式不符'];
+            }
+            if (empty($h['accept']) || stripos($h['accept'], '*/*') === false) {
+                $fail_reason = 'Googlebot Accept 头异常';
+            }
+        } elseif (stripos($ua, 'Bingbot') !== false) {
+            if (stripos($ua, 'Bingbot/') === false) {
+                return ['valid' => false, 'reason' => 'Bingbot 版本号格式不符'];
+            }
+            if (empty($h['accept']) || stripos($h['accept'], '*/*') === false) {
+                $fail_reason = 'Bingbot Accept 头异常';
+            }
+        } elseif (stripos($ua, 'Baiduspider') !== false) {
+            if (!preg_match('/Baiduspider\/[0-9]+\.[0-9]+/', $ua)) {
+                return ['valid' => false, 'reason' => 'Baiduspider 版本号格式不符'];
+            }
+            if (empty($h['accept'])) {
+                $fail_reason = 'Baiduspider 缺少 Accept 头';
+            }
+        } elseif (stripos($ua, 'YandexBot') !== false) {
+            if (!preg_match('/YandexBot\/[0-9]+\.[0-9]+/', $ua)) {
+                return ['valid' => false, 'reason' => 'YandexBot 版本号格式不符'];
+            }
+        } elseif (stripos($ua, 'DuckDuckBot') !== false) {
+            if (!preg_match('/DuckDuckBot\/[0-9]+\.[0-9]+/', $ua)) {
+                return ['valid' => false, 'reason' => 'DuckDuckBot 版本号格式不符'];
+            }
+        } elseif (stripos($ua, 'Sogou') !== false) {
+            if (!preg_match('/Sogou web spider\/[0-9]+\.[0-9]+/', $ua)) {
+                return ['valid' => false, 'reason' => 'Sogou 版本号格式不符'];
+            }
+        } elseif (stripos($ua, '360Spider') !== false) {
+            if (!preg_match('/360Spider\/[0-9]+\.[0-9]+/', $ua)) {
+                return ['valid' => false, 'reason' => '360Spider 版本号格式不符'];
+            }
+        } elseif (stripos($ua, 'Applebot') !== false) {
+            if (!preg_match('/Applebot\/[0-9]+\.[0-9]+/', $ua)) {
+                return ['valid' => false, 'reason' => 'Applebot 版本号格式不符'];
+            }
+        } elseif (stripos($ua, 'Mediapartners-Google') !== false) {
+            if (!preg_match('/Mediapartners-Google\/[0-9]+\.[0-9]+/', $ua)) {
+                return ['valid' => false, 'reason' => 'Mediapartners-Google 版本号格式不符'];
+            }
+        } elseif (stripos($ua, 'Google-InspectionTool') !== false) {
+            if (!preg_match('/Google-InspectionTool\/[0-9]+\.[0-9]+/', $ua)) {
+                return ['valid' => false, 'reason' => 'Google-InspectionTool 版本号格式不符'];
+            }
+        } else {
+            if (!preg_match('/\/[0-9]+\.[0-9]+/', $ua)) {
+                return ['valid' => false, 'reason' => "{$engine_name} 版本号格式不符"];
+            }
         }
-        // Bingbot 版本号格式校验
-        if (stripos($ua, 'Bingbot') !== false && stripos($ua, 'Bingbot/') === false) {
-            return ['valid' => false, 'reason' => 'Bingbot 版本号格式不符'];
+
+        if (!empty($fail_reason)) {
+            return ['valid' => false, 'reason' => $fail_reason];
         }
-        // 有 Accept 头则通过（放宽：不要求 Accept 头，因为有些蜘蛛不发送）
         return ['valid' => true, 'reason' => ''];
     }
 

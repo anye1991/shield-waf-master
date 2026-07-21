@@ -120,20 +120,15 @@ class BotSemantic {
     private static function isSearchEngineUa(string $ua): bool {
         if (empty($ua)) return false;
         $patterns = [
-            // 全球主流
             '/Googlebot/i', '/Bingbot|msnbot/i', '/Baiduspider/i', '/YandexBot/i',
             '/DuckDuckBot/i', '/Exabot/i',
-            // 中国搜索
             '/Sogou\s+web\s+spider|Sogou\s+spider/i', '/360Spider|360spider|HaoSouSpider/i',
             '/Sosospider/i', '/Bytespider/i', '/ShenmaBot/i', '/YisouSpider/i',
             '/YoudaoBot/i', '/JikeSpider/i',
-            // 科技公司
             '/Applebot/i', '/facebookexternalhit|Facebot/i', '/Twitterbot/i',
-            // SEO工具（合规爬虫）
             '/AhrefsBot/i', '/SemrushBot/i', '/MJ12bot/i', '/DotBot/i', '/rogerbot/i',
-            // 其他
+            '/SearchmetricsBot/i', '/SEOkicks|Seobility/i',
             '/NaverBot|Yeti/i', '/SeznamBot/i',
-            // 社交平台（也算合规爬虫）
             '/LinkedInBot/i', '/Pinterest/i', '/Slackbot/i', '/Discordbot/i',
             '/TelegramBot/i', '/WhatsApp/i', '/SkypeUriPreview/i',
         ];

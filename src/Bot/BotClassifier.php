@@ -10,7 +10,6 @@
 defined('ABSPATH') || exit;
 
 class BotClassifier {
-    // 社交媒体爬虫指纹
     private static $social_media_patterns = [
         '/facebookexternalhit/i' => 'Facebook',
         '/Facebot/i'             => 'Facebook',
@@ -24,25 +23,20 @@ class BotClassifier {
         '/SkypeUriPreview/i'     => 'Skype',
     ];
 
-    // AI 爬虫指纹
     private static $ai_patterns = [
         '/GPTBot/i'          => 'OpenAI',
+        '/ChatGPT-User/i'    => 'OpenAI',
         '/OAI-SearchBot/i'   => 'OpenAI-Search',
         '/ClaudeBot/i'       => 'Anthropic',
+        '/Claude-Web/i'      => 'Anthropic',
         '/anthropic-ai/i'    => 'Anthropic',
         '/CCBot/i'           => 'CommonCrawl',
         '/PerplexityBot/i'   => 'Perplexity',
-        '/Google-Extended/i' => 'Google-AI',
         '/Diffbot/i'         => 'Diffbot',
         '/AI2Bot/i'          => 'AI2',
+        '/cohere-ai/i'       => 'Cohere',
     ];
 
-    /**
-     * 多维度分类
-     * @param array $fingerprint BotFingerprint::analyze 的结果
-     * @param array $behavior    行为数据（含 BotSemantic 结果 + ua + 额外行为指标）
-     * @return array ['category'=>string, 'confidence'=>0-100, 'reasons'=>array]
-     */
     public static function classify(array $fingerprint, array $behavior): array {
         $reasons = [];
         $scores  = [
@@ -54,21 +48,30 @@ class BotClassifier {
             'malicious_bot' => 0,
         ];
 
-        $signals  = $fingerprint['signals'] ?? [];
-        $fp_score = $fingerprint['score'] ?? 0;
-        $fp_type  = $fingerprint['type'] ?? 'unknown';
-        $ua       = $behavior['ua'] ?? '';
+        $signals           = $fingerprint['signals'] ?? [];
+        $fp_score          = $fingerprint['score'] ?? 0;
+        $fp_type           = $fingerprint['type'] ?? 'unknown';
+        $ua                = $behavior['ua'] ?? '';
+        $is_verified_se    = $fingerprint['verified_search_engine'] ?? false;
 
-        // ---------- 从指纹信号提取 ----------
         foreach ($signals as $s) {
             $code = $s['code'] ?? '';
-            if ($code === 'search_engine_ua' && $fp_type === 'search') {
-                $scores['search_engine'] += 40;
-                $reasons[] = '指纹命中搜索引擎: ' . ($s['name'] ?? '');
+            if ($code === 'search_engine_ua') {
+                if ($is_verified_se) {
+                    $scores['search_engine'] += 50;
+                    $reasons[] = '已验证搜索引擎: ' . ($s['name'] ?? '');
+                } else {
+                    $scores['crawler'] += 20;
+                    $reasons[] = '未验证搜索引擎 UA: ' . ($s['name'] ?? '');
+                }
             }
             if ($code === 'fake_search_engine') {
                 $scores['malicious_bot'] += 35;
                 $reasons[] = '伪造搜索引擎 UA';
+            }
+            if ($code === 'fake_search_engine_headless') {
+                $scores['malicious_bot'] += 45;
+                $reasons[] = '伪造搜索引擎 + 无头浏览器';
             }
             if ($code === 'automation_tool') {
                 $scores['malicious_bot'] += 40;
@@ -79,11 +82,11 @@ class BotClassifier {
                 $reasons[] = 'AI 爬虫 UA';
             }
             if ($code === 'empty_ua') {
-                $scores['malicious_bot'] += 25;
+                $scores['crawler'] += 25;
                 $reasons[] = 'UA 为空';
             }
             if (in_array($code, ['missing_browser_headers', 'wildcard_accept', 'missing_accept_language', 'missing_host', 'long_xff_chain'], true)) {
-                $scores['malicious_bot'] += min(15, $s['weight'] ?? 0);
+                $scores['crawler'] += min(15, $s['weight'] ?? 0);
                 $reasons[] = '请求头异常: ' . ($s['desc'] ?? $code);
             }
         }

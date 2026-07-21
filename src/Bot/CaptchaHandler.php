@@ -61,7 +61,6 @@ class CaptchaHandler {
         self::initDir();
         $type = self::normalizeType($type);
 
-        // token 格式：session_id:payload
         $parts = explode(':', $token, 2);
         if (count($parts) !== 2) return false;
         list($session_id, $payload) = $parts;
@@ -69,23 +68,24 @@ class CaptchaHandler {
         $record = self::loadSession($session_id);
         if ($record === null) return false;
 
-        // 类型必须匹配
         if (($record['type'] ?? '') !== $type) return false;
 
-        // 过期检查
         if (time() - $record['created_at'] > self::CHALLENGE_TTL) {
             self::deleteSession($session_id);
             return false;
         }
 
-        // 尝试次数限制
+        $current_ip = self::getClientIp();
+        if (!hash_equals($record['ip'] ?? '', $current_ip)) {
+            return false;
+        }
+
         $record['attempts'] = ($record['attempts'] ?? 0) + 1;
         if ($record['attempts'] > 5) {
             self::deleteSession($session_id);
             return false;
         }
 
-        // 校验答案
         $ok = self::checkAnswer($type, $record['answer'] ?? [], $payload);
 
         if ($ok) {
@@ -213,15 +213,16 @@ class CaptchaHandler {
                 . '<div class="slider-marker" id="marker" style="left:' . $target . '%"></div>'
                 . '<div class="slider-fill" id="fill"></div>'
                 . '<div class="slider-btn" id="btn">→</div></div>'
+                . '<form id="frm" method="POST"><input type="hidden" name="captcha_verify" value="1"><input type="hidden" name="type" value="slider"><input type="hidden" name="token" id="tok"></form>'
                 . '<button id="submit" disabled>提交验证</button>'
                 . '<script>'
                 . 'var SID=' . $sid_json . ';'
-                . 'var btn=document.getElementById("btn"),track=document.getElementById("track"),fill=document.getElementById("fill"),sub=document.getElementById("submit");'
+                . 'var btn=document.getElementById("btn"),track=document.getElementById("track"),fill=document.getElementById("fill"),sub=document.getElementById("submit"),frm=document.getElementById("frm"),tok=document.getElementById("tok");'
                 . 'var dragging=false,startX=0,btnLeft=0;'
                 . 'btn.addEventListener("mousedown",function(e){dragging=true;startX=e.clientX;btnLeft=btn.offsetLeft;e.preventDefault();});'
                 . 'document.addEventListener("mousemove",function(e){if(!dragging)return;var x=btnLeft+(e.clientX-startX);var max=track.offsetWidth-btn.offsetWidth;x=Math.max(0,Math.min(max,x));btn.style.left=x+"px";fill.style.width=(x+btn.offsetWidth)+"px";});'
                 . 'document.addEventListener("mouseup",function(){if(!dragging)return;dragging=false;var pct=Math.round((btn.offsetLeft/(track.offsetWidth-btn.offsetWidth))*100);sub.disabled=false;sub.dataset.pct=pct;});'
-                . 'sub.addEventListener("click",function(){var p=btoa(JSON.stringify({position:parseInt(sub.dataset.pct||0,10)}));var token=SID+":"+p;location.href="?captcha_verify=1&type=slider&token="+encodeURIComponent(token);});'
+                . 'sub.addEventListener("click",function(){var p=btoa(JSON.stringify({position:parseInt(sub.dataset.pct||0,10)}));tok.value=SID+":"+p;frm.submit();});'
                 . '</script></div></body></html>';
         }
 
@@ -239,27 +240,28 @@ class CaptchaHandler {
             return $head
                 . '<h3>点击验证</h3><div class="tip">请依次点击字符: <b>' . htmlspecialchars($seq) . '</b></div>'
                 . '<div class="click-area" id="area">' . $cells_html . '</div>'
+                . '<form id="frm" method="POST"><input type="hidden" name="captcha_verify" value="1"><input type="hidden" name="type" value="click"><input type="hidden" name="token" id="tok"></form>'
                 . '<button id="submit" disabled>提交验证</button>'
                 . '<script>'
-                . 'var SID=' . $sid_json . ',target=' . json_encode($seq) . ',clicked="",sub=document.getElementById("submit");'
+                . 'var SID=' . $sid_json . ',target=' . json_encode($seq) . ',clicked="",sub=document.getElementById("submit"),frm=document.getElementById("frm"),tok=document.getElementById("tok");'
                 . 'document.querySelectorAll(".click-cell").forEach(function(c){c.addEventListener("click",function(){clicked+=this.dataset.c;this.classList.add("done");if(clicked.length>=target.length)sub.disabled=false;});});'
-                . 'sub.addEventListener("click",function(){var p=btoa(JSON.stringify({sequence:clicked}));var token=SID+":"+p;location.href="?captcha_verify=1&type=click&token="+encodeURIComponent(token);});'
+                . 'sub.addEventListener("click",function(){var p=btoa(JSON.stringify({sequence:clicked}));tok.value=SID+":"+p;frm.submit();});'
                 . '</script></div></body></html>';
         }
 
-        // behavior
         $nonce = $challenge['data']['nonce'] ?? '';
         return $head
             . '<h3>行为验证</h3><div class="tip">请在此区域随意移动鼠标完成验证</div>'
             . '<div id="area" style="height:120px;background:#eef;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#888">在此移动鼠标</div>'
+            . '<form id="frm" method="POST"><input type="hidden" name="captcha_verify" value="1"><input type="hidden" name="type" value="behavior"><input type="hidden" name="token" id="tok"></form>'
             . '<button id="submit" disabled>提交验证</button>'
             . '<input type="hidden" id="nonce" value="' . htmlspecialchars($nonce, ENT_QUOTES) . '">'
             . '<script>'
             . 'var SID=' . $sid_json . ';'
-            . 'var area=document.getElementById("area"),sub=document.getElementById("submit"),start=0,points=0;'
+            . 'var area=document.getElementById("area"),sub=document.getElementById("submit"),start=0,points=0,frm=document.getElementById("frm"),tok=document.getElementById("tok");'
             . 'area.addEventListener("mouseenter",function(){start=Date.now();});'
             . 'area.addEventListener("mousemove",function(){points++;if(points>15)sub.disabled=false;});'
-            . 'sub.addEventListener("click",function(){var dur=Date.now()-start;var p=btoa(JSON.stringify({nonce:document.getElementById("nonce").value,duration:dur,points:points}));var token=SID+":"+p;location.href="?captcha_verify=1&type=behavior&token="+encodeURIComponent(token);});'
+            . 'sub.addEventListener("click",function(){var dur=Date.now()-start;var p=btoa(JSON.stringify({nonce:document.getElementById("nonce").value,duration:dur,points:points}));tok.value=SID+":"+p;frm.submit();});'
             . '</script></div></body></html>';
     }
 
