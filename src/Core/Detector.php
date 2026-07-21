@@ -105,7 +105,7 @@ class WafRiskScore {
         'obfuscation' => 0.7,
     ];
 
-    public static function analyze($cleanText, $normalizerContext = []) {
+    public static function analyze($cleanText, $normalizerContext = [], $uri = '', $params = []) {
         $result = [
             'is_attack' => false,
             'total_score' => 0,
@@ -163,6 +163,83 @@ class WafRiskScore {
 
         $baseScore = !empty($typeScores) ? max($typeScores) : 0;
 
+        // ===== 核心融合：调用 SemanticEngine 获取深度解析器证据 =====
+        $semanticBonus = 0;
+        $semanticEvidence = [];
+        if ($baseScore >= 20 || strlen($cleanText) > 20) {
+            if (!class_exists('SemanticEngine')) {
+                require_once __DIR__ . '/../Semantic/SemanticEngine.php';
+            }
+            $semResult = SemanticEngine::analyze(
+                $cleanText,
+                $uri,
+                $params,
+                $normalizerContext,
+                waf_get_real_ip()
+            );
+            
+            $semanticEvidence = [
+                'sql_has_union' => !empty($semResult['sql_parser_result']['has_union']),
+                'sql_has_tautology' => !empty($semResult['sql_parser_result']['has_tautology']),
+                'html_has_script' => !empty($semResult['html_parser_result']['has_script']),
+                'html_has_event' => !empty($semResult['html_parser_result']['has_event_handler']),
+                'php_has_eval' => !empty($semResult['php_parser_result']['has_eval']),
+                'php_has_cmd' => !empty($semResult['php_parser_result']['has_command_exec']),
+                'path_is_traversal' => !empty($semResult['path_parser_result']['is_path_traversal']),
+                'cmd_is_injection' => !empty($semResult['command_parser_result']['is_command_injection']),
+                'xxe_is_xxe' => !empty($semResult['xxe_parser_result']['is_xxe']),
+                'ssrf_is_ssrf' => !empty($semResult['ssrf_parser_result']['is_ssrf']),
+                'ssti_is_ssti' => !empty($semResult['ssti_parser_result']['is_ssti']),
+                'deser_is_deser' => !empty($semResult['deser_parser_result']['is_deserialization']),
+                'crlf_is_crlf' => !empty($semResult['crlf_parser_result']['is_crlf']),
+                'sql_parser_score' => $semResult['sql_parser_score'] ?? 0,
+                'html_parser_score' => $semResult['html_parser_score'] ?? 0,
+                'php_parser_score' => $semResult['php_parser_score'] ?? 0,
+                'path_parser_score' => $semResult['path_parser_score'] ?? 0,
+                'command_parser_score' => $semResult['command_parser_score'] ?? 0,
+                'intent_score' => $semResult['l7_intent_score'] ?? 0,
+                'logic_score' => $semResult['l6_logic_score'] ?? 0,
+                'is_adversarial' => $semResult['adversarial_is_attack'] ?? false,
+            ];
+
+            foreach ($typeScores as $type => $score) {
+                if ($type === 'sqli' && ($semanticEvidence['sql_has_union'] || $semanticEvidence['sql_has_tautology'])) {
+                    $semanticBonus += 15;
+                }
+                if ($type === 'xss' && ($semanticEvidence['html_has_script'] || $semanticEvidence['html_has_event'])) {
+                    $semanticBonus += 12;
+                }
+                if ($type === 'rce' && ($semanticEvidence['php_has_eval'] || $semanticEvidence['php_has_cmd'])) {
+                    $semanticBonus += 18;
+                }
+                if ($type === 'path_traversal' && $semanticEvidence['path_is_traversal']) {
+                    $semanticBonus += 12;
+                }
+                if ($type === 'file_inclusion' && $semanticEvidence['php_has_eval']) {
+                    $semanticBonus += 10;
+                }
+                if ($type === 'xxe' && $semanticEvidence['xxe_is_xxe']) {
+                    $semanticBonus += 12;
+                }
+            }
+
+            if ($baseScore < 70) {
+                $parserStrongEvidence = 0;
+                if ($semanticEvidence['sql_parser_score'] >= 60) $parserStrongEvidence++;
+                if ($semanticEvidence['html_parser_score'] >= 50) $parserStrongEvidence++;
+                if ($semanticEvidence['php_parser_score'] >= 60) $parserStrongEvidence++;
+                if ($semanticEvidence['path_parser_score'] >= 60) $parserStrongEvidence++;
+                if ($semanticEvidence['command_parser_score'] >= 60) $parserStrongEvidence++;
+                
+                if ($parserStrongEvidence >= 1 && $semanticEvidence['intent_score'] >= 40) {
+                    $semanticBonus += min(25, $parserStrongEvidence * 10);
+                }
+                if ($semanticEvidence['is_adversarial'] && $semanticEvidence['logic_score'] >= 50) {
+                    $semanticBonus += 20;
+                }
+            }
+        }
+
         $encodingPenalty = 0;
         if (!empty($normalizerContext)) {
             $encodingComplexity = $normalizerContext['encoding_complexity'] ?? 0;
@@ -197,7 +274,7 @@ class WafRiskScore {
             $baseScore = min($baseScore * 1.3, 100);
         }
 
-        $totalScore = min($baseScore + $encodingPenalty * 0.3, 100);
+        $totalScore = min($baseScore + $encodingPenalty * 0.3 + $semanticBonus, 100);
 
         if ($totalScore >= 80) {
             $riskLevel = 'critical';
@@ -218,6 +295,15 @@ class WafRiskScore {
         if ($numHits > 0) {
             $confidence = min(50 + $numHits * 10 + $highSeverityCount * 15, 100);
         }
+        if (!empty($semanticEvidence)) {
+            $evidenceCount = 0;
+            foreach ($semanticEvidence as $k => $v) {
+                if ($v && !in_array($k, ['sql_parser_score', 'html_parser_score', 'php_parser_score', 'path_parser_score', 'command_parser_score', 'intent_score', 'logic_score'])) {
+                    $evidenceCount++;
+                }
+            }
+            $confidence = min($confidence + $evidenceCount * 5, 100);
+        }
 
         return [
             'is_attack' => $isAttack,
@@ -227,6 +313,7 @@ class WafRiskScore {
                 return ['name' => $h['name'], 'type' => $h['type'], 'severity' => $h['severity']];
             }, $allHits),
             'encoding_penalty' => round($encodingPenalty, 1),
+            'semantic_bonus' => $semanticBonus,
             'semantic_score' => $normalizerContext['semantic_score'] ?? 0,
             'encoding_depth' => $normalizerContext['encoding_depth'] ?? 0,
             'double_encoding' => $normalizerContext['double_encoding_detected'] ?? false,
@@ -235,6 +322,7 @@ class WafRiskScore {
             'hit_count' => $numHits,
             'high_severity_count' => $highSeverityCount,
             'learned_hits' => count($learnedHits),
+            'semantic_evidence' => $semanticEvidence,
         ];
     }
 
@@ -252,6 +340,6 @@ function waf_is_attack($clean) {
     return $result['is_attack'];
 }
 
-function waf_analyze_attack($clean, $normalizerContext = []) {
-    return WafRiskScore::analyze($clean, $normalizerContext);
+function waf_analyze_attack($clean, $normalizerContext = [], $uri = '', $params = []) {
+    return WafRiskScore::analyze($clean, $normalizerContext, $uri, $params);
 }
