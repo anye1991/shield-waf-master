@@ -447,9 +447,26 @@ class SemanticEngine {
         $pathParserResult = $pathParserResult ?? [];
         if (!empty($pathParserResult['is_path_traversal'])) $parserFlagBonus = max($parserFlagBonus, 65);
 
+        // CRLF 注入：原始CRLF序列、HTTP头注入、响应拆分
+        // 注意：CRLF 的 \r\n 会被 Normalizer 的 layerWhitespace 规范化为空格，
+        // 所以 signatureBonus 检测不到。这里通过 CRLF 解析器的标志位兜底。
+        // CRLF 解析器分析的是 route['crlf']（来自原始 body + URI 参数 + headers），能看到真实 \r\n
+        $crlfParserResult = $crlfParserResult ?? [];
+        if (!empty($crlfParserResult['is_crlf'])) $parserFlagBonus = max($parserFlagBonus, 50);
+        if (!empty($crlfParserResult['header_injection_hits'])) $parserFlagBonus = max($parserFlagBonus, 65);
+        if (!empty($crlfParserResult['response_splitting'])) $parserFlagBonus = max($parserFlagBonus, 75);
+
         // 应用保底加成：取当前总分与"标志位保底分"的最大值
         if ($parserFlagBonus > $total) {
             $total = $parserFlagBonus;
+        }
+
+        // ===== 明确攻击签名兜底加成 =====
+        // 当解析器得分偏低但归一化后的文本包含明确的攻击签名时，给予兜底分数
+        // 防止短payload或变形payload因解析器保守而漏检
+        $signatureBonus = self::calcSignatureBonus($decodedText, $total);
+        if ($signatureBonus > $total) {
+            $total = $signatureBonus;
         }
 
         $total = max(0, min(100, (int)round($total)));
@@ -934,12 +951,18 @@ class SemanticEngine {
             $route['xxe'] = !empty($body) ? $body : $decodedText;
         }
 
-        // SSRF解析器：URI中的URL参数 + Body中的URL
+        // SSRF解析器：URI中的URL参数 + Body中的URL + 所有参数值（SSRF可能藏在任意参数中）
         $urlParams = '';
         foreach ($params as $k => $v) {
+            $val = (string)$v;
             $keyLower = strtolower((string)$k);
+            // URL相关参数名优先
             if (strpos($keyLower, 'url') !== false || strpos($keyLower, 'link') !== false || strpos($keyLower, 'redirect') !== false || strpos($keyLower, 'host') !== false || strpos($keyLower, 'target') !== false) {
-                $urlParams .= (string)$v . ' ';
+                $urlParams .= $val . ' ';
+            }
+            // 参数值本身是URL（以http://、https://、file://等开头）
+            if (preg_match('#^(https?|file|gopher|dict|ldap|ftp|ssh|telnet)://#i', $val)) {
+                $urlParams .= $val . ' ';
             }
         }
         $route['ssrf'] = trim($urlParams . ' ' . $bodyStrings);
@@ -949,24 +972,33 @@ class SemanticEngine {
         $route['ssti'] = trim($uriParamsText . ' ' . $bodyStrings);
         if ($route['ssti'] === '') $route['ssti'] = $decodedText;
 
-        // 反序列化：仅在Content-Type包含序列化特征或body包含序列化特征时
+        // 反序列化：检查Content-Type或body包含序列化特征时
         $isSerialized = false;
         if (strpos($ct, 'java-serialized-object') !== false || strpos($ct, 'phpserialized') !== false) {
             $isSerialized = true;
         }
-        if (preg_match('/^[Oa]:\d+:/', $body) || preg_match('/^\{.*\}$/', $body)) {
+        // PHP序列化格式：O:N:、a:N:、s:N:、i:、b:、d: 等
+        if (preg_match('/^[Oa]:\d+:/i', $body) || preg_match('/\b[Oa]:\d+:"[^"]*":\d+:/i', $body)) {
+            $isSerialized = true;
+        }
+        // Java序列化：以 rO0AB 开头的Base64
+        if (strpos($body, 'rO0AB') === 0) {
+            $isSerialized = true;
+        }
+        // JSON中嵌套序列化字符串
+        if (preg_match('/"data"\s*:\s*"[Oa]:\d+:/i', $body)) {
             $isSerialized = true;
         }
         if ($isSerialized) {
             $route['deser'] = $body;
         }
 
-        // CRLF：Headers + URI参数（CRLF注入通常发生在Header和URI参数中）
+        // CRLF：Headers + URI参数 + Body（CRLF可能出现在任何输入中）
         $headerText = '';
         foreach ($headers as $k => $v) {
             $headerText .= (string)$k . ': ' . (string)$v . ' ';
         }
-        $route['crlf'] = trim($headerText . ' ' . $uriParamsText);
+        $route['crlf'] = trim($headerText . ' ' . $uriParamsText . ' ' . $bodyStrings);
         if ($route['crlf'] === '') $route['crlf'] = $decodedText;
 
         // 表达式注入：URI参数 + Body
@@ -996,5 +1028,88 @@ class SemanticEngine {
      */
     private static function emptyParserResult(): array {
         return ['score' => 0, 'detected' => false];
+    }
+
+    /**
+     * 明确攻击签名兜底加成
+     * 当解析器得分偏低但文本包含明确攻击签名时，给予兜底分数
+     */
+    private static function calcSignatureBonus(string $text, int $currentScore): int {
+        if ($currentScore >= 70) return $currentScore;
+        
+        $bonus = 0;
+        $textLower = strtolower($text);
+        
+        // SQL注入签名
+        if (preg_match('/\bunion\s+(all\s+)?select\b/i', $text)) $bonus = max($bonus, 65);
+        if (preg_match('/\b(or|and)\s+\d+\s*=\s*\d+/i', $text)) $bonus = max($bonus, 60);
+        if (preg_match("/\b(or|and)\s+['\"]?\w+['\"]?\s*=\s*['\"]?\w+['\"]?/i", $text)) $bonus = max($bonus, 55);
+        if (preg_match('/\bwaitfor\s+delay\b/i', $text)) $bonus = max($bonus, 70);
+        if (preg_match('/\bsleep\s*\(/i', $text)) $bonus = max($bonus, 65);
+        if (preg_match('/\bextractvalue\s*\(/i', $text)) $bonus = max($bonus, 60);
+        if (preg_match('/\bdrop\s+table\b/i', $text)) $bonus = max($bonus, 65);
+        if (preg_match('/\binformation_schema\b/i', $text)) $bonus = max($bonus, 55);
+        if (preg_match('/\bgroup_concat\s*\(/i', $text)) $bonus = max($bonus, 55);
+        if (preg_match('/;\s*(drop|delete|update|insert)\b/i', $text)) $bonus = max($bonus, 60);
+        
+        // XSS签名
+        if (preg_match('/<script\b/i', $text)) $bonus = max($bonus, 65);
+        if (preg_match('/on(load|error|click|mouseover|focus|blur|change|submit)\s*=/i', $text)) $bonus = max($bonus, 55);
+        if (preg_match('/javascript:/i', $text)) $bonus = max($bonus, 60);
+        if (preg_match('/<svg\b/i', $text) && preg_match('/on\w+\s*=/i', $text)) $bonus = max($bonus, 60);
+        if (preg_match('/<body\b/i', $text) && preg_match('/on\w+\s*=/i', $text)) $bonus = max($bonus, 55);
+        if (preg_match('/<iframe\b/i', $text)) $bonus = max($bonus, 50);
+        if (preg_match('/document\.cookie/i', $text)) $bonus = max($bonus, 55);
+        if (preg_match('/eval\s*\(/i', $text) && preg_match('/string\.fromcharcode/i', $text)) $bonus = max($bonus, 70);
+        
+        // 命令注入签名
+        if (preg_match('/;\s*(cat|ls|id|whoami|uname|wget|curl|rm|cp|mv)\b/i', $text)) $bonus = max($bonus, 60);
+        if (preg_match('/\|\s*(cat|ls|id|whoami|uname|wget|curl)\b/i', $text)) $bonus = max($bonus, 55);
+        if (preg_match('/`[^`]+`/', $text)) $bonus = max($bonus, 50);
+        if (preg_match('/\$\([^)]+\)/', $text)) $bonus = max($bonus, 50);
+        if (preg_match('/&&\s*(cat|ls|id|whoami|uname|wget|curl|rm)\b/i', $text)) $bonus = max($bonus, 55);
+        if (preg_match('/\b(system|exec|shell_exec|passthru|popen|proc_open)\s*\(/i', $text)) $bonus = max($bonus, 70);
+        
+        // 路径遍历签名
+        if (preg_match('/\.\.[\/\\\\]/', $text)) $bonus = max($bonus, 60);
+        if (preg_match('/\/etc\/passwd/i', $text)) $bonus = max($bonus, 65);
+        if (preg_match('/\/etc\/shadow/i', $text)) $bonus = max($bonus, 70);
+        
+        // XXE签名
+        if (preg_match('/<!ENTITY\b/i', $text)) $bonus = max($bonus, 65);
+        if (preg_match('/<!DOCTYPE\b/i', $text) && preg_match('/SYSTEM\b/i', $text)) $bonus = max($bonus, 60);
+        
+        // SSRF签名
+        if (preg_match('#https?://127\.0\.0\.1#i', $text)) $bonus = max($bonus, 55);
+        if (preg_match('#https?://localhost#i', $text)) $bonus = max($bonus, 50);
+        if (preg_match('#https?://169\.254\.169\.254#i', $text)) $bonus = max($bonus, 65);
+        if (preg_match('#file:///#i', $text)) $bonus = max($bonus, 55);
+        if (preg_match('#gopher://#i', $text)) $bonus = max($bonus, 60);
+        if (preg_match('#dict://#i', $text)) $bonus = max($bonus, 55);
+        
+        // SSTI签名
+        if (preg_match('/\{\{.*?\}\}/s', $text)) $bonus = max($bonus, 50);
+        if (preg_match('/\$\{.*?\}/s', $text)) $bonus = max($bonus, 50);
+        
+        // 模板注入签名
+        if (preg_match('/<%\s*=?\s*(Execute|Response|Request)/i', $text)) $bonus = max($bonus, 55); // ASP
+        if (preg_match('/<\?=\s*system\s*\(/i', $text)) $bonus = max($bonus, 65); // PHP短标签
+        if (preg_match('/\{system\s*\(/i', $text)) $bonus = max($bonus, 65); // Smarty
+        
+        // CRLF签名
+        if (preg_match('/[\r\n]\s*(Set-Cookie|Location|Content-Type|Set-Location)/i', $text)) $bonus = max($bonus, 60);
+        if (preg_match('/%0[dD]%0[aA]/i', $text)) $bonus = max($bonus, 50);
+        
+        // 反序列化签名
+        if (preg_match('/^[Oa]:\d+:/i', $text)) $bonus = max($bonus, 55);
+        if (preg_match('/O:\d+:"[^"]+":\d+:/i', $text)) $bonus = max($bonus, 55);
+        if (preg_match('/PHP_Object_Injection/i', $text)) $bonus = max($bonus, 60);
+        
+        // OpenRedirect签名
+        if (preg_match('#redirect\s*=\s*https?://(?!' . preg_quote($_SERVER['HTTP_HOST'] ?? 'localhost', '#') . ')#i', $text)) $bonus = max($bonus, 50);
+        if (preg_match('#redirect\s*=\s*//#i', $text)) $bonus = max($bonus, 50);
+        if (preg_match('#@[\w.-]+\s*$#i', $text) && preg_match('#https?://#i', $text)) $bonus = max($bonus, 45);
+        
+        return $bonus;
     }
 }

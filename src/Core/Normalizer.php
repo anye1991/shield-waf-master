@@ -288,7 +288,12 @@ class WafNormalizer {
 
     private static function layerSqlComments($s) {
         if (!defined('WAF_NORMALIZE_SQL_COMMENTS') || WAF_NORMALIZE_SQL_COMMENTS) {
-            return preg_replace('/\/\*.*?\*\/|--[^\n]*|#.*/i', ' ', $s);
+            // 移除 MySQL 内联注释 /*!50000UNION*/ → UNION（保留注释内容，两侧加空格防止关键字粘连）
+            // 加空格是为了避免 /*!50000UNION*//*!50000SELECT*/ 被提取成 UNIONSELECT 导致签名漏匹配
+            $s = preg_replace('/\/\*!\d+\s*([^*]*)\*\//i', ' $1 ', $s);
+            // 移除普通注释 /**/、--、#（替换为空格，同样防止关键字粘连）
+            $s = preg_replace('/\/\*.*?\*\/|--[^\n]*|#.*/is', ' ', $s);
+            return $s;
         }
         return $s;
     }
@@ -305,12 +310,28 @@ class WafNormalizer {
     }
 
     private static function layerSemantic($s) {
+        // Hex解码：0x73656c656374 → "select"
         $s = preg_replace_callback('/\b0x([0-9a-f]+)\b/i', function($m) {
             $hex = $m[1];
             if (strlen($hex) % 2 !== 0) $hex = '0' . $hex;
             $decoded = @hex2bin($hex);
             return ($decoded !== false && self::isLikelyText($decoded)) ? $decoded : $m[0];
         }, $s);
+        // 八进制解码：\163\171\163\164\145\155 → "system"
+        $s = preg_replace_callback('/((?:\\\\[0-7]{1,3}){2,})/', function($m) {
+            $octals = $m[1];
+            $decoded = '';
+            if (preg_match_all('/\\\\([0-7]{1,3})/', $octals, $matches)) {
+                foreach ($matches[1] as $oct) {
+                    $val = octdec($oct);
+                    if ($val > 0 && $val < 256) {
+                        $decoded .= chr($val);
+                    }
+                }
+            }
+            return ($decoded !== '' && self::isLikelyText($decoded)) ? $decoded : $m[0];
+        }, $s);
+        // 移除 SQL 函数混淆：unhex()/char()/ascii()/ord()
         $s = preg_replace('/\b(?:unhex|hex|char|ascii|ord)\s*\(/i', '', $s);
         $s = preg_replace('/\bconcat\s*\(/i', 'concat(', $s);
         return $s;
