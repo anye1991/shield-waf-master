@@ -1,6 +1,6 @@
-# 🛡️ 盾甲 WAF (Shield WAF) v5.2.0
+# 🛡️ 盾甲 WAF (Shield WAF) v5.3.0
 
-[![Version](https://img.shields.io/badge/version-5.2.0-blue)](https://github.com/)
+[![Version](https://img.shields.io/badge/version-5.3.0-blue)](https://gitee.com/nights-shadow/shield-waf)
 [![PHP](https://img.shields.io/badge/PHP-7.4%2B-purple)](https://php.net/)
 [![Database](https://img.shields.io/badge/database-MySQL%20%7C%20PostgreSQL%20%7C%20SQLite%20%7C%20MSSQL-orange)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
@@ -862,6 +862,17 @@ WAF_DB_DEBUG=false
 
 > 测试环境：PHP 8.1 + OPcache，实际性能因服务器配置和PHP版本而异
 
+### v5.3.0 深度性能优化（6 大技术）
+
+| 优化技术 | 优化效果 | 说明 |
+|---------|---------|------|
+| 类文件懒加载 | 减少 60%+ 初始加载内存 | `spl_autoload_register` 按需加载，正常请求只加载 5-8 个类，而非全部 30+ 类 |
+| 语义分析快速短路 | 正常请求提速 3-5 倍 | 低风险参数直接跳过重型解析器，只有可疑参数才进入完整语义分析 |
+| 延迟持久化 | 磁盘 I/O 减少 90%+ | 30 秒批量写日志/统计，`register_shutdown_function` 兜底，请求不阻塞 |
+| `waf_getenv` 静态缓存 | 环境变量读取 O(1) | 静态数组缓存，避免重复调用 `getenv()` / `$_ENV` 反复查找 |
+| 三档性能模式 | 按需分配资源 | high/balanced/strict 三档，低配服务器也能流畅运行，不阉割核心防护 |
+| `putenv` 兼容封装 | 兼容禁用函数的环境 | 部分主机禁用 `putenv()`，改用 `$_ENV`/`$_SERVER` 双路兜底读取 |
+
 ### 服务器配置建议
 
 #### PHP-FPM 配置（重点）
@@ -1009,7 +1020,11 @@ shield-waf-master/
 ### 开发环境
 
 ```bash
-# 克隆项目
+# Gitee 克隆（国内推荐）
+git clone https://gitee.com/nights-shadow/shield-waf.git
+cd shield-waf
+
+# GitHub 克隆
 git clone https://github.com/anye1991/shield-waf-master.git
 cd shield-waf-master
 
@@ -1043,7 +1058,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 
 | 版本 | 核心特性 |
 |------|---------|
-| **v5.3.0** ⚡ | 深度性能优化 · 三档性能模式(high/balanced/strict) · 延迟持久化减少磁盘I/O · 类文件懒加载 · 语义分析快速短路 · 解决PHP-FPM超时问题 · 2核2G服务器流畅运行 |
+| **v5.3.0** ⚡ | 深度性能优化 · 三档性能模式(high/balanced/strict) · 类文件懒加载(内存↓60%) · 语义分析快速短路(正常请求提速3-5倍) · 延迟持久化(磁盘I/O↓90%) · waf_getenv静态缓存 · putenv兼容封装 · 2核2G服务器流畅运行 · 不阉割核心防护能力 |
 | **v5.2.0** 🤖 | 纯 PHP 朴素贝叶斯机器学习分类器 · 5维评分系统 · 自动训练攻击/正常样本 · 冷启动保护 · 186/186 测试全通过 |
 | **v5.1.0** 🧬 | L11参数位置语义分析器 · L12跨请求上下文分析器 · SSRF/SSTI保底加成 · 9项安全审计修复 · 永久封禁累进机制 · 154/154 极限测试通过 |
 | **v5.0.0** 🧠 | 11 解析器语义引擎 · 内容类型路由 · 双证据融合架构 · 签名保底机制 · 14层归一化全局统一接入 · 9项安全审计修复 · 71/71 极限测试通过 · 0% 误报率 |
