@@ -44,6 +44,11 @@ spl_autoload_register(function ($class) {
         'DeserializationSemanticParser' => 'DeserializationSemanticParser.php',
         'CrlfInjectionSemanticParser' => 'CrlfInjectionSemanticParser.php',
         'ExpressionInjectionSemanticParser' => 'ExpressionInjectionSemanticParser.php',
+        'GraphqlSemanticParser' => 'GraphqlSemanticParser.php',
+        'WebSocketSemanticParser' => 'WebSocketSemanticParser.php',
+        'CsvInjectionSemanticParser' => 'CsvInjectionSemanticParser.php',
+        'YamlSemanticParser' => 'YamlSemanticParser.php',
+        'RegexdosSemanticParser' => 'RegexdosSemanticParser.php',
         'ParamPositionAnalyzer' => 'ParamPositionAnalyzer.php',
         'RequestContextAnalyzer' => 'RequestContextAnalyzer.php',
     ];
@@ -75,6 +80,11 @@ class SemanticEngine {
         'deser_parser'      => 0.07,
         'crlf_parser'       => 0.05,
         'expr_parser'       => 0.06,
+        'graphql_parser'    => 0.07,
+        'websocket_parser'  => 0.06,
+        'csv_parser'        => 0.06,
+        'yaml_parser'       => 0.07,
+        'redos_parser'      => 0.06,
         // 上下文分析器（新增）
         'param_position'    => 0.05,   // 参数位置语义分析
         'request_context'   => 0.06,   // 跨请求上下文分析
@@ -173,12 +183,20 @@ class SemanticEngine {
 
         // ---- 快速短路：L1-L3基础分极低时跳过重型深度解析器（正常请求加速）----
         // 权重：char(0.02) + word(0.02) + structure(0.04) + adversarial(0.04) = 0.12
-        // 快速预估分 < 5 分 → 几乎肯定是正常请求，跳过11个重型解析器
+        // 快速预估分 < 5 分 → 几乎肯定是正常请求，跳过16个重型解析器
+        // 例外：格式指纹检测命中（GraphQL/YAML/CSV/ReDoS等特定格式攻击，基础分可能很低）
+        // 例外：路径遍历特征（../ 模式，基础分可能很低但仍危险）
         $fastPreScore = $charResult['score'] * 0.02
                       + $wordResult['score'] * 0.02
                       + $structResult['score'] * 0.04
                       + $adversarialScore * 0.04;
-        $skipHeavyParsers = ($fastPreScore < 5 && $decodeDepth === 0 && empty($normalizerContext['obfuscation_detected']));
+        $formatFingerprintHit = self::detectFormatFingerprints($decodedText, $uri, $contentType, $headers, $params);
+        $pathTraversalHit = (preg_match('/\.\.\//', $decodedText) || preg_match('/\.\.\//', $uri));
+        $commandInjectionHit = preg_match('/(system|exec|shell_exec|passthru|popen|proc_open|pcntl_exec)\s*\(/i', $decodedText);
+        $phpCodeHit = preg_match('/(eval|assert|create_function|call_user_func|call_user_func_array)\s*\(/i', $decodedText);
+        $commandSeparatorHit = preg_match('/[\;`\|\&](\s*cat|\s*ls|\s*rm|\s*cp|\s*mv|\s*chmod|\s*wget|\s*curl)/i', $decodedText);
+        $xssHit = preg_match('/<script/i', $decodedText) || preg_match('/javascript\s*:/i', $decodedText) || preg_match('/on\w+\s*=/i', $decodedText);
+        $skipHeavyParsers = ($fastPreScore < 5 && $decodeDepth === 0 && empty($normalizerContext['obfuscation_detected']) && !$formatFingerprintHit && !$pathTraversalHit && !$commandInjectionHit && !$phpCodeHit && !$commandSeparatorHit && !$xssHit);
 
         $paramScore = 0;
         $paramMismatches = [];
@@ -276,6 +294,21 @@ class SemanticEngine {
         // 表达式注入：分析URI参数 + Body
         $exprParserResult = (!empty($route['expr'])) ? ExpressionInjectionSemanticParser::analyze($route['expr']) : self::emptyParserResult();
 
+        // GraphQL解析器：分析Body（GraphQL查询）
+        $graphqlParserResult = (!empty($route['graphql'])) ? GraphqlSemanticParser::analyze($route['graphql']) : self::emptyParserResult();
+
+        // WebSocket解析器：分析Body（WebSocket帧数据）
+        $websocketParserResult = (!empty($route['websocket'])) ? WebSocketSemanticParser::analyze($route['websocket']) : self::emptyParserResult();
+
+        // CSV/公式注入解析器：分析参数值 + Body
+        $csvParserResult = (!empty($route['csv'])) ? CsvInjectionSemanticParser::analyze($route['csv']) : self::emptyParserResult();
+
+        // YAML反序列化解析器：分析Body（YAML配置/数据）
+        $yamlParserResult = (!empty($route['yaml'])) ? YamlSemanticParser::analyze($route['yaml']) : self::emptyParserResult();
+
+        // ReDoS解析器：分析正则表达式参数
+        $redosParserResult = (!empty($route['redos'])) ? RegexdosSemanticParser::analyze($route['redos']) : self::emptyParserResult();
+
         $sqlParserScore  = $sqlParserResult['score'] ?? 0;
         $htmlParserScore = $htmlParserResult['score'] ?? 0;
         $phpParserScore  = $phpParserResult['score'] ?? 0;
@@ -287,6 +320,11 @@ class SemanticEngine {
         $deserParserScore = $deserParserResult['score'] ?? 0;
         $crlfParserScore = $crlfParserResult['score'] ?? 0;
         $exprParserScore = $exprParserResult['score'] ?? 0;
+        $graphqlParserScore = $graphqlParserResult['score'] ?? 0;
+        $websocketParserScore = $websocketParserResult['score'] ?? 0;
+        $csvParserScore = $csvParserResult['score'] ?? 0;
+        $yamlParserScore = $yamlParserResult['score'] ?? 0;
+        $redosParserScore = $redosParserResult['score'] ?? 0;
 
         // ---- 参数位置上下文分析（L11）：同 payload 在不同位置威胁不同 ----
         $paramPositionResult = ['score' => 0, 'positions' => [], 'position_anomalies' => [], 'cross_position_patterns' => [], 'high_risk_params' => []];
@@ -351,6 +389,11 @@ class SemanticEngine {
         $total += $deserParserScore           * self::$weights['deser_parser'];
         $total += $crlfParserScore            * self::$weights['crlf_parser'];
         $total += $exprParserScore            * self::$weights['expr_parser'];
+        $total += $graphqlParserScore         * self::$weights['graphql_parser'];
+        $total += $websocketParserScore       * self::$weights['websocket_parser'];
+        $total += $csvParserScore             * self::$weights['csv_parser'];
+        $total += $yamlParserScore            * self::$weights['yaml_parser'];
+        $total += $redosParserScore           * self::$weights['redos_parser'];
         $total += $paramPositionScore         * self::$weights['param_position'];
         $total += $requestContextScore        * self::$weights['request_context'];
 
@@ -372,7 +415,8 @@ class SemanticEngine {
             $memoryScore, $adversarialScore, $sqlParserScore, $htmlParserScore, $phpParserScore,
             $pathParserScore, $commandParserScore, $xxeParserScore, $ssrfParserScore,
             $sstiParserScore, $deserParserScore, $crlfParserScore, $exprParserScore,
-            $paramPositionScore, $requestContextScore,
+            $graphqlParserScore, $websocketParserScore, $csvParserScore, $yamlParserScore,
+            $redosParserScore, $paramPositionScore, $requestContextScore,
         ]);
 
         if ($highDimensions >= 6) $total += 18;
@@ -420,6 +464,11 @@ class SemanticEngine {
         if ($deserParserScore >= 50) $total += 15;
         if ($crlfParserScore >= 50) $total += 10;
         if ($exprParserScore >= 50) $total += 12;
+        if ($graphqlParserScore >= 50) $total += 12;
+        if ($websocketParserScore >= 50) $total += 12;
+        if ($csvParserScore >= 50) $total += 10;
+        if ($yamlParserScore >= 50) $total += 15;
+        if ($redosParserScore >= 50) $total += 10;
         $parserCount = 0;
         if ($sqlParserScore >= 30) $parserCount++;
         if ($htmlParserScore >= 30) $parserCount++;
@@ -432,6 +481,11 @@ class SemanticEngine {
         if ($deserParserScore >= 30) $parserCount++;
         if ($crlfParserScore >= 30) $parserCount++;
         if ($exprParserScore >= 30) $parserCount++;
+        if ($graphqlParserScore >= 30) $parserCount++;
+        if ($websocketParserScore >= 30) $parserCount++;
+        if ($csvParserScore >= 30) $parserCount++;
+        if ($yamlParserScore >= 30) $parserCount++;
+        if ($redosParserScore >= 30) $parserCount++;
         if ($parserCount >= 5) $total += 25;
         elseif ($parserCount >= 4) $total += 20;
         elseif ($parserCount >= 3) $total += 15;
@@ -674,6 +728,54 @@ class SemanticEngine {
                 'xpath_score'           => $exprParserResult['xpath_score'] ?? 0,
                 'ldap_score'            => $exprParserResult['ldap_score'] ?? 0,
                 'nosql_score'           => $exprParserResult['nosql_score'] ?? 0,
+            ],
+            'graphql_parser_result' => [
+                'is_graphql'           => $graphqlParserResult['is_graphql'] ?? false,
+                'query_type'           => $graphqlParserResult['query_type'] ?? 'unknown',
+                'has_introspection'    => $graphqlParserResult['has_introspection'] ?? false,
+                'query_depth'          => $graphqlParserResult['query_depth'] ?? 0,
+                'field_count'          => $graphqlParserResult['field_count'] ?? 0,
+                'introspection_fields' => $graphqlParserResult['introspection_fields'] ?? [],
+                'sensitive_fields'     => $graphqlParserResult['sensitive_fields'] ?? [],
+            ],
+            'websocket_parser_result' => [
+                'is_websocket'         => $websocketParserResult['is_websocket'] ?? false,
+                'frame_count'          => $websocketParserResult['frame_count'] ?? 0,
+                'has_fragmented'       => $websocketParserResult['has_fragmented'] ?? false,
+                'max_frame_size'       => $websocketParserResult['max_frame_size'] ?? 0,
+                'has_mask_issue'       => $websocketParserResult['has_mask_issue'] ?? false,
+                'has_large_payload'    => $websocketParserResult['has_large_payload'] ?? false,
+                'injection_detected'   => $websocketParserResult['injection_detected'] ?? [],
+            ],
+            'csv_parser_result' => [
+                'is_csv_injection'     => $csvParserResult['is_csv_injection'] ?? false,
+                'is_formula'           => $csvParserResult['is_formula'] ?? false,
+                'formula_count'        => $csvParserResult['formula_count'] ?? 0,
+                'dangerous_functions'  => $csvParserResult['dangerous_functions'] ?? [],
+                'has_dde'              => $csvParserResult['has_dde'] ?? false,
+                'has_external_data'    => $csvParserResult['has_external_data'] ?? false,
+                'formula_depth'        => $csvParserResult['formula_depth'] ?? 0,
+            ],
+            'yaml_parser_result' => [
+                'is_yaml'              => $yamlParserResult['is_yaml'] ?? false,
+                'document_count'       => $yamlParserResult['document_count'] ?? 0,
+                'nesting_depth'        => $yamlParserResult['nesting_depth'] ?? 0,
+                'has_dangerous_tags'   => $yamlParserResult['has_dangerous_tags'] ?? false,
+                'dangerous_tags'       => $yamlParserResult['dangerous_tags'] ?? [],
+                'has_php_object'       => $yamlParserResult['has_php_object'] ?? false,
+                'has_python_object'    => $yamlParserResult['has_python_object'] ?? false,
+                'sensitive_keys'       => $yamlParserResult['sensitive_keys'] ?? [],
+                'gadget_classes'       => $yamlParserResult['gadget_classes'] ?? [],
+                'has_billion_laughs'   => $yamlParserResult['has_billion_laughs'] ?? false,
+            ],
+            'redos_parser_result' => [
+                'is_regex'             => $redosParserResult['is_regex'] ?? false,
+                'has_redos_risk'       => $redosParserResult['has_redos_risk'] ?? false,
+                'redos_patterns'       => $redosParserResult['redos_patterns'] ?? [],
+                'star_height'          => $redosParserResult['star_height'] ?? 0,
+                'nesting_depth'        => $redosParserResult['nesting_depth'] ?? 0,
+                'group_count'          => $redosParserResult['group_count'] ?? 0,
+                'estimated_complexity' => $redosParserResult['estimated_complexity'] ?? 'unknown',
             ],
             'pattern_match_score'   => $patternMatchScore,
             'pattern_best_match'    => $patternMatchResult['best_match'] ?? null,
@@ -987,6 +1089,55 @@ class SemanticEngine {
     }
 
     /**
+     * 格式指纹快速检测：在快速短路前检测特定格式攻击
+     * 有些攻击基础分很低（GraphQL内省、YAML对象注入、CSV公式注入等）
+     * 但语义上是高危攻击，不能被短路跳过
+     */
+    private static function detectFormatFingerprints(string $text, string $uri, string $contentType, array $headers, array $params): bool {
+        $ct = strtolower($contentType);
+
+        if (strpos($ct, 'application/graphql') !== false) return true;
+        if (strpos($ct, 'text/csv') !== false || strpos($ct, 'application/csv') !== false) return true;
+        if (strpos($ct, 'yaml') !== false || strpos($ct, 'yml') !== false) return true;
+        if (strpos($ct, 'xml') !== false) return true;
+
+        foreach ($headers as $k => $v) {
+            if (stripos((string)$k, 'upgrade') !== false && stripos((string)$v, 'websocket') !== false) return true;
+            if (stripos((string)$k, 'sec-websocket-key') !== false) return true;
+        }
+
+        if (strpos($uri, '/graphql') !== false || stripos($uri, 'graphql') !== false) return true;
+
+        if (preg_match('/^\s*(query|mutation|subscription)\s*[({]/s', $text)) return true;
+        if (preg_match('/^\s*{[\s\w]+{/', $text)) return true;
+
+        if (strpos($text, '!!php/object') !== false || strpos($text, '!!python/object') !== false) return true;
+        if (strpos($text, '---') === 0 && strpos($text, ':') !== false) return true;
+
+        if (isset($text[0]) && ($text[0] === '=' || $text[0] === '+' || $text[0] === '-' || $text[0] === '@')) {
+            if (strlen($text) > 3 && preg_match('/^[=+\-@][A-Za-z]/', $text)) {
+                return true;
+            }
+        }
+
+        foreach ($params as $k => $v) {
+            $keyLower = strtolower((string)$k);
+            if (strpos($keyLower, 'regex') !== false || strpos($keyLower, 'pattern') !== false) {
+                $val = (string)$v;
+                if (strlen($val) > 5 && preg_match('/[.*+?{}[\]()^$|]/', $val)) return true;
+            }
+            $val = (string)$v;
+            if (isset($val[0]) && ($val[0] === '=' || $val[0] === '+' || $val[0] === '@')) {
+                if (strlen($val) > 3 && preg_match('/^[=+@][A-Za-z]/', $val)) return true;
+            }
+        }
+
+        if (preg_match('/\([a-z]\+\)[\*\+\?]/i', $text) && strlen($text) < 200) return true;
+
+        return false;
+    }
+
+    /**
      * 内容类型感知路由：根据 Content-Type 和输入来源，
      * 决定哪些解析器激活、分析哪段文本，避免所有解析器无脑分析同一段混合文本。
      */
@@ -1003,6 +1154,11 @@ class SemanticEngine {
             'deser'   => '',
             'crlf'    => '',
             'expr'    => '',
+            'graphql' => '',
+            'websocket' => '',
+            'csv'     => '',
+            'yaml'    => '',
+            'redos'   => '',
         ];
 
         $ct = strtolower($contentType);
@@ -1024,31 +1180,42 @@ class SemanticEngine {
             }
         }
 
+        // URI参数值提取（用于多个解析器）
+        $uriParamValues = '';
+        foreach ($params as $v) {
+            $uriParamValues .= (string)$v . ' ';
+        }
+
         // SQL解析器：URI参数 + Body字符串值（SQL注入通常发生在参数和body中）
         $route['sql'] = trim($uriParamsText . ' ' . $bodyStrings);
         if ($route['sql'] === '') $route['sql'] = $decodedText;
 
-        // HTML解析器：仅在Content-Type为html或body包含HTML标签时
-        if (strpos($ct, 'text/html') !== false || strpos($body, '<') !== false) {
+        // HTML解析器：Content-Type为html或body/文本/参数中包含HTML标签时
+        $hasHtmlTag = strpos($body, '<') !== false || strpos($decodedText, '<') !== false || strpos($uriParamValues, '<') !== false;
+        if (strpos($ct, 'text/html') !== false || $hasHtmlTag) {
             $route['html'] = !empty($body) ? $body : $decodedText;
         }
 
-        // PHP解析器：Body + 文件上传参数 + URI参数
+        // PHP解析器：Body + 文件上传参数 + URI参数 + 命令相关参数
         $fileParams = '';
+        $cmdParams = '';
         foreach ($params as $k => $v) {
             if (stripos((string)$k, 'file') !== false || stripos((string)$k, 'upload') !== false || stripos((string)$k, 'path') !== false) {
                 $fileParams .= (string)$v . ' ';
             }
+            if (stripos((string)$k, 'cmd') !== false || stripos((string)$k, 'command') !== false || stripos((string)$k, 'exec') !== false || stripos((string)$k, 'shell') !== false) {
+                $cmdParams .= (string)$v . ' ';
+            }
         }
-        $route['php'] = trim($bodyStrings . ' ' . $fileParams);
+        $route['php'] = trim($bodyStrings . ' ' . $fileParams . ' ' . $cmdParams . ' ' . $uriParamValues);
         if ($route['php'] === '') $route['php'] = $decodedText;
 
-        // 路径遍历：URI参数 + 文件相关参数 + URI路径
-        $route['path'] = trim($uriParamsText . ' ' . $fileParams . ' ' . $uri);
+        // 路径遍历：URI参数值 + 文件相关参数 + URI路径
+        $route['path'] = trim($uriParamValues . ' ' . $fileParams . ' ' . $uri);
         if ($route['path'] === '') $route['path'] = $decodedText;
 
-        // 命令注入：URI参数 + Body字符串
-        $route['command'] = trim($uriParamsText . ' ' . $bodyStrings);
+        // 命令注入：URI参数值 + Body字符串 + 命令相关参数
+        $route['command'] = trim($uriParamValues . ' ' . $bodyStrings . ' ' . $cmdParams);
         if ($route['command'] === '') $route['command'] = $decodedText;
 
         // XXE解析器：仅在Content-Type为xml或body包含XML特征时
@@ -1109,6 +1276,101 @@ class SemanticEngine {
         // 表达式注入：URI参数 + Body
         $route['expr'] = trim($uriParamsText . ' ' . $bodyStrings);
         if ($route['expr'] === '') $route['expr'] = $decodedText;
+
+        // GraphQL：Content-Type为application/graphql或body包含query/mutation/subscription时
+        $isGraphql = false;
+        if (strpos($ct, 'application/graphql') !== false) {
+            $isGraphql = true;
+        }
+        if (preg_match('/^\s*(query|mutation|subscription)\s*[({]/s', $body)) {
+            $isGraphql = true;
+        }
+        if (strpos($uri, '/graphql') !== false || stripos($uri, 'graphql') !== false) {
+            $isGraphql = true;
+        }
+        if ($isGraphql) {
+            $route['graphql'] = !empty($body) ? $body : $decodedText;
+        }
+        // 如果body是JSON且含query字段（常见GraphQL POST方式）
+        if (!empty($body) && strpos($ct, 'application/json') !== false) {
+            $json = json_decode($body, true);
+            if (is_array($json) && isset($json['query'])) {
+                $route['graphql'] = $json['query'];
+                $isGraphql = true;
+            }
+        }
+        if (!$isGraphql) {
+            $route['graphql'] = $decodedText;
+        }
+
+        // WebSocket：Upgrade头为websocket或Sec-WebSocket-Key存在时
+        $isWebsocket = false;
+        foreach ($headers as $k => $v) {
+            if (stripos((string)$k, 'upgrade') !== false && stripos((string)$v, 'websocket') !== false) {
+                $isWebsocket = true;
+            }
+            if (stripos((string)$k, 'sec-websocket-key') !== false) {
+                $isWebsocket = true;
+            }
+        }
+        if ($isWebsocket) {
+            $route['websocket'] = !empty($body) ? $body : $decodedText;
+        } else {
+            $route['websocket'] = $decodedText;
+        }
+
+        // CSV/公式注入：Content-Type为text/csv或参数值以=+-@开头时
+        $isCsv = false;
+        if (strpos($ct, 'text/csv') !== false || strpos($ct, 'application/csv') !== false) {
+            $isCsv = true;
+        }
+        foreach ($params as $k => $v) {
+            $val = (string)$v;
+            if (isset($val[0]) && ($val[0] === '=' || $val[0] === '+' || $val[0] === '-' || $val[0] === '@')) {
+                $isCsv = true;
+                break;
+            }
+        }
+        if ($isCsv) {
+            $route['csv'] = !empty($body) ? $body : $decodedText;
+        } else {
+            $route['csv'] = $decodedText;
+        }
+
+        // YAML：Content-Type为yaml或body包含YAML特征时
+        $isYaml = false;
+        if (strpos($ct, 'yaml') !== false || strpos($ct, 'yml') !== false) {
+            $isYaml = true;
+        }
+        if (strpos($body, '---') === 0 || strpos($body, '!!php/object') !== false || strpos($body, '!!python/object') !== false) {
+            $isYaml = true;
+        }
+        if (preg_match('/^\w+:\s/m', $body) && strpos($body, "\n") !== false) {
+            $isYaml = true;
+        }
+        if ($isYaml) {
+            $route['yaml'] = !empty($body) ? $body : $decodedText;
+        } else {
+            $route['yaml'] = $decodedText;
+        }
+
+        // ReDoS：当参数值看起来像正则表达式时（含regex/pattern等参数名，或值里有特殊正则字符密集出现）
+        $isRegex = false;
+        foreach ($params as $k => $v) {
+            $keyLower = strtolower((string)$k);
+            if (strpos($keyLower, 'regex') !== false || strpos($keyLower, 'pattern') !== false || strpos($keyLower, 'filter') !== false) {
+                $val = (string)$v;
+                if (strlen($val) > 5 && preg_match('/[.*+?{}[\]()^$|]/', $val)) {
+                    $isRegex = true;
+                    break;
+                }
+            }
+        }
+        if ($isRegex) {
+            $route['redos'] = $uriParamsText;
+        } else {
+            $route['redos'] = $decodedText;
+        }
 
         return $route;
     }

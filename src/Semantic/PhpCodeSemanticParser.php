@@ -93,6 +93,28 @@ class PhpCodeSemanticParser {
     }
 
     /**
+     * 危险接收点（sink）函数列表 - Level 6
+     */
+    private static $sink_functions = [
+        'eval', 'assert', 'system', 'exec', 'shell_exec', 'passthru',
+        'pcntl_exec', 'popen', 'proc_open', 'create_function',
+        'call_user_func', 'call_user_func_array', 'array_map', 'array_walk',
+        'file_get_contents', 'file_put_contents', 'fopen', 'include',
+        'include_once', 'require', 'require_once', 'preg_replace',
+        'mysql_query', 'mysqli_query', 'pg_query', 'sqlite_query',
+    ];
+
+    /**
+     * 污点净化函数（会降低污点级别）
+     */
+    private static $sanitize_functions = [
+        'htmlspecialchars', 'htmlentities', 'strip_tags', 'addslashes',
+        'mysql_real_escape_string', 'mysqli_real_escape_string',
+        'intval', 'floatval', 'strval', 'trim', 'preg_quote',
+        'escapeshellarg', 'escapeshellcmd', 'base64_encode',
+    ];
+
+    /**
      * 初始化结果数组
      */
     private static function initResult(): array {
@@ -119,6 +141,24 @@ class PhpCodeSemanticParser {
             'webshell_patterns' => [],
             'multi_hop_chains' => [],
             'taint_score' => 0,
+            'taint_analysis' => [
+                'has_tainted_sink' => false,
+                'taint_paths' => [],
+                'sources' => [],
+                'sinks' => [],
+                'taint_depth' => 0,
+            ],
+            'control_flow' => [
+                'has_conditional' => false,
+                'has_loop' => false,
+                'function_count' => 0,
+                'max_nesting_depth' => 0,
+            ],
+            'variable_tracking' => [
+                'assigned_vars' => [],
+                'tainted_vars' => [],
+                'var_types' => [],
+            ],
         ];
     }
 
@@ -459,6 +499,25 @@ class PhpCodeSemanticParser {
         if (!empty($multiHopChains)) {
             $result['indicators'][] = 'multi_hop_taint';
         }
+
+        $varTracking = self::analyzeVariableTracking($tokens, $assignments);
+        $result['variable_tracking'] = $varTracking;
+
+        $controlFlow = self::analyzeControlFlow($tokens);
+        $result['control_flow'] = $controlFlow;
+
+        $advancedTaint = self::advancedTaintAnalysis($tokens, $assignments, $varTracking);
+        $result['taint_analysis'] = $advancedTaint;
+
+        if ($advancedTaint['has_tainted_sink']) {
+            $result['indicators'][] = 'advanced_taint_sink';
+        }
+        if ($controlFlow['has_conditional']) {
+            $result['indicators'][] = 'has_conditional';
+        }
+        if ($controlFlow['has_loop']) {
+            $result['indicators'][] = 'has_loop';
+        }
     }
 
     /**
@@ -615,6 +674,50 @@ class PhpCodeSemanticParser {
         if ($result['has_command_exec']) $result['indicators'][] = 'has_command_exec';
         if ($result['has_file_operation']) $result['indicators'][] = 'has_file_operation';
         if ($result['has_superglobal_in_danger']) $result['indicators'][] = 'superglobal_in_danger';
+
+        $hasConditional = (bool)preg_match('/\b(if|else|elseif|switch)\s*\(/i', $code);
+        $hasLoop = (bool)preg_match('/\b(while|for|foreach)\s*\(/i', $code);
+        $result['control_flow'] = [
+            'has_conditional' => $hasConditional,
+            'has_loop' => $hasLoop,
+            'function_count' => $funcDefCount,
+            'max_nesting_depth' => $maxNest,
+        ];
+
+        $superglobalPattern = '\$_?(GET|POST|REQUEST|COOKIE|SERVER|FILES|ENV|SESSION)';
+        $hasSuperglobal = (bool)preg_match('/' . $superglobalPattern . '/i', $code);
+        $assignedVars = [];
+        if (preg_match_all('/\$([a-zA-Z_]\w*)\s*=/', $code, $varMatches)) {
+            $assignedVars = array_values(array_unique($varMatches[1]));
+        }
+        $result['variable_tracking'] = [
+            'assigned_vars' => $assignedVars,
+            'tainted_vars' => $hasSuperglobal ? ['superglobal'] : [],
+            'var_types' => [],
+        ];
+
+        $taintedSink = false;
+        $taintPaths = [];
+        $sinks = [];
+        $sources = [];
+        if ($hasSuperglobal) {
+            $sources[] = 'superglobal';
+            foreach (self::$sink_functions as $sinkFunc) {
+                $pattern = '/' . preg_quote($sinkFunc, '/') . '\s*\([^)]*' . $superglobalPattern . '/i';
+                if (preg_match($pattern, $code)) {
+                    $taintedSink = true;
+                    $sinks[] = $sinkFunc;
+                    $taintPaths[] = 'superglobal_direct_' . $sinkFunc;
+                }
+            }
+        }
+        $result['taint_analysis'] = [
+            'has_tainted_sink' => $taintedSink,
+            'taint_paths' => $taintPaths,
+            'sources' => array_values(array_unique($sources)),
+            'sinks' => array_values(array_unique($sinks)),
+            'taint_depth' => $taintedSink ? 1 : 0,
+        ];
     }
 
     /**
@@ -979,6 +1082,61 @@ class PhpCodeSemanticParser {
                 $score += (int)($maxDanger * 0.4);
                 $attackVectors++;
             }
+        }
+
+        $taintAnalysis = $result['taint_analysis'] ?? [];
+        if (!empty($taintAnalysis['has_tainted_sink'])) {
+            $advancedTaintScore = 0;
+            $sinkCount = count($taintAnalysis['sinks'] ?? []);
+            $taintDepth = $taintAnalysis['taint_depth'] ?? 0;
+            $pathCount = count($taintAnalysis['taint_paths'] ?? []);
+
+            $advancedTaintScore += 25;
+            $attackVectors++;
+
+            if ($taintDepth >= 3) {
+                $advancedTaintScore += 15;
+            } elseif ($taintDepth >= 2) {
+                $advancedTaintScore += 8;
+            }
+
+            if ($sinkCount >= 3) {
+                $advancedTaintScore += 15;
+            } elseif ($sinkCount >= 2) {
+                $advancedTaintScore += 8;
+            }
+
+            if ($pathCount >= 3) {
+                $advancedTaintScore += 10;
+            }
+
+            $highSinks = ['eval', 'assert', 'system', 'exec', 'shell_exec', 'passthru'];
+            foreach ($taintAnalysis['sinks'] ?? [] as $sink) {
+                if (in_array(strtolower($sink), $highSinks, true)) {
+                    $advancedTaintScore += 10;
+                    break;
+                }
+            }
+
+            $score += $advancedTaintScore;
+        }
+
+        $controlFlow = $result['control_flow'] ?? [];
+        if (!empty($controlFlow['has_conditional']) && !empty($controlFlow['has_loop'])) {
+            if ($result['has_superglobal_in_danger'] || !empty($taintAnalysis['has_tainted_sink'])) {
+                $score += 5;
+            }
+        }
+        if (!empty($controlFlow['max_nesting_depth']) && $controlFlow['max_nesting_depth'] >= 4) {
+            if ($result['obfuscation_level'] > 40) {
+                $score += 5;
+            }
+        }
+
+        $varTracking = $result['variable_tracking'] ?? [];
+        $taintedVarCount = count($varTracking['tainted_vars'] ?? []);
+        if ($taintedVarCount >= 5 && !empty($taintAnalysis['has_tainted_sink'])) {
+            $score += 5;
         }
 
         $result['score'] = max(0, min(100, (int)$score));
@@ -1479,5 +1637,598 @@ class PhpCodeSemanticParser {
         }
         $bonus = min(20, ($cc - 1) * 5);
         return (int)min(100, $max + $bonus);
+    }
+
+    /**
+     * Level 5: 变量跟踪分析（赋值跟踪 + 类型推断 + 污点标记）
+     * @param array $tokens
+     * @param array $assignments
+     * @return array
+     */
+    private static function analyzeVariableTracking(array $tokens, array $assignments): array {
+        $assignedVars = [];
+        $taintedVars = [];
+        $varTypes = [];
+        $tc = count($tokens);
+
+        foreach ($assignments as $varKey => $info) {
+            $varName = $varKey;
+            $assignedVars[] = $varName;
+
+            if (isset($info['source']) && ($info['source'] === 'user' || $info['source'] === 'tainted')) {
+                $taintedVars[] = $varName;
+            }
+
+            $varType = self::inferVarType($tokens, $assignments, $varKey);
+            if ($varType !== null) {
+                $varTypes[$varName] = $varType;
+            }
+        }
+
+        for ($i = 0; $i < $tc; $i++) {
+            $token = $tokens[$i];
+            $tType = is_array($token) ? $token[0] : null;
+            $tVal = is_array($token) ? $token[1] : $token;
+            if ($tType === T_VARIABLE && self::isSuperglobal($tVal)) {
+                if (!in_array($tVal, $taintedVars, true)) {
+                    $taintedVars[] = $tVal;
+                }
+                if (!isset($varTypes[$tVal])) {
+                    $varTypes[$tVal] = 'array';
+                }
+            }
+        }
+
+        return [
+            'assigned_vars' => array_values(array_unique($assignedVars)),
+            'tainted_vars' => array_values(array_unique($taintedVars)),
+            'var_types' => $varTypes,
+        ];
+    }
+
+    /**
+     * Level 5: 推断变量类型
+     * @param array $tokens
+     * @param array $assignments
+     * @param string $varKey
+     * @return string|null
+     */
+    private static function inferVarType(array $tokens, array $assignments, string $varKey): ?string {
+        if (!isset($assignments[$varKey])) {
+            return null;
+        }
+
+        $info = $assignments[$varKey];
+        $line = $info['line'] ?? 0;
+        $tc = count($tokens);
+        $startIdx = -1;
+
+        for ($i = 0; $i < $tc; $i++) {
+            $token = $tokens[$i];
+            $tType = is_array($token) ? $token[0] : null;
+            $tVal = is_array($token) ? $token[1] : $token;
+            $tLine = is_array($token) ? ($token[2] ?? 0) : 0;
+            if ($tType === T_VARIABLE && $tVal === $varKey && $tLine === $line) {
+                $startIdx = $i;
+                break;
+            }
+        }
+
+        if ($startIdx === -1) {
+            return null;
+        }
+
+        $eqIdx = self::findNextNonEmptyTokenIndex($tokens, $startIdx + 1);
+        if ($eqIdx === null) return null;
+        $eqVal = is_array($tokens[$eqIdx]) ? $tokens[$eqIdx][1] : $tokens[$eqIdx];
+        if ($eqVal !== '=') return null;
+
+        $valIdx = self::findNextNonEmptyTokenIndex($tokens, $eqIdx + 1);
+        if ($valIdx === null) return null;
+        $valToken = $tokens[$valIdx];
+        $valType = is_array($valToken) ? $valToken[0] : null;
+        $valVal = is_array($valToken) ? $valToken[1] : $valToken;
+
+        if ($valType === T_CONSTANT_ENCAPSED_STRING) {
+            return 'string';
+        }
+        if ($valType === T_LNUMBER || $valType === T_DNUMBER) {
+            return 'number';
+        }
+        if ($valVal === 'array' || $valVal === '[') {
+            return 'array';
+        }
+        if ($valType === T_STRING && strtolower($valVal) === 'true' || strtolower($valVal) === 'false') {
+            return 'bool';
+        }
+        if ($valType === T_STRING && strtolower($valVal) === 'null') {
+            return 'null';
+        }
+        if ($valType === T_NEW) {
+            return 'object';
+        }
+        if ($valType === T_VARIABLE) {
+            $sourceVar = $valVal;
+            if (isset($assignments[$sourceVar])) {
+                return self::inferVarType($tokens, $assignments, $sourceVar);
+            }
+            if (self::isSuperglobal($sourceVar)) {
+                return 'array';
+            }
+        }
+
+        $funcName = null;
+        if ($valType === T_STRING) {
+            $parenIdx = self::findNextNonEmptyTokenIndex($tokens, $valIdx + 1);
+            if ($parenIdx !== null) {
+                $parenVal = is_array($tokens[$parenIdx]) ? $tokens[$parenIdx][1] : $tokens[$parenIdx];
+                if ($parenVal === '(') {
+                    $funcName = strtolower($valVal);
+                }
+            }
+        }
+
+        if ($funcName !== null) {
+            if (in_array($funcName, ['explode', 'str_split', 'preg_split', 'array', 'range', 'file'], true)) {
+                return 'array';
+            }
+            if (in_array($funcName, ['substr', 'str_replace', 'preg_replace', 'trim', 'strtolower', 'strtoupper', 'htmlspecialchars', 'base64_decode', 'base64_encode'], true)) {
+                return 'string';
+            }
+            if (in_array($funcName, ['intval', 'floatval', 'count', 'strlen', 'rand'], true)) {
+                return 'number';
+            }
+            if (in_array($funcName, ['json_decode', 'unserialize'], true)) {
+                return 'mixed';
+            }
+        }
+
+        return 'mixed';
+    }
+
+    /**
+     * Level 6: 控制流分析
+     * @param array $tokens
+     * @return array
+     */
+    private static function analyzeControlFlow(array $tokens): array {
+        $hasConditional = false;
+        $hasLoop = false;
+        $functionCount = 0;
+        $maxNestingDepth = 0;
+        $currentNesting = 0;
+        $tc = count($tokens);
+
+        for ($i = 0; $i < $tc; $i++) {
+            $token = $tokens[$i];
+            $tType = is_array($token) ? $token[0] : null;
+            $tVal = is_array($token) ? $token[1] : $token;
+
+            if ($tType === T_IF || $tType === T_ELSEIF || $tType === T_ELSE || $tType === T_SWITCH || $tType === T_CASE) {
+                $hasConditional = true;
+            }
+
+            if ($tType === T_WHILE || $tType === T_FOR || $tType === T_FOREACH || $tType === T_DO) {
+                $hasLoop = true;
+            }
+
+            if ($tType === T_FUNCTION) {
+                $functionCount++;
+            }
+
+            if ($tType === T_CURLY_OPEN || $tVal === '{') {
+                $currentNesting++;
+                if ($currentNesting > $maxNestingDepth) {
+                    $maxNestingDepth = $currentNesting;
+                }
+            }
+            if ($tVal === '}') {
+                if ($currentNesting > 0) {
+                    $currentNesting--;
+                }
+            }
+        }
+
+        return [
+            'has_conditional' => $hasConditional,
+            'has_loop' => $hasLoop,
+            'function_count' => $functionCount,
+            'max_nesting_depth' => $maxNestingDepth,
+        ];
+    }
+
+    /**
+     * Level 6: 高级污点传播分析
+     * @param array $tokens
+     * @param array $assignments
+     * @param array $varTracking
+     * @return array
+     */
+    private static function advancedTaintAnalysis(array $tokens, array $assignments, array $varTracking): array {
+        $result = [
+            'has_tainted_sink' => false,
+            'taint_paths' => [],
+            'sources' => [],
+            'sinks' => [],
+            'taint_depth' => 0,
+        ];
+
+        $taintedVarMap = [];
+        $tc = count($tokens);
+
+        for ($i = 0; $i < $tc; $i++) {
+            $token = $tokens[$i];
+            $tType = is_array($token) ? $token[0] : null;
+            $tVal = is_array($token) ? $token[1] : $token;
+            if ($tType === T_VARIABLE && self::isSuperglobal($tVal)) {
+                if (!isset($taintedVarMap[$tVal])) {
+                    $taintedVarMap[$tVal] = [
+                        'source' => 'superglobal',
+                        'depth' => 0,
+                        'path' => [$tVal],
+                        'sources' => [$tVal],
+                    ];
+                    $result['sources'][] = $tVal;
+                }
+            }
+        }
+
+        $maxIterations = 20;
+        for ($iter = 0; $iter < $maxIterations; $iter++) {
+            $newTainted = [];
+            foreach ($assignments as $varKey => $info) {
+                if (isset($taintedVarMap[$varKey])) continue;
+                $pathInfo = self::buildTaintPathForVar($tokens, $assignments, $varKey, $taintedVarMap);
+                if ($pathInfo !== null) {
+                    $newTainted[$varKey] = $pathInfo;
+                }
+            }
+            if (empty($newTainted)) break;
+            foreach ($newTainted as $var => $info) {
+                $taintedVarMap[$var] = $info;
+                $result['taint_depth'] = max($result['taint_depth'], $info['depth']);
+                foreach ($info['sources'] as $src) {
+                    if (!in_array($src, $result['sources'], true)) {
+                        $result['sources'][] = $src;
+                    }
+                }
+            }
+        }
+
+        for ($i = 0; $i < $tc; $i++) {
+            $token = $tokens[$i];
+            $tType = is_array($token) ? $token[0] : null;
+            $tVal = is_array($token) ? $token[1] : $token;
+            $tLine = is_array($token) ? ($token[2] ?? 0) : 0;
+
+            $sinkName = null;
+            $parenStart = null;
+
+            if ($tType === T_EVAL) {
+                $sinkName = 'eval';
+                $ni = self::findNextNonEmptyTokenIndex($tokens, $i + 1);
+                if ($ni !== null) {
+                    $nv = is_array($tokens[$ni]) ? $tokens[$ni][1] : $tokens[$ni];
+                    if ($nv === '(') $parenStart = $ni + 1;
+                }
+            } elseif ($tType === T_INCLUDE || $tType === T_INCLUDE_ONCE || $tType === T_REQUIRE || $tType === T_REQUIRE_ONCE) {
+                $includeMap = [
+                    T_INCLUDE => 'include',
+                    T_INCLUDE_ONCE => 'include_once',
+                    T_REQUIRE => 'require',
+                    T_REQUIRE_ONCE => 'require_once',
+                ];
+                $sinkName = $includeMap[$tType];
+                $ni = self::findNextNonEmptyTokenIndex($tokens, $i + 1);
+                if ($ni !== null) {
+                    $nv = is_array($tokens[$ni]) ? $tokens[$ni][1] : $tokens[$ni];
+                    if ($nv === '(') {
+                        $parenStart = $ni + 1;
+                    } else {
+                        $parenStart = $ni;
+                    }
+                }
+            } elseif ($tType === T_STRING) {
+                $funcName = strtolower($tVal);
+                if (self::isSinkFunction($funcName)) {
+                    $ni = self::findNextNonEmptyTokenIndex($tokens, $i + 1);
+                    if ($ni !== null) {
+                        $nv = is_array($tokens[$ni]) ? $tokens[$ni][1] : $tokens[$ni];
+                        if ($nv === '(') {
+                            $sinkName = $funcName;
+                            $parenStart = $ni + 1;
+                        }
+                    }
+                }
+            } elseif ($tType === T_VARIABLE) {
+                $ni = self::findNextNonEmptyTokenIndex($tokens, $i + 1);
+                if ($ni !== null) {
+                    $nv = is_array($tokens[$ni]) ? $tokens[$ni][1] : $tokens[$ni];
+                    if ($nv === '(') {
+                        $sinkName = $tVal . '()';
+                        $parenStart = $ni + 1;
+                    }
+                }
+            }
+
+            if ($sinkName !== null && $parenStart !== null) {
+                $sinkTaintInfo = self::checkSinkParamsTaint($tokens, $parenStart, $taintedVarMap, $assignments);
+                if ($sinkTaintInfo['is_tainted']) {
+                    $result['has_tainted_sink'] = true;
+                    $result['sinks'][] = $sinkName;
+                    foreach ($sinkTaintInfo['paths'] as $path) {
+                        $result['taint_paths'][] = [
+                            'sink' => $sinkName,
+                            'sink_line' => $tLine,
+                            'source_vars' => $path['sources'],
+                            'path' => $path['chain'],
+                            'depth' => $path['depth'],
+                        ];
+                    }
+                    foreach ($sinkTaintInfo['sources'] as $src) {
+                        if (!in_array($src, $result['sources'], true)) {
+                            $result['sources'][] = $src;
+                        }
+                    }
+                    $result['taint_depth'] = max($result['taint_depth'], $sinkTaintInfo['max_depth']);
+                }
+            }
+        }
+
+        $result['sources'] = array_values(array_unique($result['sources']));
+        $result['sinks'] = array_values(array_unique($result['sinks']));
+        if (!$result['has_tainted_sink']) {
+            $result['taint_depth'] = 0;
+        }
+        return $result;
+    }
+
+    /**
+     * Level 6: 为变量构建污点传播路径
+     * @param array $tokens
+     * @param array $assignments
+     * @param string $varKey
+     * @param array $taintedVarMap
+     * @return array|null
+     */
+    private static function buildTaintPathForVar(array $tokens, array $assignments, string $varKey, array $taintedVarMap): ?array {
+        if (!isset($assignments[$varKey])) return null;
+
+        $tc = count($tokens);
+        $foundStart = -1;
+        $bracketDepth = 0;
+
+        for ($i = 0; $i < $tc; $i++) {
+            $token = $tokens[$i];
+            $tType = is_array($token) ? $token[0] : null;
+            $tVal = is_array($token) ? $token[1] : $token;
+
+            if ($tType === T_VARIABLE && $tVal === $varKey) {
+                $eqIdx = self::findNextNonEmptyTokenIndex($tokens, $i + 1);
+                if ($eqIdx !== null) {
+                    $eqVal = is_array($tokens[$eqIdx]) ? $tokens[$eqIdx][1] : $tokens[$eqIdx];
+                    if ($eqVal === '=' || $eqVal === '.=' || $eqVal === '+=' || $eqVal === '-=') {
+                        $foundStart = $i;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if ($foundStart === -1) return null;
+
+        $eqIdx = self::findNextNonEmptyTokenIndex($tokens, $foundStart + 1);
+        if ($eqIdx === null) return null;
+
+        $semicolonIdx = null;
+        $depth = 0;
+        for ($i = $eqIdx + 1; $i < $tc; $i++) {
+            $t = $tokens[$i];
+            $v = is_array($t) ? $t[1] : $t;
+            if ($v === '(') $depth++;
+            elseif ($v === ')') $depth--;
+            if ($v === ';' && $depth === 0) {
+                $semicolonIdx = $i;
+                break;
+            }
+        }
+        if ($semicolonIdx === null) return null;
+
+        $maxDepth = 0;
+        $pathSources = [];
+        $pathChain = [$varKey];
+        $hasSanitize = false;
+
+        for ($i = $eqIdx + 1; $i < $semicolonIdx; $i++) {
+            $t = $tokens[$i];
+            $tt = is_array($t) ? $t[0] : null;
+            $tv = is_array($t) ? $t[1] : $t;
+            if ($tt === T_VARIABLE) {
+                if (isset($taintedVarMap[$tv])) {
+                    $ti = $taintedVarMap[$tv];
+                    if ($ti['depth'] > $maxDepth) {
+                        $maxDepth = $ti['depth'];
+                    }
+                    $pathSources[] = $tv;
+                    foreach ($ti['path'] as $p) {
+                        if (!in_array($p, $pathChain, true)) {
+                            $pathChain[] = $p;
+                        }
+                    }
+                } elseif (self::isSuperglobal($tv)) {
+                    if (0 > $maxDepth) $maxDepth = 0;
+                    $pathSources[] = $tv;
+                    if (!in_array($tv, $pathChain, true)) {
+                        $pathChain[] = $tv;
+                    }
+                }
+            }
+            if ($tt === T_STRING && self::isSanitizeFunction(strtolower($tv))) {
+                $hasSanitize = true;
+            }
+        }
+
+        if (empty($pathSources)) return null;
+
+        $finalDepth = $maxDepth + 1;
+        if ($hasSanitize) {
+            $finalDepth = max(1, $finalDepth - 1);
+        }
+
+        return [
+            'source' => 'propagated',
+            'depth' => $finalDepth,
+            'path' => $pathChain,
+            'sources' => $pathSources,
+            'has_sanitize' => $hasSanitize,
+        ];
+    }
+
+    /**
+     * Level 6: 检查 sink 函数参数是否被污染
+     * @param array $tokens
+     * @param int $parenStart
+     * @param array $taintedVarMap
+     * @param array $assignments
+     * @return array
+     */
+    private static function checkSinkParamsTaint(array $tokens, int $parenStart, array $taintedVarMap, array $assignments): array {
+        $result = [
+            'is_tainted' => false,
+            'paths' => [],
+            'sources' => [],
+            'max_depth' => 0,
+        ];
+
+        $depth = 1;
+        $i = $parenStart;
+        $tc = count($tokens);
+        $paramDepth = 0;
+        $currentParamVars = [];
+        $currentParamHasTaint = false;
+        $currentParamMaxDepth = 0;
+        $currentParamSources = [];
+        $currentParamChain = [];
+
+        while ($i < $tc && $depth > 0) {
+            $t = $tokens[$i];
+            $v = is_array($t) ? $t[1] : $t;
+            $tt = is_array($t) ? $t[0] : null;
+
+            if ($v === '(') {
+                $depth++;
+            } elseif ($v === ')') {
+                $depth--;
+                if ($depth === 0) {
+                    if ($currentParamHasTaint) {
+                        $result['is_tainted'] = true;
+                        $result['paths'][] = [
+                            'chain' => $currentParamChain,
+                            'sources' => $currentParamSources,
+                            'depth' => $currentParamMaxDepth,
+                        ];
+                        $result['max_depth'] = max($result['max_depth'], $currentParamMaxDepth);
+                        foreach ($currentParamSources as $s) {
+                            if (!in_array($s, $result['sources'], true)) {
+                                $result['sources'][] = $s;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+
+            if ($depth === 1 && $v === ',') {
+                if ($currentParamHasTaint) {
+                    $result['is_tainted'] = true;
+                    $result['paths'][] = [
+                        'chain' => $currentParamChain,
+                        'sources' => $currentParamSources,
+                        'depth' => $currentParamMaxDepth,
+                    ];
+                    $result['max_depth'] = max($result['max_depth'], $currentParamMaxDepth);
+                    foreach ($currentParamSources as $s) {
+                        if (!in_array($s, $result['sources'], true)) {
+                            $result['sources'][] = $s;
+                        }
+                    }
+                }
+                $currentParamVars = [];
+                $currentParamHasTaint = false;
+                $currentParamMaxDepth = 0;
+                $currentParamSources = [];
+                $currentParamChain = [];
+                $i++;
+                continue;
+            }
+
+            if ($tt === T_VARIABLE) {
+                $varName = $v;
+                if (isset($taintedVarMap[$varName])) {
+                    $currentParamHasTaint = true;
+                    $ti = $taintedVarMap[$varName];
+                    $currentParamMaxDepth = max($currentParamMaxDepth, $ti['depth']);
+                    foreach ($ti['path'] as $p) {
+                        if (!in_array($p, $currentParamChain, true)) {
+                            $currentParamChain[] = $p;
+                        }
+                    }
+                    foreach ($ti['sources'] ?? [$varName] as $s) {
+                        if (!in_array($s, $currentParamSources, true)) {
+                            $currentParamSources[] = $s;
+                        }
+                    }
+                } elseif (self::isSuperglobal($varName)) {
+                    $currentParamHasTaint = true;
+                    $currentParamMaxDepth = max($currentParamMaxDepth, 1);
+                    if (!in_array($varName, $currentParamChain, true)) {
+                        $currentParamChain[] = $varName;
+                    }
+                    if (!in_array($varName, $currentParamSources, true)) {
+                        $currentParamSources[] = $varName;
+                    }
+                } elseif (isset($assignments[$varName]) && ($assignments[$varName]['source'] === 'user' || $assignments[$varName]['source'] === 'tainted')) {
+                    $currentParamHasTaint = true;
+                    $assignmentDepth = 2;
+                    $currentParamMaxDepth = max($currentParamMaxDepth, $assignmentDepth);
+                    if (!in_array($varName, $currentParamChain, true)) {
+                        $currentParamChain[] = $varName;
+                    }
+                    if (!in_array($varName, $currentParamSources, true)) {
+                        $currentParamSources[] = $varName;
+                    }
+                }
+            }
+
+            $i++;
+        }
+
+        return $result;
+    }
+
+    /**
+     * 判断是否为 sink 函数
+     * @param string $funcName
+     * @return bool
+     */
+    private static function isSinkFunction(string $funcName): bool {
+        static $sinkSet = null;
+        if ($sinkSet === null) {
+            $sinkSet = array_fill_keys(self::$sink_functions, true);
+        }
+        return isset($sinkSet[strtolower($funcName)]);
+    }
+
+    /**
+     * 判断是否为净化函数
+     * @param string $funcName
+     * @return bool
+     */
+    private static function isSanitizeFunction(string $funcName): bool {
+        static $sanitizeSet = null;
+        if ($sanitizeSet === null) {
+            $sanitizeSet = array_fill_keys(self::$sanitize_functions, true);
+        }
+        return isset($sanitizeSet[strtolower($funcName)]);
     }
 }

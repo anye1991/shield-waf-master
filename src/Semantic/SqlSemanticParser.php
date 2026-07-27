@@ -154,6 +154,26 @@ class SqlSemanticParser {
                 $result['indicators'][] = 'multiple_statements';
             }
 
+            $taintResult = self::analyzeTaintPropagation($ast, $isFragment);
+            $result['taint_analysis'] = $taintResult;
+            if ($taintResult['has_tainted_sink']) {
+                $result['indicators'][] = 'tainted_data_to_sink';
+            }
+
+            $equivResult = self::analyzeSemanticEquivalence($ast, $isFragment);
+            $result['semantic_equivalence'] = $equivResult;
+            if ($equivResult['has_semantic_tautology'] && !$result['has_tautology']) {
+                $result['has_tautology'] = true;
+                $result['tautology_type'] = implode(',', $equivResult['tautology_variants']);
+                $result['indicators'][] = 'semantic_tautology';
+            }
+
+            $intentResult = self::inferAttackIntent($ast, $isFragment);
+            $result['attack_intent'] = $intentResult;
+            if (!empty($intentResult['intents'])) {
+                $result['indicators'][] = 'intent:' . implode(',', $intentResult['intents']);
+            }
+
             $result['score'] = self::calculateScore($result);
             $result['detected'] = $result['score'] >= 30;
 
@@ -2253,6 +2273,406 @@ class SqlSemanticParser {
         }
     }
 
+    // ==================== Level 6: 污点传播分析 ====================
+
+    /**
+     * 污点传播分析：追踪用户可控数据如何流入危险操作
+     * 标记：user_input（用户输入）、tainted（被污染）、sink（危险接收点）
+     */
+    private static function analyzeTaintPropagation(array $ast, bool $isFragment): array {
+        $result = [
+            'has_tainted_sink' => false,
+            'taint_paths' => [],
+            'taint_depth' => 0,
+            'sinks' => [],
+            'sources' => [],
+        ];
+
+        if ($isFragment && isset($ast['expression'])) {
+            $exprResult = self::taintWalkExpression($ast['expression']);
+            $result['taint_depth'] = $exprResult['max_depth'] ?? 0;
+            $result['has_tainted_sink'] = !empty($exprResult['sinks']);
+            $result['sinks'] = $exprResult['sinks'] ?? [];
+            $result['sources'] = $exprResult['sources'] ?? [];
+            $result['taint_paths'] = $exprResult['paths'] ?? [];
+        }
+
+        if (isset($ast['where'])) {
+            $whereResult = self::taintWalkExpression($ast['where']);
+            $result['taint_depth'] = max($result['taint_depth'], $whereResult['max_depth'] ?? 0);
+            if (!empty($whereResult['sinks'])) {
+                $result['has_tainted_sink'] = true;
+                $result['sinks'] = array_merge($result['sinks'], $whereResult['sinks']);
+            }
+            $result['sources'] = array_merge($result['sources'], $whereResult['sources'] ?? []);
+            $result['taint_paths'] = array_merge($result['taint_paths'], $whereResult['paths'] ?? []);
+        }
+
+        if (!empty($ast['from'])) {
+            foreach ($ast['from'] as $table) {
+                if (isset($table['type']) && $table['type'] === 'subquery' && isset($table['query'])) {
+                    $subResult = self::analyzeTaintPropagation($table['query'], false);
+                    if ($subResult['has_tainted_sink']) {
+                        $result['has_tainted_sink'] = true;
+                        $result['taint_depth'] = max($result['taint_depth'], $subResult['taint_depth'] + 1);
+                    }
+                }
+            }
+        }
+
+        $result['sinks'] = array_values(array_unique($result['sinks']));
+        $result['sources'] = array_values(array_unique($result['sources']));
+        return $result;
+    }
+
+    private static function taintWalkExpression(?array $expr, int $depth = 0): array {
+        $result = [
+            'is_tainted' => false,
+            'max_depth' => $depth,
+            'sinks' => [],
+            'sources' => [],
+            'paths' => [],
+        ];
+
+        if ($expr === null) return $result;
+
+        $type = $expr['type'] ?? '';
+        $subtype = $expr['subtype'] ?? '';
+
+        if ($type === 'literal') {
+            if ($subtype === 'string') {
+                $val = $expr['value'] ?? '';
+                if (self::looksLikeUserInput($val)) {
+                    $result['is_tainted'] = true;
+                    $result['sources'][] = 'literal_user_input';
+                }
+            }
+            return $result;
+        }
+
+        if ($type === 'identifier') {
+            $result['is_tainted'] = true;
+            $result['sources'][] = 'column_ref';
+            return $result;
+        }
+
+        if ($type === 'function_call') {
+            $funcName = strtoupper($expr['name'] ?? '');
+            $isSink = self::isDangerousFunctionSink($funcName);
+            if ($isSink) {
+                $result['sinks'][] = $funcName;
+            }
+            $maxInnerDepth = $depth;
+            foreach ($expr['args'] ?? [] as $arg) {
+                $argResult = self::taintWalkExpression($arg, $depth + 1);
+                if ($argResult['is_tainted']) {
+                    $result['is_tainted'] = true;
+                    if ($isSink) {
+                        $result['paths'][] = 'tainted_to_' . $funcName;
+                    }
+                }
+                $maxInnerDepth = max($maxInnerDepth, $argResult['max_depth']);
+                $result['sinks'] = array_merge($result['sinks'], $argResult['sinks']);
+                $result['sources'] = array_merge($result['sources'], $argResult['sources']);
+            }
+            $result['max_depth'] = $maxInnerDepth;
+            return $result;
+        }
+
+        if ($type === 'binary_op' || $type === 'unary_op') {
+            $maxInnerDepth = $depth;
+            if (isset($expr['left'])) {
+                $leftResult = self::taintWalkExpression($expr['left'], $depth + 1);
+                if ($leftResult['is_tainted']) $result['is_tainted'] = true;
+                $maxInnerDepth = max($maxInnerDepth, $leftResult['max_depth']);
+                $result['sinks'] = array_merge($result['sinks'], $leftResult['sinks']);
+                $result['sources'] = array_merge($result['sources'], $leftResult['sources']);
+            }
+            if (isset($expr['right'])) {
+                $rightResult = self::taintWalkExpression($expr['right'], $depth + 1);
+                if ($rightResult['is_tainted']) $result['is_tainted'] = true;
+                $maxInnerDepth = max($maxInnerDepth, $rightResult['max_depth']);
+                $result['sinks'] = array_merge($result['sinks'], $rightResult['sinks']);
+                $result['sources'] = array_merge($result['sources'], $rightResult['sources']);
+            }
+            if (isset($expr['expr'])) {
+                $innerResult = self::taintWalkExpression($expr['expr'], $depth + 1);
+                if ($innerResult['is_tainted']) $result['is_tainted'] = true;
+                $maxInnerDepth = max($maxInnerDepth, $innerResult['max_depth']);
+                $result['sinks'] = array_merge($result['sinks'], $innerResult['sinks']);
+                $result['sources'] = array_merge($result['sources'], $innerResult['sources']);
+            }
+            $result['max_depth'] = $maxInnerDepth;
+            return $result;
+        }
+
+        if ($type === 'case_expr') {
+            $maxInnerDepth = $depth;
+            foreach ($expr['when_then_pairs'] ?? [] as $pair) {
+                $whenResult = self::taintWalkExpression($pair['when'] ?? null, $depth + 1);
+                $thenResult = self::taintWalkExpression($pair['then'] ?? null, $depth + 1);
+                if ($whenResult['is_tainted'] || $thenResult['is_tainted']) $result['is_tainted'] = true;
+                $maxInnerDepth = max($maxInnerDepth, $whenResult['max_depth'], $thenResult['max_depth']);
+            }
+            $result['max_depth'] = $maxInnerDepth;
+            return $result;
+        }
+
+        if ($type === 'subquery_expr') {
+            $subResult = self::analyzeTaintPropagation($expr['query'] ?? [], false);
+            $result['is_tainted'] = $subResult['has_tainted_sink'];
+            $result['max_depth'] = $subResult['taint_depth'] + 1;
+            $result['sinks'] = $subResult['sinks'];
+            $result['sources'] = $subResult['sources'];
+            return $result;
+        }
+
+        return $result;
+    }
+
+    private static function looksLikeUserInput(string $val): bool {
+        if (preg_match('/^\d+$/', $val) && strlen($val) > 0) return false;
+        if (strlen($val) <= 1) return false;
+        if (preg_match('/[\'"]\s*(OR|AND)\s*[\'"]?\d+/i', $val)) return true;
+        if (preg_match('/(UNION\s+SELECT|SLEEP\(|BENCHMARK\(|LOAD_FILE\()/i', $val)) return true;
+        return false;
+    }
+
+    private static function isDangerousFunctionSink(string $funcName): bool {
+        $sinks = ['SLEEP', 'BENCHMARK', 'LOAD_FILE', 'INTO_OUTFILE', 'INTO_DUMPFILE',
+                   'XP_CMDSHELL', 'EXEC', 'EXECUTE', 'SYSTEM', 'EVAL', 'GROUP_CONCAT',
+                   'CONVERT', 'CAST', 'EXTRACTVALUE', 'UPDATEXML'];
+        return in_array($funcName, $sinks);
+    }
+
+    // ==================== Level 7: 语义等价分析 & 攻击意图推理 ====================
+
+    /**
+     * 语义等价分析：检测不同写法但语义相同的攻击变异
+     * 比如：1=1 / 2=2 / 'a'='a' / 1+1=2 /  都是永真
+     *       UNION SELECT / UNION ALL SELECT / UNION DISTINCT SELECT 都是联合查询
+     */
+    private static function analyzeSemanticEquivalence(array $ast, bool $isFragment): array {
+        $result = [
+            'has_semantic_tautology' => false,
+            'tautology_variants' => [],
+            'union_variants' => [],
+            'equiv_score' => 0,
+        ];
+
+        if ($isFragment && isset($ast['expression'])) {
+            $eq = self::checkSemanticTautology($ast['expression']);
+            if ($eq['is_tautology']) {
+                $result['has_semantic_tautology'] = true;
+                $result['tautology_variants'][] = $eq['variant'];
+                $result['equiv_score'] += 25;
+            }
+        }
+
+        if (isset($ast['where'])) {
+            $eq = self::checkSemanticTautology($ast['where']);
+            if ($eq['is_tautology']) {
+                $result['has_semantic_tautology'] = true;
+                $result['tautology_variants'][] = $eq['variant'];
+                $result['equiv_score'] += 35;
+            }
+        }
+
+        if (!empty($ast['has_union'])) {
+            $result['union_variants'][] = 'union_basic';
+            if (!empty($ast['union_all'])) {
+                $result['union_variants'][] = 'union_all';
+            }
+            $result['equiv_score'] += 20;
+        }
+
+        $result['tautology_variants'] = array_values(array_unique($result['tautology_variants']));
+        return $result;
+    }
+
+    private static function checkSemanticTautology(?array $expr): array {
+        if ($expr === null) return ['is_tautology' => false, 'variant' => ''];
+
+        $type = $expr['type'] ?? '';
+        $op = $expr['op'] ?? '';
+
+        if ($type === 'binary_op' && $op === 'OR') {
+            $leftEq = self::checkSemanticTautology($expr['left'] ?? null);
+            $rightEq = self::checkSemanticTautology($expr['right'] ?? null);
+            if ($leftEq['is_tautology'] || $rightEq['is_tautology']) {
+                return ['is_tautology' => true, 'variant' => 'or_tautology'];
+            }
+            if (self::isAlwaysTrueLiteral($expr['right'] ?? null)) {
+                return ['is_tautology' => true, 'variant' => 'or_true_literal'];
+            }
+            if (self::isAlwaysTrueLiteral($expr['left'] ?? null)) {
+                return ['is_tautology' => true, 'variant' => 'or_true_literal'];
+            }
+        }
+
+        if ($type === 'binary_op' && in_array($op, ['=', '=='])) {
+            $left = $expr['left'] ?? null;
+            $right = $expr['right'] ?? null;
+
+            $leftVal = self::evalExpression($left);
+            $rightVal = self::evalExpression($right);
+
+            if ($leftVal !== null && $rightVal !== null) {
+                if ($leftVal == $rightVal) {
+                    return ['is_tautology' => true, 'variant' => 'constant_eq'];
+                }
+            }
+
+            $leftId = self::extractIdentifier($left);
+            $rightId = self::extractIdentifier($right);
+            if ($leftId !== null && $rightId !== null && strtolower($leftId) === strtolower($rightId)) {
+                return ['is_tautology' => true, 'variant' => 'column_self_eq'];
+            }
+
+            if (self::isArithmeticIdentity($left, $right)) {
+                return ['is_tautology' => true, 'variant' => 'arithmetic_identity'];
+            }
+        }
+
+        if ($type === 'binary_op' && in_array($op, ['!=', '<>'])) {
+            $leftVal = self::evalExpression($expr['left'] ?? null);
+            $rightVal = self::evalExpression($expr['right'] ?? null);
+            if ($leftVal !== null && $rightVal !== null && $leftVal != $rightVal) {
+                return ['is_tautology' => true, 'variant' => 'constant_neq'];
+            }
+        }
+
+        if ($type === 'unary_op' && $op === '!') {
+            $inner = $expr['expr'] ?? null;
+            $innerVal = self::evalExpression($inner);
+            if ($innerVal !== null && !$innerVal) {
+                return ['is_tautology' => true, 'variant' => 'not_false'];
+            }
+        }
+
+        return ['is_tautology' => false, 'variant' => ''];
+    }
+
+    private static function isAlwaysTrueLiteral(?array $expr): bool {
+        if ($expr === null) return false;
+        $type = $expr['type'] ?? '';
+        $subtype = $expr['subtype'] ?? '';
+        if ($type === 'literal' && $subtype === 'bool') {
+            return $expr['value'] === true;
+        }
+        if ($type === 'literal' && $subtype === 'number') {
+            return $expr['value'] != 0;
+        }
+        return false;
+    }
+
+    private static function isArithmeticIdentity(?array $left, ?array $right): bool {
+        if ($left === null || $right === null) return false;
+        $lVal = self::evalArithmetic($left);
+        $rVal = self::evalArithmetic($right);
+        if ($lVal !== null && $rVal !== null && $lVal == $rVal) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 攻击意图推理：从AST结构推断攻击目的
+     */
+    private static function inferAttackIntent(array $ast, bool $isFragment): array {
+        $intents = [];
+        $confidence = 0;
+
+        $isSelect = ($ast['type'] ?? '') === 'select';
+        $isDelete = ($ast['type'] ?? '') === 'delete';
+        $isDrop = ($ast['type'] ?? '') === 'drop';
+        $isUpdate = ($ast['type'] ?? '') === 'update';
+        $isInsert = ($ast['type'] ?? '') === 'insert';
+        $hasUnion = !empty($ast['has_union']) || ($ast['union_count'] ?? 0) > 0;
+        $hasTautology = false;
+
+        if (isset($ast['where'])) {
+            $taut = self::checkSemanticTautology($ast['where']);
+            $hasTautology = $taut['is_tautology'];
+        }
+        if ($isFragment && isset($ast['expression'])) {
+            $taut = self::checkSemanticTautology($ast['expression']);
+            $hasTautology = $taut['is_tautology'];
+        }
+
+        $dangerousFuncs = $ast['dangerous_functions'] ?? [];
+        $sensitiveTables = $ast['sensitive_tables'] ?? [];
+        $hasInfoSchema = false;
+        foreach ($sensitiveTables as $t) {
+            if (stripos($t, 'INFORMATION_SCHEMA') !== false) {
+                $hasInfoSchema = true;
+                break;
+            }
+        }
+
+        if ($hasUnion && $hasInfoSchema) {
+            $intents[] = 'schema_sniffing';
+            $confidence += 30;
+        } elseif ($hasUnion) {
+            $intents[] = 'data_exfiltration';
+            $confidence += 25;
+        }
+
+        if ($hasTautology && ($isSelect || $isFragment)) {
+            $intents[] = 'auth_bypass';
+            $confidence += 20;
+        }
+
+        if (in_array('SLEEP', $dangerousFuncs) || in_array('BENCHMARK', $dangerousFuncs)) {
+            $intents[] = 'time_based_blind';
+            $confidence += 30;
+        }
+
+        if (in_array('LOAD_FILE', $dangerousFuncs)) {
+            $intents[] = 'file_read';
+            $confidence += 35;
+        }
+
+        if (in_array('XP_CMDSHELL', $dangerousFuncs) || in_array('EXEC', $dangerousFuncs)) {
+            $intents[] = 'command_execution';
+            $confidence += 45;
+        }
+
+        if ($isDrop) {
+            $intents[] = 'data_destruction';
+            $confidence += 40;
+        }
+
+        if ($isDelete && $hasTautology) {
+            $intents[] = 'mass_delete';
+            $confidence += 35;
+        }
+
+        if ($isUpdate && $hasTautology) {
+            $intents[] = 'mass_update';
+            $confidence += 30;
+        }
+
+        if ($hasTautology && !$hasUnion && !$isDelete && !$isDrop && !$isUpdate) {
+            if (empty($intents)) {
+                $intents[] = 'boolean_based_blind';
+                $confidence += 15;
+            }
+        }
+
+        $subqueryDepth = $ast['max_subquery_depth'] ?? 0;
+        if ($subqueryDepth >= 2) {
+            $intents[] = 'nested_query_evasion';
+            $confidence += 10;
+        }
+
+        return [
+            'intents' => array_values(array_unique($intents)),
+            'confidence' => min(100, $confidence),
+            'primary_intent' => !empty($intents) ? $intents[0] : 'unknown',
+        ];
+    }
+
     private static function summarizeAst(array $ast): array {
         $summary = [
             'type' => $ast['type'] ?? 'unknown',
@@ -2351,6 +2771,31 @@ class SqlSemanticParser {
 
         if ($result['sql_type'] === 'drop') {
             $score += 25;
+        }
+
+        $taint = $result['taint_analysis'] ?? [];
+        if (!empty($taint['has_tainted_sink'])) {
+            $score += 20;
+            if (($taint['taint_depth'] ?? 0) >= 3) {
+                $score += 10;
+            }
+        }
+
+        $equiv = $result['semantic_equivalence'] ?? [];
+        if (!empty($equiv['equiv_score']) && $equiv['equiv_score'] > 0) {
+            $score += min($equiv['equiv_score'], 30);
+        }
+
+        $intent = $result['attack_intent'] ?? [];
+        if (!empty($intent['confidence'])) {
+            $conf = $intent['confidence'];
+            if ($conf >= 40) {
+                $score += 20;
+            } elseif ($conf >= 25) {
+                $score += 12;
+            } elseif ($conf >= 15) {
+                $score += 6;
+            }
         }
 
         return min($score, 100);

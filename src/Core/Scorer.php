@@ -32,11 +32,11 @@ spl_autoload_register(function ($class) {
 
 class WafScorer {
     private static $weights = [
-        'entropy'   => 0.10,  // 降低：熵值容易误判正常内容（Base64图片、加密字符串）
-        'semantic'  => 0.40,  // 核心检测能力
-        'compiler'  => 0.20,  // URI/参数结构异常检测
-        'deviation' => 0.15,  // 行为基线偏离分析
-        'ml_bayes'  => 0.08,  // 朴素贝叶斯机器学习（训练不足时自动归零）
+        'entropy'   => 0.08,   // 信息熵分析
+        'semantic'  => 0.45,   // 核心检测能力 - 提升权重
+        'compiler'  => 0.20,   // URI/参数结构异常检测
+        'deviation' => 0.12,   // 行为基线偏离分析
+        'ml_bayes'  => 0.08,   // 朴素贝叶斯机器学习（训练不足时自动归零）
     ];
 
     // 阈值层级必须严格递增，否则中间层（如 observe）会被 block 短路而失效
@@ -186,6 +186,9 @@ class WafScorer {
         $len = strlen($text);
         if ($len <= 1) return 0;
 
+        // 智能过滤：识别正常编码内容，降低熵值评分
+        $entropyReduction = self::detectNormalEncoding($text);
+
         // 计算字符频率
         $freq = [];
         for ($i = 0; $i < $len; $i++) {
@@ -203,6 +206,9 @@ class WafScorer {
         // 归一化到 0-100（最大熵为8 bits/char）
         $normalizedEntropy = min($entropy / 8 * 100, 100);
 
+        // 应用正常编码降低因子
+        $normalizedEntropy = max(0, $normalizedEntropy - $entropyReduction);
+
         // 特殊字符比例
         $specialRatio = 0;
         $specialChars = '<>"\'%;|&`$(){}\\/*%#=*?!';
@@ -214,6 +220,69 @@ class WafScorer {
         // 综合分数
         $score = $normalizedEntropy * 0.5 + $specialRatio * 1.5;
         return min(round($score, 1), 100);
+    }
+
+    private static function detectNormalEncoding($text): float {
+        $len = strlen($text);
+        $reduction = 0;
+
+        // 1. Base64 检测：只包含 Base64 字符且长度是4的倍数
+        $base64Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+        $hasOnlyBase64 = true;
+        $equalsCount = 0;
+        for ($i = 0; $i < $len; $i++) {
+            if (strpos($base64Chars, $text[$i]) === false) {
+                $hasOnlyBase64 = false;
+                break;
+            }
+            if ($text[$i] === '=') $equalsCount++;
+        }
+        if ($hasOnlyBase64 && $len % 4 === 0 && $equalsCount <= 2) {
+            $reduction += 30;
+        }
+
+        // 2. URL编码检测：大量%XX模式但无攻击特征
+        $urlEncodedCount = preg_match_all('/%[0-9a-fA-F]{2}/', $text, $matches);
+        if ($urlEncodedCount > 3 && $urlEncodedCount / $len > 0.3) {
+            $decoded = urldecode($text);
+            $hasAttackChars = preg_match('/[<>"\'%;|&`$(){}\\/*%#=*?!]/', $decoded);
+            if (!$hasAttackChars) {
+                $reduction += 20;
+            }
+        }
+
+        // 3. 纯数字检测
+        if (ctype_digit($text)) {
+            $reduction += 40;
+        }
+
+        // 4. 邮箱地址检测
+        if (filter_var($text, FILTER_VALIDATE_EMAIL)) {
+            $reduction += 25;
+        }
+
+        // 5. 合法URL检测
+        if (filter_var($text, FILTER_VALIDATE_URL)) {
+            $reduction += 20;
+        }
+
+        // 6. 中文文本检测（中文字符比例高）
+        $chineseCount = preg_match_all('/[\x{4e00}-\x{9fff}]/u', $text, $matches);
+        if ($chineseCount > 0 && $chineseCount / $len > 0.3) {
+            $reduction += 15;
+        }
+
+        // 7. IP地址检测
+        if (filter_var($text, FILTER_VALIDATE_IP)) {
+            $reduction += 35;
+        }
+
+        // 8. 日期时间格式检测
+        if (preg_match('/^\d{4}[-\/]\d{2}[-\/]\d{2}(?:\s+\d{2}:\d{2}(?::\d{2})?)?$/', $text)) {
+            $reduction += 30;
+        }
+
+        return $reduction;
     }
 
     // ====================== 语义分析 (30%) ======================
@@ -440,9 +509,22 @@ class WafScorer {
         // SSRF 服务器端请求伪造
         $ssrfParser = $semanticResult['ssrf_parser_result'] ?? [];
         if (is_array($ssrfParser)) {
-            if (!empty($ssrfParser['has_cloud_metadata'])) $bonus = max($bonus, 75); // 云元数据（最高危）
-            if (!empty($ssrfParser['has_internal_ip']))    $bonus = max($bonus, 68); // 内网IP
-            if (!empty($ssrfParser['has_dns_rebind']))      $bonus = max($bonus, 65); // DNS 重绑定
+            if (!empty($ssrfParser['has_cloud_metadata'])) $bonus = max($bonus, 85);
+            if (!empty($ssrfParser['has_internal_ip']))    $bonus = max($bonus, 75);
+            if (!empty($ssrfParser['has_dns_rebind']))      $bonus = max($bonus, 70);
+            if (!empty($ssrfParser['has_nested_url']))      $bonus = max($bonus, 62);
+            if (!empty($ssrfParser['has_dangerous_scheme'])) $bonus = max($bonus, 58);
+            if (!empty($ssrfParser['has_at_sign_bypass']))  $bonus = max($bonus, 52);
+            if (!empty($ssrfParser['has_path_traversal']))  $bonus = max($bonus, 48);
+            if (!empty($ssrfParser['cloud_metadata_hits']) && count($ssrfParser['cloud_metadata_hits']) >= 1) {
+                $bonus = max($bonus, 82);
+            }
+            $cloudHits = $ssrfParser['cloud_metadata_hits'] ?? [];
+            foreach ($cloudHits as $hit) {
+                if (!empty($hit['level']) && $hit['level'] >= 5) {
+                    $bonus = max($bonus, 85);
+                }
+            }
         }
 
         // 命令注入
@@ -459,12 +541,24 @@ class WafScorer {
         if (is_array($sstiParser)) {
             if (!empty($sstiParser['is_ssti'])) {
                 if (!empty($sstiParser['has_dangerous_filter'])) {
-                    $bonus = max($bonus, 75); // 危险过滤器（最高危）
+                    $bonus = max($bonus, 80);
                 } elseif (!empty($sstiParser['has_mixed_engines'])) {
-                    $bonus = max($bonus, 68); // 多引擎混合
+                    $bonus = max($bonus, 72);
+                } elseif (!empty($sstiParser['has_os_command'])) {
+                    $bonus = max($bonus, 75);
+                } elseif (!empty($sstiParser['has_file_read'])) {
+                    $bonus = max($bonus, 70);
+                } elseif (!empty($sstiParser['has_rce_capability'])) {
+                    $bonus = max($bonus, 78);
                 } else {
-                    $bonus = max($bonus, 60); // 基础 SSTI
+                    $bonus = max($bonus, 65);
                 }
+            }
+            if (!empty($sstiParser['engine_count']) && $sstiParser['engine_count'] >= 2) {
+                $bonus = max($bonus, 68);
+            }
+            if (!empty($sstiParser['payload_length']) && $sstiParser['payload_length'] >= 30) {
+                $bonus = max($bonus, 55);
             }
         }
 
@@ -472,6 +566,113 @@ class WafScorer {
         $deserParser = $semanticResult['deser_parser_result'] ?? [];
         if (is_array($deserParser) && !empty($deserParser['is_deserialization'])) {
             $bonus = max($bonus, 68);
+        }
+
+        // GraphQL 攻击
+        $graphqlParser = $semanticResult['graphql_parser_result'] ?? [];
+        if (is_array($graphqlParser)) {
+            if (!empty($graphqlParser['has_introspection'])) {
+                $bonus = max($bonus, 68); // 内省查询（Schema探测）
+            }
+            if (!empty($graphqlParser['query_depth']) && $graphqlParser['query_depth'] >= 10) {
+                $bonus = max($bonus, 60); // 深度嵌套攻击
+            }
+            if (!empty($graphqlParser['field_count']) && $graphqlParser['field_count'] >= 50) {
+                $bonus = max($bonus, 55); // 字段数量DoS
+            }
+            if (!empty($graphqlParser['sensitive_fields']) && count($graphqlParser['sensitive_fields']) >= 2) {
+                $bonus = max($bonus, 58); // 敏感字段查询
+            }
+        }
+
+        // CSV/公式注入
+        $csvParser = $semanticResult['csv_parser_result'] ?? [];
+        if (is_array($csvParser)) {
+            if (!empty($csvParser['has_dde'])) {
+                $bonus = max($bonus, 80); // DDE动态数据交换（最高危）
+            }
+            if (!empty($csvParser['dangerous_functions'])) {
+                $dangerous = $csvParser['dangerous_functions'];
+                if (is_array($dangerous)) {
+                    $highRisk = ['CMD', 'EXEC', 'SYSTEM', 'SHELL', 'DDE', 'DDEINITIATE', 'VBA', 'CALL'];
+                    foreach ($highRisk as $hr) {
+                        if (in_array($hr, $dangerous) || in_array(strtoupper($hr), array_map('strtoupper', $dangerous))) {
+                            $bonus = max($bonus, 75);
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!empty($csvParser['has_external_data'])) {
+                $bonus = max($bonus, 65); // 外部数据获取
+            }
+            if (!empty($csvParser['has_hyperlink'])) {
+                $bonus = max($bonus, 45); // 超链接跳转
+            }
+        }
+
+        // YAML反序列化
+        $yamlParser = $semanticResult['yaml_parser_result'] ?? [];
+        if (is_array($yamlParser)) {
+            if (!empty($yamlParser['has_php_object'])) {
+                $bonus = max($bonus, 85); // PHP对象注入（最高危）
+            }
+            if (!empty($yamlParser['has_python_object'])) {
+                $bonus = max($bonus, 82); // Python对象注入
+            }
+            if (!empty($yamlParser['has_dangerous_tags']) && !empty($yamlParser['dangerous_tags'])) {
+                $bonus = max($bonus, 72); // 危险标签
+            }
+            if (!empty($yamlParser['gadget_classes']) && count($yamlParser['gadget_classes']) > 0) {
+                $bonus = max($bonus, 78); // Gadget链类
+            }
+            if (!empty($yamlParser['has_billion_laughs'])) {
+                $bonus = max($bonus, 70); // Billion Laughs DoS
+            }
+            if (!empty($yamlParser['sensitive_keys']) && count($yamlParser['sensitive_keys']) >= 2) {
+                $bonus = max($bonus, 50); // 敏感配置键
+            }
+        }
+
+        // ReDoS 正则DoS
+        $redosParser = $semanticResult['redos_parser_result'] ?? [];
+        if (is_array($redosParser)) {
+            if (!empty($redosParser['has_redos_risk'])) {
+                $complexity = $redosParser['estimated_complexity'] ?? '';
+                if ($complexity === 'exponential') {
+                    $bonus = max($bonus, 75); // 指数级复杂度
+                } else {
+                    $bonus = max($bonus, 55); // 多项式或未知复杂度
+                }
+            }
+            if (!empty($redosParser['star_height']) && $redosParser['star_height'] >= 3) {
+                $bonus = max($bonus, 60); // 星高≥3
+            }
+            if (!empty($redosParser['group_count']) && $redosParser['group_count'] >= 30) {
+                $bonus = max($bonus, 45); // 过量分组
+            }
+        }
+
+        // WebSocket攻击
+        $wsParser = $semanticResult['websocket_parser_result'] ?? [];
+        if (is_array($wsParser)) {
+            if (!empty($wsParser['has_large_payload'])) {
+                $bonus = max($bonus, 60); // 超大帧payload
+            }
+            if (!empty($wsParser['has_control_frame_violation'])) {
+                $bonus = max($bonus, 55); // 控制帧违规
+            }
+            if (!empty($wsParser['has_rsv_abuse'])) {
+                $bonus = max($bonus, 50); // 保留位滥用
+            }
+            if (!empty($wsParser['has_mask_issue'])) {
+                $bonus = max($bonus, 45); // 掩码问题
+            }
+            if (!empty($wsParser['injection_detected']) && is_array($wsParser['injection_detected'])) {
+                if (count($wsParser['injection_detected']) >= 2) {
+                    $bonus = max($bonus, 58); // payload中检测到注入
+                }
+            }
         }
 
         return (float)$bonus;
@@ -492,29 +693,41 @@ class WafScorer {
         $encodeBypassScore = $semanticResult['encode_bypass_score'] ?? 0;
         $semanticScore = $semanticResult['total_score'] ?? 0;
 
+        // 关键优化：语义分低于20分的内容，不给予编码加成
+        // 这防止正常的Base64图片、JSON数据等被误判为攻击编码
         if ($decodeDepth <= 0 || $semanticScore < 20) {
             return 0;
+        }
+
+        // 检测是否为正常编码（非攻击意图）
+        if (self::isNormalEncoding($semanticResult, $normalizerContext)) {
+            return 0;
+        }
+
+        // 只有高语义分才给予编码加成
+        if ($semanticScore < 35) {
+            return min(5, $decodeDepth);
         }
 
         // 1. 解码深度加成（层数越深，绕过意图越强）
         if ($decodeDepth >= 4) $bonus += 12;
         elseif ($decodeDepth >= 3) $bonus += 8;
-        elseif ($decodeDepth >= 2) $bonus += 5;
+        elseif ($decodeDepth >= 2) $bonus += 4;
         elseif ($decodeDepth >= 1) $bonus += 2;
 
-        // 2. 高级混淆技术加成（每种技术 +3~10分）
+        // 2. 高级混淆技术加成（每种技术 +2~8分）
         $highValueTechs = [
-            'base64' => 10,
-            'utf8_overlong' => 9,
-            'unicode_percent_u' => 7,
+            'utf8_overlong' => 10,
+            'unicode_percent_u' => 8,
             'homoglyph_normalize' => 7,
             'zero_width_remove' => 6,
             'fullwidth_normalize' => 5,
-            'html_numeric_entity' => 4,
-            'html_named_entity' => 4,
-            'hex_escape' => 5,
-            'octal_escape' => 5,
-            'unicode_escape' => 5,
+            'base64' => 3,
+            'hex_escape' => 4,
+            'octal_escape' => 4,
+            'unicode_escape' => 4,
+            'html_numeric_entity' => 3,
+            'html_named_entity' => 2,
         ];
         foreach ($highValueTechs as $tech => $points) {
             if (in_array($tech, $decodePath)) {
@@ -525,7 +738,7 @@ class WafScorer {
         // 3. 对抗样本评分加成
         if ($adversarialScore >= 70) $bonus += 8;
         elseif ($adversarialScore >= 50) $bonus += 5;
-        elseif ($adversarialScore >= 30) $bonus += 3;
+        elseif ($adversarialScore >= 30) $bonus += 2;
 
         // 4. 语义引擎编码绕过评分加成
         if ($encodeBypassScore >= 20) $bonus += 6;
@@ -533,14 +746,64 @@ class WafScorer {
 
         // 5. 组合加成：高语义分 + 编码 = 强证据（刻意隐藏的攻击）
         if ($semanticScore >= 60 && $decodeDepth >= 2) $bonus += 8;
-        elseif ($semanticScore >= 40 && $decodeDepth >= 1) $bonus += 4;
+        elseif ($semanticScore >= 45 && $decodeDepth >= 1) $bonus += 4;
 
         // 6. 多混淆技术交叉加成（同时使用2种以上混淆技术）
         $obfuscationTechs = array_intersect(array_keys($highValueTechs), $decodePath);
         if (count($obfuscationTechs) >= 3) $bonus += 6;
         elseif (count($obfuscationTechs) >= 2) $bonus += 3;
 
-        return min(50, round($bonus, 1));
+        return min(45, round($bonus, 1));
+    }
+
+    private static function isNormalEncoding(array $semanticResult, array $normalizerContext): bool {
+        $semanticScore = $semanticResult['total_score'] ?? 0;
+
+        // 1. 语义分低于30分的内容，编码加成应该大幅减少或取消
+        if ($semanticScore < 30) {
+            return true;
+        }
+
+        // 2. 解码后语义分很低，说明编码的是正常内容
+        $decodedText = $semanticResult['decoded_text'] ?? '';
+        if (!empty($decodedText)) {
+            $decodedEntropy = self::calcEntropy($decodedText);
+            if ($decodedEntropy < 25 && $semanticScore < 40) {
+                return true;
+            }
+        }
+
+        // 3. 纯Base64编码且长度合理（可能是图片或文件数据）
+        $decodePath = $semanticResult['decode_path'] ?? [];
+        if (count($decodePath) === 1 && in_array('base64', $decodePath)) {
+            $rawText = $semanticResult['raw_text'] ?? '';
+            if (strlen($rawText) > 100 && strlen($rawText) % 4 === 0) {
+                $hasAttackPattern = preg_match('/[<>"\'%;|&`$(){}\\/*%#=*?!]/', $rawText);
+                if (!$hasAttackPattern) {
+                    return true;
+                }
+            }
+        }
+
+        // 4. 业务上下文判断：文件上传、API请求等场景的编码是正常的
+        $uri = $semanticResult['uri'] ?? '';
+        if (preg_match('/(?:upload|file|api|image|search|query)\b/i', $uri)) {
+            return true;
+        }
+
+        // 5. 检测是否为正常数据格式
+        $text = $semanticResult['raw_text'] ?? '';
+        if (preg_match('/^\s*\{[\s\S]*\}\s*$/', $text)) {
+            return true;
+        }
+        if (preg_match('/^\s*\[[\s\S]*\]\s*$/', $text)) {
+            return true;
+        }
+        if (preg_match('/^\s*<\?xml/', $text)) {
+            return true;
+        }
+
+        return false;
     }
 
     // ====================== 决策 ======================

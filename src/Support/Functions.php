@@ -217,6 +217,12 @@ function waf_record_bot_stats(array $botResult) {
 }
 
 function waf_block($msg = '') {
+    $debugInfo = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 5);
+    $caller = '';
+    foreach ($debugInfo as $frame) {
+        $caller .= (!empty($frame['file']) ? basename($frame['file']) : '') . ':' . ($frame['line'] ?? 0) . ' -> ';
+    }
+    error_log('[ShieldWAF DEBUG] waf_block called from: ' . $caller . ' msg=' . $msg);
     http_response_code(403);
     $log_ip  = str_replace(["\r", "\n"], '', waf_get_real_ip());
     $log_uri = str_replace(["\r", "\n"], '', $_SERVER['REQUEST_URI'] ?? '');
