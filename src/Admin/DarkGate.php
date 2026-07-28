@@ -16,10 +16,23 @@ function waf_2fa() {
         if (!hash_equals($_SESSION['waf_csrf'], $token)) {
             waf_block('CSRF token invalid');
         }
-        // 简单密码验证（WordPress 简化模式）
+        // 密码验证（支持双重哈希格式和明文格式）
         $input = trim($_POST['w2f'] ?? '');
         $stored = defined('WAF_PASSWORD') ? WAF_PASSWORD : '';
-        if ($stored && hash_equals($stored, $input)) {
+        
+        // 加载密码验证类
+        require_once __DIR__ . '/../Support/Password.php';
+        
+        $valid = false;
+        if (strpos($stored, 'dual$v1$') === 0) {
+            // 双重哈希格式
+            $valid = WafPassword::verify($input, $stored);
+        } else {
+            // 兼容旧的明文格式
+            $valid = $stored && hash_equals($stored, $input);
+        }
+        
+        if ($valid) {
             $_SESSION['waf_ok2'] = time() + WAF_MAGIC_EXPIRE;
             // 同时刷新 waf_ok1，避免用户在 magic 验证后等待过久导致 ok1 过期
             $_SESSION['waf_ok1'] = time() + WAF_MAGIC_EXPIRE;

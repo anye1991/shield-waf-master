@@ -293,9 +293,9 @@ class CachePoisoning {
             return true;
         }
         // 环回主机名 - localhost 是正常的开发环境主机名，不应拦截
-        // 只拦截 localhost 的子域名形式（可能被利用进行缓存投毒）
+        // 拦截所有包含 localhost 标签的域名形式（可能被利用进行缓存投毒）
         $lower = strtolower($stripped);
-        if ($lower !== 'localhost' && strpos($lower, 'localhost.') === 0) {
+        if ($lower !== 'localhost' && preg_match('/(^|\.)localhost(\.|$)/', $lower)) {
             return true;
         }
         return false;

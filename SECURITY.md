@@ -8,15 +8,15 @@
 
 ## 🔐 安全审计状态
 
-代码已通过 **114 项**全面安全审计 + v4.1.1 深度代码审计：
+代码已通过 **119 项**全面安全审计 + v5.3.1 第二轮深度代码审计：
 
 | 等级 | 数量 | 状态 |
 |------|------|------|
-| 🔴 Critical | 12 | ✅ 全部修复 |
-| 🟠 High | 27 | ✅ 已修复 24（89%） |
-| 🟡 Medium | 35 | 🔄 已修复 18（51%） |
+| 🔴 Critical | 13 | ✅ 全部修复 |
+| 🟠 High | 29 | ✅ 已修复 26（90%） |
+| 🟡 Medium | 37 | 🔄 已修复 20（54%） |
 | 🟢 Low | 23 | 📋 已修复 8（35%） |
-| 🔵 Compat | 17 | ✅ 全部修复（v4.1.1 新增） |
+| 🔵 Compat | 17 | ✅ 全部修复 |
 
 完整审计报告：[SECURITY_AUDIT_REPORT.md](SECURITY_AUDIT_REPORT.md)
 
@@ -72,6 +72,39 @@
 - **首页兼容性测试**：17/17 通过
 - **FP 压力测试**：37/37 通过，0 误报
 - **管理员白名单+测试模式**：11/11 通过
+
+---
+
+## 🆕 v5.3.1 第二轮深度代码审计修复（2026-07-28）
+
+本轮审计聚焦于安全绕过和代码注入，发现并修复了5个漏洞。
+
+### 修复清单
+
+| 等级 | 问题 | 文件 | 影响 |
+|------|------|------|------|
+| 🔴 Critical | 密码更新逻辑代码注入 | [PasswordApi.php](src/Admin/PasswordApi.php) | 可注入任意PHP代码 |
+| 🟠 High | 缓存投毒防护绕过 | [CachePoisoning.php](src/Defense/CachePoisoning.php) | `evil.localhost.com` 绕过检测 |
+| 🟠 High | 快速短路遗漏危险函数 | [SemanticEngine.php](src/Semantic/SemanticEngine.php) | 低熵值攻击载荷跳过深度解析 |
+| 🟡 Medium | 登录不支持哈希密码 | [DarkGate.php](src/Admin/DarkGate.php) | 无法使用双重哈希密码 |
+| 🟡 Medium | 验证API不支持哈希密码 | [PasswordApi.php](src/Admin/PasswordApi.php) | 同上 |
+
+### 技术细节
+
+**1. 密码更新代码注入（🔴 Critical）**
+- 攻击者提交恶意密码 `evil'); system('id'); //`，通过 `preg_replace` 注入到 `config.php`
+- 修复：改用 `WafPassword::hash()` 双重哈希存储，不再修改配置文件
+
+**2. 缓存投毒绕过（🟠 High）**
+- `evil.localhost.com` 未被识别为 localhost 相关域名
+- 修复：正则从 `strpos($lower, 'localhost.') === 0` 改为 `preg_match('/(^|\.)localhost(\.|$)/', $lower)`
+
+**3. 快速短路遗漏（🟠 High）**
+- 遗漏函数：`include/require`、`unserialize`、`yaml_parse`、`DOMDocument`、`preg_replace_callback`
+- 修复：新增 `$fileIncludeHit`、`$deserialHit`、`$xmlInjectionHit` 三组检测
+
+**4. 哈希密码兼容（🟡 Medium）**
+- 修复：验证逻辑检测 `dual$v1$` 前缀，自动选择 `WafPassword::verify()` 或 `hash_equals()`
 
 ---
 

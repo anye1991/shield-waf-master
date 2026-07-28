@@ -7,6 +7,40 @@
 
 ---
 
+## [v5.3.1] - 2026-07-28
+
+### 🔒 深度代码审计修复（5项）
+
+本次对全项目进行了第二轮深度代码审计，发现并修复了5个安全漏洞。
+
+#### 🔴 Critical 严重（1项）
+
+**密码更新逻辑代码注入漏洞**
+- 文件：`src/Admin/PasswordApi.php`
+- 问题：密码更新时使用 `preg_replace` 将用户输入直接拼接到 PHP 代码字符串中，攻击者可通过恶意密码（如 `evil'); system('id'); //`）在 `config.php` 中注入任意 PHP 代码
+- 修复：改用 `WafPassword::hash()` 双重哈希存储，不再修改 `config.php` 文件
+
+#### 🟠 High 高危（2项）
+
+**缓存投毒防护绕过漏洞**
+- 文件：`src/Defense/CachePoisoning.php`
+- 问题：`isPrivateHost()` 仅检测以 `localhost.` 开头的域名，`evil.localhost.com` 可绕过检测
+- 修复：正则改为 `/(^|\.)localhost(\.|$)/`，检测域名中任意位置的 localhost 标签
+
+**快速短路逻辑遗漏危险函数**
+- 文件：`src/Semantic/SemanticEngine.php`
+- 问题：快速短路逻辑遗漏了文件包含、反序列化、XML注入等危险函数检测，低熵值攻击载荷可能被跳过深度解析
+- 修复：新增 `fileIncludeHit`、`deserialHit`、`xmlInjectionHit` 检测，命令分隔符新增 `bash/sh/python`
+
+#### 🟡 Medium 中危（2项）
+
+**登录验证不支持哈希密码**
+- 文件：`src/Admin/DarkGate.php`、`src/Admin/PasswordApi.php`
+- 问题：密码验证仅支持明文比较，无法使用 `dual$v1$` 双重哈希格式
+- 修复：新增哈希格式检测，兼容 `WafPassword::verify()` 和明文 `hash_equals()` 两种验证方式
+
+---
+
 ## [v5.3.0] - 2026-07-27
 
 ### 🚀 极限优化：检测率100%，误报率0%

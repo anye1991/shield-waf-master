@@ -193,10 +193,13 @@ class SemanticEngine {
         $formatFingerprintHit = self::detectFormatFingerprints($decodedText, $uri, $contentType, $headers, $params);
         $pathTraversalHit = (preg_match('/\.\.\//', $decodedText) || preg_match('/\.\.\//', $uri));
         $commandInjectionHit = preg_match('/(system|exec|shell_exec|passthru|popen|proc_open|pcntl_exec)\s*\(/i', $decodedText);
-        $phpCodeHit = preg_match('/(eval|assert|create_function|call_user_func|call_user_func_array)\s*\(/i', $decodedText);
-        $commandSeparatorHit = preg_match('/[\;`\|\&](\s*cat|\s*ls|\s*rm|\s*cp|\s*mv|\s*chmod|\s*wget|\s*curl)/i', $decodedText);
+        $phpCodeHit = preg_match('/(eval|assert|create_function|call_user_func|call_user_func_array|preg_replace_callback)\s*\(/i', $decodedText);
+        $fileIncludeHit = preg_match('/(include|require|include_once|require_once)\s*(\s|\()/i', $decodedText);
+        $deserialHit = preg_match('/\b(unserialize|yaml_parse|yaml_emit)\s*\(/i', $decodedText);
+        $xmlInjectionHit = preg_match('/(simplexml_load_string|DOMDocument|DOMElement|xml_parse|xml_read)\s*\(/i', $decodedText);
+        $commandSeparatorHit = preg_match('/[\;`\|\&](\s*cat|\s*ls|\s*rm|\s*cp|\s*mv|\s*chmod|\s*wget|\s*curl|\s*bash|\s*sh|\s*python)/i', $decodedText);
         $xssHit = preg_match('/<script/i', $decodedText) || preg_match('/javascript\s*:/i', $decodedText) || preg_match('/on\w+\s*=/i', $decodedText);
-        $skipHeavyParsers = ($fastPreScore < 5 && $decodeDepth === 0 && empty($normalizerContext['obfuscation_detected']) && !$formatFingerprintHit && !$pathTraversalHit && !$commandInjectionHit && !$phpCodeHit && !$commandSeparatorHit && !$xssHit);
+        $skipHeavyParsers = ($fastPreScore < 5 && $decodeDepth === 0 && empty($normalizerContext['obfuscation_detected']) && !$formatFingerprintHit && !$pathTraversalHit && !$commandInjectionHit && !$phpCodeHit && !$fileIncludeHit && !$deserialHit && !$xmlInjectionHit && !$commandSeparatorHit && !$xssHit);
 
         $paramScore = 0;
         $paramMismatches = [];

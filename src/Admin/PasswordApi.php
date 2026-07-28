@@ -81,12 +81,16 @@ try {
             
             $updated = false;
             
-            // 1. 尝试更新 auto_key.php（当前密码存储位置）
+            // 1. 使用 WafPassword 进行双重哈希
+            require_once __DIR__ . '/../Support/Password.php';
+            $hashedPassword = WafPassword::hash($newPassword);
+            
+            // 2. 更新 auto_key.php（密码存储为哈希值）
             $autoKeyFile = WAF_LOG_PATH . '/auto_key.php';
             if (is_file($autoKeyFile)) {
                 $autoKeys = @include $autoKeyFile;
                 if (is_array($autoKeys)) {
-                    $autoKeys['WAF_PASSWORD'] = $newPassword;
+                    $autoKeys['WAF_PASSWORD'] = $hashedPassword;
                     $content = '<?php return ' . var_export($autoKeys, true) . ';';
                     if (@file_put_contents($autoKeyFile, $content) !== false) {
                         @chmod($autoKeyFile, 0600);
@@ -95,18 +99,9 @@ try {
                 }
             }
             
-            // 2. 同时更新 config.php 中的硬编码密码（如果有）
-            $configFile = __DIR__ . '/../../config.php';
-            if (is_file($configFile)) {
-                $content = file_get_contents($configFile);
-                // 匹配 define('WAF_PASSWORD', 'xxx') 或 define('WAF_PASSWORD', "xxx")
-                $pattern = "/define\\('WAF_PASSWORD',\\s*['\"]([^'\"]+)['\"]\\s*\\)/";
-                $replacement = "define('WAF_PASSWORD', '" . addslashes(str_replace('$', '$$', $newPassword)) . "')";
-                $newContent = preg_replace($pattern, $replacement, $content, -1, $count);
-                if ($count > 0) {
-                    @file_put_contents($configFile, $newContent);
-                }
-            }
+            // 3. 同时更新 config.php：安全方式 - 使用哈希值，不修改文件内容
+            // 如果 config.php 中有 define('WAF_PASSWORD', ...)，保持原样
+            // 密码验证会自动支持哈希格式
             
             if (!$updated) {
                 http_response_code(500);
@@ -128,7 +123,19 @@ try {
             }
             $password = $_POST['password'] ?? '';
             $stored = defined('WAF_PASSWORD') ? WAF_PASSWORD : '';
-            $valid = $stored && hash_equals($stored, $password);
+            
+            require_once __DIR__ . '/../Support/Password.php';
+            
+            // 检测密码格式：支持哈希格式和明文格式
+            $valid = false;
+            if (strpos($stored, 'dual$v1$') === 0) {
+                // 双重哈希格式
+                $valid = WafPassword::verify($password, $stored);
+            } else {
+                // 兼容旧的明文格式
+                $valid = $stored && hash_equals($stored, $password);
+            }
+            
             echo json_encode([
                 'success' => true,
                 'valid'   => $valid,
