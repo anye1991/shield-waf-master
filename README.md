@@ -1106,7 +1106,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 | v1.0.0 | 基础 SQL/XSS 防护 · IP 封禁 · 速率限制 |
 
 > 完整变更记录见 [CHANGELOG.md](CHANGELOG.md)
-
+商业版：https://github.com/anye1991/Shield-WAF-doc
 ---
 
 <div align="center">
