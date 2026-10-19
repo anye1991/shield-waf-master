@@ -9,6 +9,7 @@
  *  4. 支持误报/漏报反馈，自动修正评分
  *  5. 自动学习正常请求特征，建立白名单，降低误报率
  *  6. [v5.4] 智能学习闭环：样本采集 → 质量过滤 → 训练调度 / 审核队列 → 模型评估
+ *  7. [v5.4] 语义权重反哺：根据学习数据动态调整 SemanticEngine 的 28 个维度权重
  *
  * 存储文件（waf_logs/ 目录）：
  *  - learned_patterns.json  : 自动学习到的特征规则
@@ -17,6 +18,8 @@
  *  - feedback_log.json      : 误报/漏报反馈记录
  *  - normal_patterns.json   : 正常请求模式白名单
  *  - learning/*.json        : [v5.4] 智能学习模块数据
+ *  - learning/semantic_weights.json : [v5.4] 语义引擎权重持久化
+ *  - learning/semantic_weight_lock.json : [v5.4] 语义权重调整节流锁
  */
 defined('ABSPATH') || exit;
 
@@ -27,7 +30,7 @@ require_once __DIR__ . '/NaiveBayesClassifier.php';
 
 // ====================== v5.4 智能学习模块加载 ======================
 // 与 AutoLearn.php 同级目录，幂等加载，缺失时降级到老逻辑
-foreach (['Storage', 'SampleCollector', 'SampleFilter', 'ReviewQueue', 'ModelEvaluator', 'TrainingScheduler'] as $__learningCls) {
+foreach (['Storage', 'SampleCollector', 'SampleFilter', 'ReviewQueue', 'ModelEvaluator', 'TrainingScheduler', 'SemanticWeightBridge'] as $__learningCls) {
     $__learningFile = __DIR__ . '/' . $__learningCls . '.php';
     if (is_file($__learningFile) && !class_exists('Learning_' . $__learningCls)) {
         require_once $__learningFile;
@@ -47,6 +50,9 @@ class AutoLearn {
     private static $static_cache = [];
     private static $static_cache_ts = [];
     public const STATIC_CACHE_TTL = 30;
+
+    /** [v5.4] 语义权重调整节流间隔（秒） */
+    public const SEMANTIC_WEIGHT_THROTTLE = 3600;
 
     public static function init() {
         if (self::$patterns_file !== null) return;
@@ -140,6 +146,17 @@ class AutoLearn {
         if (Learning_SampleFilter::isHighConfidenceAttack($sample)) {
             Learning_TrainingScheduler::enqueue($sample);
             Learning_TrainingScheduler::maybeFlush();
+            // 高置信度攻击同步入指纹库
+            if (class_exists('Learning_FingerprintMatcher')) {
+                try {
+                    Learning_FingerprintMatcher::addFingerprint($normalizedPayload, [
+                        'attack_type' => $attackResult['attack_type'] ?? 'unknown',
+                        'score'       => $sample['score'] ?? 0,
+                    ]);
+                } catch (\Throwable $e) {
+                    // 指纹入库失败不影响主流程
+                }
+            }
         } elseif (class_exists('Learning_ReviewQueue') && Learning_SampleFilter::isMediumRisk($sample)) {
             Learning_ReviewQueue::push($sample);
         }
@@ -246,7 +263,6 @@ class AutoLearn {
         if (!is_dir(WAF_LOG_PATH)) mkdir(WAF_LOG_PATH, 0700, true);
 
         // 基线冻结期间不更新（防攻击者"教坏"基线）
-        // 已有正常模式继续生效，但不学习新的
         if (self::isBaselineFrozen()) {
             return;
         }
@@ -277,7 +293,6 @@ class AutoLearn {
 
         $normal['total_normal'] = ($normal['total_normal'] ?? 0) + 1;
 
-        // 清理超过30天的旧数据
         $cutoff = time() - 30 * 86400;
         foreach ($normal['patterns'] as $h => $info) {
             if ($info['last_seen'] < $cutoff) unset($normal['patterns'][$h]);
@@ -317,7 +332,6 @@ class AutoLearn {
             Learning_TrainingScheduler::maybeFlush();
         }
 
-        // 抽样加入评估池
         if (class_exists('Learning_ModelEvaluator') && mt_rand(1, 50) === 1) {
             Learning_ModelEvaluator::addEvalSample($normalText, 'normal');
         }
@@ -333,12 +347,10 @@ class AutoLearn {
         self::init();
         $normal = self::loadNormal();
 
-        // 集成点 1：沙箱高危 IP 加成（必须在早退前计算，确保未知 URI 也能叠加）
         $ip = $_SERVER['REMOTE_ADDR'] ?? '';
         $sandboxRisk = ($ip !== '') ? self::getSandboxIpRisk($ip) : 0.0;
 
         if (empty($normal['patterns'])) {
-            // 没有正常模式基线时，仅沙箱风险生效
             return min($sandboxRisk * 0.3, 1.0);
         }
 
@@ -346,17 +358,14 @@ class AutoLearn {
         $hash = md5($path);
 
         if (!isset($normal['patterns'][$hash])) {
-            // 未知 URI：基础 0.3 + 沙箱风险加成
             return min(0.3 + $sandboxRisk * 0.3, 1.0);
         }
 
         $pattern = $normal['patterns'][$hash];
         if ($pattern['count'] < 5) {
-            // 已知但样本少：基础 0.2 + 沙箱风险加成
             return min(0.2 + $sandboxRisk * 0.3, 1.0);
         }
 
-        // 检查参数键偏差
         $knownKeys = array_map('strtolower', $pattern['param_keys']);
         $unknownParams = 0;
         foreach ($params as $key) {
@@ -366,7 +375,6 @@ class AutoLearn {
         $totalParams = max(count($params), 1);
         $deviation = min($unknownParams / $totalParams, 1.0);
 
-        // 沙箱风险叠加（上限 1.0）
         if ($sandboxRisk > 0) {
             $deviation = min($deviation + $sandboxRisk * 0.3, 1.0);
         }
@@ -484,9 +492,6 @@ class AutoLearn {
 
     // ====================== 沙箱联动接口 ======================
 
-    /**
-     * 集成点 1：沙箱 → AutoLearn 事件回流
-     */
     public static function markIpFromSandbox(string $ip, string $reason, array $context = []) {
         if ($ip === '' || $ip === 'cli' || $ip === 'unknown') return;
         if (!filter_var($ip, FILTER_VALIDATE_IP)) return;
@@ -538,9 +543,6 @@ class AutoLearn {
         waf_safe_write_json($file, $data);
     }
 
-    /**
-     * 查询某 IP 在沙箱事件中的高危分（用于 getDeviationScore 加成）
-     */
     public static function getSandboxIpRisk(string $ip): float {
         if ($ip === '' || !filter_var($ip, FILTER_VALIDATE_IP)) return 0.0;
         self::init();
@@ -564,9 +566,6 @@ class AutoLearn {
         return $risk;
     }
 
-    /**
-     * 集成点 2：AutoLearn → Sandbox 特征反哺
-     */
     public static function getHotSignatures(int $minHits = 10, int $limit = 50): array {
         self::init();
         $patterns = self::loadPatterns();
@@ -593,9 +592,6 @@ class AutoLearn {
         return $result;
     }
 
-    /**
-     * 集成点 3：基线状态联动 — 冻结 AutoLearn 行为基线
-     */
     public static function freezeBaseline(string $reason = 'sandbox_lock'): array {
         self::init();
         $file = WAF_LOG_PATH . '/baseline_freeze.json';
@@ -611,9 +607,6 @@ class AutoLearn {
         return $data;
     }
 
-    /**
-     * 解冻 AutoLearn 行为基线
-     */
     public static function unfreezeBaseline(): array {
         self::init();
         $file = WAF_LOG_PATH . '/baseline_freeze.json';
@@ -622,9 +615,6 @@ class AutoLearn {
         return $data;
     }
 
-    /**
-     * AutoLearn 行为基线是否已冻结（供 recordNormal 检查）
-     */
     public static function isBaselineFrozen(): bool {
         self::init();
         $file = WAF_LOG_PATH . '/baseline_freeze.json';
@@ -673,7 +663,6 @@ class AutoLearn {
 
     /**
      * [v5.4] 获取智能学习系统的完整状态（供控制台展示）
-     * 包含：训练队列、审核队列、评估指标、模型快照
      */
     public static function getLearningStatus(): array {
         self::init();
@@ -684,6 +673,7 @@ class AutoLearn {
             'evaluation' => null,
             'snapshots'  => [],
             'cold_start' => true,
+            'semantic_weights' => null,
         ];
 
         if (class_exists('Learning_TrainingScheduler')) {
@@ -700,13 +690,19 @@ class AutoLearn {
         if (class_exists('Learning_SampleFilter')) {
             $status['cold_start'] = Learning_SampleFilter::isColdStart();
         }
+        // [v5.4] 语义权重调整历史
+        if (class_exists('Learning_SemanticWeightBridge')) {
+            $status['semantic_weights'] = [
+                'history'      => Learning_SemanticWeightBridge::getHistory(5),
+                'current'      => class_exists('SemanticEngine') && method_exists('SemanticEngine', 'getWeights')
+                    ? SemanticEngine::getWeights() : null,
+                'mapping'      => Learning_SemanticWeightBridge::getMappingTable(),
+            ];
+        }
 
         return $status;
     }
 
-    /**
-     * [v5.4] 手动触发评估（控制台/CLI 调用）
-     */
     public static function evaluateModel(): array {
         if (!class_exists('Learning_ModelEvaluator')) {
             return ['ok' => false, 'reason' => 'evaluator_missing'];
@@ -714,20 +710,103 @@ class AutoLearn {
         return Learning_ModelEvaluator::evaluate();
     }
 
-    /**
-     * [v5.4] 手动保存模型快照（控制台/CLI 调用）
-     */
     public static function snapshotModel(): bool {
         if (!class_exists('Learning_ModelEvaluator')) return false;
         return Learning_ModelEvaluator::snapshot();
     }
 
-    /**
-     * [v5.4] 强制 flush 训练队列（CLI/定时任务调用）
-     */
     public static function flushTrainingQueue(): int {
         if (!class_exists('Learning_TrainingScheduler')) return 0;
         return Learning_TrainingScheduler::flushNow();
+    }
+
+    // ====================== [v5.4] 语义权重反哺 ======================
+
+    /**
+     * [v5.4] 触发语义权重自适应调整
+     *
+     * 节流：1 小时最多 1 次（SEMANTIC_WEIGHT_THROTTLE）。
+     * 由控制台/定时任务/请求末尾调用，内部节流防止频繁触发。
+     *
+     * @param bool $force 是否强制（忽略节流，仅调试/手动触发用）
+     * @return array [
+     *   'ok'     => bool,
+     *   'reason' => string,
+     *   'result' => array 调整结果（若触发）,
+     * ]
+     */
+    public static function maybeAdjustSemanticWeights(bool $force = false): array {
+        self::init();
+
+        // 前置检查：桥接器必须存在
+        if (!class_exists('Learning_SemanticWeightBridge')) {
+            return ['ok' => false, 'reason' => 'bridge_missing'];
+        }
+
+        // 前置检查：语义引擎必须支持 setWeights
+        if (!class_exists('SemanticEngine') || !method_exists('SemanticEngine', 'setWeights')) {
+            return ['ok' => false, 'reason' => 'semantic_engine_not_ready'];
+        }
+
+        // 节流检查（force 时跳过）
+        if (!$force) {
+            $lockFile = self::getSemanticWeightLockFile();
+            $lock = waf_safe_read_json($lockFile, ['last' => 0]);
+            $last = (int)($lock['last'] ?? 0);
+            if ($last > 0 && (time() - $last) < self::SEMANTIC_WEIGHT_THROTTLE) {
+                return [
+                    'ok'     => false,
+                    'reason' => 'throttled',
+                    'next_in' => self::SEMANTIC_WEIGHT_THROTTLE - (time() - $last),
+                ];
+            }
+        }
+
+        // 执行调整
+        try {
+            $result = Learning_SemanticWeightBridge::apply();
+        } catch (\Throwable $e) {
+            return [
+                'ok'     => false,
+                'reason' => 'exception: ' . $e->getMessage(),
+            ];
+        }
+
+        // 无论成功失败，都更新节流锁（防止异常时高频重试）
+        if (!is_dir(dirname(self::getSemanticWeightLockFile()))) {
+            @mkdir(dirname(self::getSemanticWeightLockFile()), 0775, true);
+        }
+        waf_safe_write_json(self::getSemanticWeightLockFile(), ['last' => time()]);
+
+        return [
+            'ok'     => (bool)($result['ok'] ?? false),
+            'reason' => $result['reason'] ?? 'unknown',
+            'result' => $result,
+        ];
+    }
+
+    /**
+     * [v5.4] 获取语义权重调整历史（供控制台展示）
+     */
+    public static function getSemanticWeightHistory(int $limit = 10): array {
+        if (!class_exists('Learning_SemanticWeightBridge')) return [];
+        return Learning_SemanticWeightBridge::getHistory($limit);
+    }
+
+    /**
+     * [v5.4] 回滚语义权重到指定历史记录
+     *
+     * @param int $index 0 = 最新
+     */
+    public static function rollbackSemanticWeights(int $index = 0): array {
+        if (!class_exists('Learning_SemanticWeightBridge')) {
+            return ['ok' => false, 'reason' => 'bridge_missing'];
+        }
+        try {
+            return Learning_SemanticWeightBridge::rollback($index);
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'reason' => 'exception: ' . $e->getMessage()];
+        }
     }
 
     // ====================== 文件读写（带进程内静态缓存） ======================
@@ -735,80 +814,4 @@ class AutoLearn {
     private static function loadStats() {
         return self::cachedLoad('stats', ['payloads' => [], 'total_attacks' => 0, 'type_trend' => []]);
     }
-    private static function saveStats($data) { self::cachedSave('stats', $data); }
-    private static function loadPatterns() {
-        return self::cachedLoad('patterns', ['rules' => [], 'total_learned' => 0, 'last_learn_time' => 0]);
-    }
-    private static function savePatterns($data) { self::cachedSave('patterns', $data); }
-    private static function loadWeights() {
-        return self::cachedLoad('weights', ['feedback_adjustments' => [], 'last_feedback_time' => 0]);
-    }
-    private static function saveWeights($data) { self::cachedSave('weights', $data); }
-    private static function loadFeedback() { return self::cachedLoad('feedback', []); }
-    private static function saveFeedback($data) { self::cachedSave('feedback', $data); }
-    private static function loadNormal() {
-        return self::cachedLoad('normal', ['patterns' => [], 'total_normal' => 0]);
-    }
-    private static function saveNormal($data) { self::cachedSave('normal', $data); }
-
-    private static function getFilePath($key) {
-        $map = [
-            'stats' => self::$stats_file,
-            'patterns' => self::$patterns_file,
-            'weights' => self::$weights_file,
-            'feedback' => self::$feedback_file,
-            'normal' => self::$normal_file,
-        ];
-        return $map[$key] ?? null;
-    }
-
-    private static function cachedLoad($key, $default) {
-        $now = time();
-        if (isset(self::$static_cache[$key])
-            && isset(self::$static_cache_ts[$key])
-            && ($now - self::$static_cache_ts[$key]) < self::STATIC_CACHE_TTL) {
-            return self::$static_cache[$key];
-        }
-        $file = self::getFilePath($key);
-        if ($file === null) return $default;
-        $data = waf_safe_read_json($file, $default);
-        self::$static_cache[$key] = $data;
-        self::$static_cache_ts[$key] = $now;
-        return $data;
-    }
-
-    private static function cachedSave($key, $data) {
-        $file = self::getFilePath($key);
-        if ($file === null) return;
-        waf_safe_write_json($file, $data);
-        self::$static_cache[$key] = $data;
-        self::$static_cache_ts[$key] = time();
-    }
-
-    public static function invalidateCache($key = null) {
-        if ($key === null) {
-            self::$static_cache = [];
-            self::$static_cache_ts = [];
-        } else {
-            unset(self::$static_cache[$key], self::$static_cache_ts[$key]);
-        }
-    }
-
-    private static function pruneStats($stats) {
-        if (empty($stats['payloads'])) return $stats;
-        $cutoff = time() - 30 * 86400;
-        foreach ($stats['payloads'] as $hash => $info) {
-            if ($info['last_seen'] < $cutoff) unset($stats['payloads'][$hash]);
-        }
-        if (!empty($stats['type_trend'])) {
-            $trendCutoff = date('Y-m-d', time() - 7 * 86400);
-            foreach ($stats['type_trend'] as $day => $data) {
-                if ($day < $trendCutoff) unset($stats['type_trend'][$day]);
-            }
-        }
-        return $stats;
-    }
-}
-
-// 向后兼容别名
-class_alias('AutoLearn', 'WafAutoLearner');
+    private static function saveStats($data) { self::cached
