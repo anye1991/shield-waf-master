@@ -10,6 +10,11 @@
  *   FP Guard: 误报控制（确保不误杀）
  *   Path Predictor: 路径预判（提前布防）
  *   Active Defense: 主动防御（围追堵截）
+ *
+ * [v5.4] 新增语义权重反哺支持：
+ *   - 权重懒加载（默认值 + learning/semantic_weights.json 覆盖）
+ *   - setWeights() 公开写入接口（带文件锁 + 原子写）
+ *   - getDefaultWeights() / resetWeights() 辅助方法
  */
 defined('ABSPATH') || exit;
 
@@ -58,7 +63,12 @@ spl_autoload_register(function ($class) {
 });
 
 class SemanticEngine {
-    private static $weights = [
+
+    /** [v5.4] 权重懒加载：null 表示未初始化，首次访问时从默认值 + 持久化文件加载 */
+    private static $weights = null;
+
+    /** [v5.4] 硬编码默认权重（原 $weights 的内容，保持不变） */
+    private static $default_weights = [
         'char'        => 0.02,
         'word'        => 0.02,
         'structure'   => 0.04,
@@ -85,10 +95,19 @@ class SemanticEngine {
         'csv_parser'        => 0.06,
         'yaml_parser'       => 0.07,
         'redos_parser'      => 0.06,
-        // 上下文分析器（新增）
-        'param_position'    => 0.05,   // 参数位置语义分析
-        'request_context'   => 0.06,   // 跨请求上下文分析
+        'param_position'    => 0.05,
+        'request_context'   => 0.06,
     ];
+
+    /** [v5.4] 权重持久化文件路径缓存 */
+    private static $weights_file = null;
+
+    /** [v5.4] 权重允许范围 */
+    const WEIGHT_MIN = 0.01;
+    const WEIGHT_MAX = 0.30;
+
+    /** [v5.4] 单次 setWeights 调整上限（绝对值） */
+    const WEIGHT_DELTA_MAX = 0.05;
 
     /**
      * 完整语义分析（含围堵策略）
@@ -105,6 +124,9 @@ class SemanticEngine {
         string $body = '',
         string $contentType = ''
     ): array {
+        // [v5.4] 权重懒加载（首次调用时初始化，后续请求零开销）
+        self::initWeights();
+
         if ($text === '' && empty($params) && empty($multiVectorData)) {
             return self::emptyResult();
         }
@@ -144,7 +166,8 @@ class SemanticEngine {
         return $finalResult;
     }
 
-    /**
+
+     /**
      * 基础10维分析
      */
     private static function baseAnalyze(string $text, string $uri, array $params, array $normalizerContext, string $ip, array $multiVectorData, string $body = '', string $contentType = '', array $headers = []): array {
@@ -182,10 +205,6 @@ class SemanticEngine {
         $structResult    = StructureSemantics::analyze($decodedText);
 
         // ---- 快速短路：L1-L3基础分极低时跳过重型深度解析器（正常请求加速）----
-        // 权重：char(0.02) + word(0.02) + structure(0.04) + adversarial(0.04) = 0.12
-        // 快速预估分 < 5 分 → 几乎肯定是正常请求，跳过16个重型解析器
-        // 例外：格式指纹检测命中（GraphQL/YAML/CSV/ReDoS等特定格式攻击，基础分可能很低）
-        // 例外：路径遍历特征（../ 模式，基础分可能很低但仍危险）
         $fastPreScore = $charResult['score'] * 0.02
                       + $wordResult['score'] * 0.02
                       + $structResult['score'] * 0.04
@@ -258,58 +277,26 @@ class SemanticEngine {
         }
 
         $intentScore = max($intentResult['score'], $intentAnalyzerResult['score']);
-
         $obfuscationScore = $obfuscationResult['score'];
 
         // ---- 深度语义解析器（内容类型感知路由 + 快速短路，正常请求零开销） ----
         $route = !$skipHeavyParsers ? self::routeParsers($contentType, $headers, $body, $params, $uri, $decodedText) : [];
 
-        // SQL解析器：分析URI参数值 + POST body中的字符串值
         $sqlParserResult = (!empty($route['sql'])) ? SqlSemanticParser::analyze($route['sql']) : self::emptyParserResult();
-
-        // HTML解析器：分析Body（当Content-Type为html时重点分析）
         $htmlParserResult = (!empty($route['html'])) ? HtmlSemanticParser::analyze($route['html']) : self::emptyParserResult();
-
-        // PHP解析器：分析Body + 文件上传相关参数
         $phpParserResult = (!empty($route['php'])) ? PhpCodeSemanticParser::analyze($route['php']) : self::emptyParserResult();
-
-        // 路径遍历：分析URI参数值 + 文件相关参数
         $pathParserResult = (!empty($route['path'])) ? PathTraversalSemanticParser::analyze($route['path']) : self::emptyParserResult();
-
-        // 命令注入：分析URI参数值 + Body字符串
         $commandParserResult = (!empty($route['command'])) ? CommandInjectionSemanticParser::analyze($route['command']) : self::emptyParserResult();
-
-        // XXE解析器：分析Body（仅当Content-Type为xml时）
         $xxeParserResult = (!empty($route['xxe'])) ? XxeSemanticParser::analyze($route['xxe']) : self::emptyParserResult();
-
-        // SSRF解析器：分析URI中的URL参数 + Body中的URL
         $ssrfParserResult = (!empty($route['ssrf'])) ? SsrfSemanticParser::analyze($route['ssrf']) : self::emptyParserResult();
-
-        // SSTI：分析URI参数 + Body
         $sstiParserResult = (!empty($route['ssti'])) ? SstiSemanticParser::analyze($route['ssti']) : self::emptyParserResult();
-
-        // 反序列化：分析Body（当Content-Type包含序列化特征时）
         $deserParserResult = (!empty($route['deser'])) ? DeserializationSemanticParser::analyze($route['deser']) : self::emptyParserResult();
-
-        // CRLF：分析Headers + URI参数
         $crlfParserResult = (!empty($route['crlf'])) ? CrlfInjectionSemanticParser::analyze($route['crlf']) : self::emptyParserResult();
-
-        // 表达式注入：分析URI参数 + Body
         $exprParserResult = (!empty($route['expr'])) ? ExpressionInjectionSemanticParser::analyze($route['expr']) : self::emptyParserResult();
-
-        // GraphQL解析器：分析Body（GraphQL查询）
         $graphqlParserResult = (!empty($route['graphql'])) ? GraphqlSemanticParser::analyze($route['graphql']) : self::emptyParserResult();
-
-        // WebSocket解析器：分析Body（WebSocket帧数据）
         $websocketParserResult = (!empty($route['websocket'])) ? WebSocketSemanticParser::analyze($route['websocket']) : self::emptyParserResult();
-
-        // CSV/公式注入解析器：分析参数值 + Body
         $csvParserResult = (!empty($route['csv'])) ? CsvInjectionSemanticParser::analyze($route['csv']) : self::emptyParserResult();
-
-        // YAML反序列化解析器：分析Body（YAML配置/数据）
         $yamlParserResult = (!empty($route['yaml'])) ? YamlSemanticParser::analyze($route['yaml']) : self::emptyParserResult();
-
-        // ReDoS解析器：分析正则表达式参数
         $redosParserResult = (!empty($route['redos'])) ? RegexdosSemanticParser::analyze($route['redos']) : self::emptyParserResult();
 
         $sqlParserScore  = $sqlParserResult['score'] ?? 0;
@@ -329,7 +316,7 @@ class SemanticEngine {
         $yamlParserScore = $yamlParserResult['score'] ?? 0;
         $redosParserScore = $redosParserResult['score'] ?? 0;
 
-        // ---- 参数位置上下文分析（L11）：同 payload 在不同位置威胁不同 ----
+        // ---- 参数位置上下文分析（L11） ----
         $paramPositionResult = ['score' => 0, 'positions' => [], 'position_anomalies' => [], 'cross_position_patterns' => [], 'high_risk_params' => []];
         if (!defined('WAF_PARAM_POSITION_ANALYZER') || WAF_PARAM_POSITION_ANALYZER) {
             $paramPositionResult = ParamPositionAnalyzer::analyze(
@@ -337,13 +324,13 @@ class SemanticEngine {
                 $multiVectorData['post'] ?? [],
                 $multiVectorData['cookie_array'] ?? [],
                 $multiVectorData['headers'] ?? [],
-                [],  // JSON Body（已由 body 解析器处理，这里传空避免重复）
+                [],
                 $uri
             );
         }
         $paramPositionScore = $paramPositionResult['score'] ?? 0;
 
-        // ---- 跨请求上下文分析（L12）：CSRF/重放/会话/时序/API滥用 ----
+        // ---- 跨请求上下文分析（L12） ----
         $ctxMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
         $requestContextResult = [
             'score' => 0, 'csrf_risk' => [], 'replay_risk' => [], 'session_anomaly' => [],
@@ -361,7 +348,7 @@ class SemanticEngine {
         }
         $requestContextScore = $requestContextResult['score'] ?? 0;
 
-        // ---- 攻击模式泛化匹配（结构相似度，非字符串匹配） ----
+        // ---- 攻击模式泛化匹配 ----
         $patternMatchResult = !$skipHeavyParsers ? AttackPatternLibrary::match($text, $decodedText) : ['is_attack_like' => false, 'best_match' => null];
         $patternMatchScore = 0;
         if ($patternMatchResult['is_attack_like'] && !empty($patternMatchResult['best_match'])) {
@@ -434,7 +421,7 @@ class SemanticEngine {
         if ($adversarialResult['is_adversarial'] && $intentResult['score'] >= 40) $total += 15;
         if ($memoryScore >= 40 && $intentResult['score'] >= 40) $total += 10;
 
-        // 深度解析器+意图双证加成（11大深度解析器各有强证据通道）
+        // 深度解析器+意图双证加成
         $primaryIntent = $intentResult['primary_intent'] ?? 'unknown';
         if ($primaryIntent === 'path_traversal' && $pathParserScore >= 30) $total += 15;
         if ($primaryIntent === 'command_injection' && $commandParserScore >= 25) $total += 15;
@@ -447,7 +434,6 @@ class SemanticEngine {
         if ($primaryIntent === 'deserialization' && $deserParserScore >= 30) $total += 15;
         if ($primaryIntent === 'crlf_injection' && $crlfParserScore >= 30) $total += 10;
 
-        // 算术/逻辑恒真双证加成（LogicInference + SQLParser 都检测到恒真）
         $logicHasTaut = ($logicResult['logic_type'] ?? '') === 'tautology'
             || !empty($logicResult['tautology_count'])
             || !empty($logicResult['has_tautology']);
@@ -455,7 +441,6 @@ class SemanticEngine {
         if ($logicHasTaut && $sqlHasTaut) $total += 15;
         elseif ($logicHasTaut || $sqlHasTaut) $total += 5;
 
-        // 深度解析器强证据加成（真正的语法分析命中，不是正则）
         if ($sqlParserScore >= 50 && $logicResult['score'] >= 40) $total += 12;
         if ($htmlParserScore >= 50 && $structResult['score'] >= 40) $total += 10;
         if ($phpParserScore >= 50 && $adversarialScore >= 40) $total += 15;
@@ -472,6 +457,7 @@ class SemanticEngine {
         if ($csvParserScore >= 50) $total += 10;
         if ($yamlParserScore >= 50) $total += 15;
         if ($redosParserScore >= 50) $total += 10;
+
         $parserCount = 0;
         if ($sqlParserScore >= 30) $parserCount++;
         if ($htmlParserScore >= 30) $parserCount++;
@@ -494,14 +480,10 @@ class SemanticEngine {
         elseif ($parserCount >= 3) $total += 15;
         elseif ($parserCount >= 2) $total += 10;
 
-        // 攻击模式泛化加成（结构相似度作为辅助增强，需有其他层证据支撑）
         if ($patternMatchScore >= 25 && $intentScore >= 40) {
             $total += (int)round($patternMatchScore * 0.2);
         }
 
-        // 编码绕过意图加成（核心思想：编码越深+解码后攻击得分越高=刻意绕过意图越强）
-        // 注：effectiveAttackScore 取综合分与单项解析器加权分最大值，
-        // 但单项解析器对参数名/短字符串敏感，容易误判，因此系数保守
         $effectiveAttackScore = max(
             $total,
             $sqlParserScore * 0.6,
@@ -517,8 +499,6 @@ class SemanticEngine {
             $total += $encodeBypassScore;
         }
 
-        // 高置信度明文攻击保底加成（仅在专项解析器有强烈攻击证据时才加成）
-        // 注：门槛提高到 60/75，避免参数名误判（如 ?p=1 触发 pathParser 50 分）导致误拦截
         if ($decodeDepth === 0) {
             $maxParserScore = max(
                 $sqlParserScore,
@@ -535,53 +515,39 @@ class SemanticEngine {
         }
 
         // ===== 解析器布尔标志位保底加成 =====
-        // 即使 parser 得分因模型保守而偏低，只要解析器检测到明确的攻击特征标志位
-        // （has_eval / has_command_exec / has_script / has_union / is_path_traversal 等），
-        // 就给予保底分数，防止短载荷攻击（如 system(ls) / eval(...) / <script>...）漏检
         $parserFlagBonus = 0;
 
-        // PHP 代码执行：eval() / system() / exec() 等
         $phpParserResult = $phpParserResult ?? [];
         if (!empty($phpParserResult['has_eval'])) $parserFlagBonus = max($parserFlagBonus, 65);
         if (!empty($phpParserResult['has_command_exec'])) $parserFlagBonus = max($parserFlagBonus, 75);
         if (!empty($phpParserResult['has_superglobal_danger'])) $parserFlagBonus = max($parserFlagBonus, 60);
         if (!empty($phpParserResult['dangerous_functions'])) $parserFlagBonus = max($parserFlagBonus, 60);
 
-        // SQL 注入：UNION / tautology
         $sqlParserResult = $sqlParserResult ?? [];
         if (!empty($sqlParserResult['has_union'])) $parserFlagBonus = max($parserFlagBonus, 70);
         if (!empty($sqlParserResult['has_tautology'])) $parserFlagBonus = max($parserFlagBonus, 75);
 
-        // XSS 攻击：script / event handler / javascript 协议
         $htmlParserResult = $htmlParserResult ?? [];
         if (!empty($htmlParserResult['has_script'])) $parserFlagBonus = max($parserFlagBonus, 70);
         if (!empty($htmlParserResult['has_event_handler'])) $parserFlagBonus = max($parserFlagBonus, 60);
         if (!empty($htmlParserResult['has_javascript_protocol'])) $parserFlagBonus = max($parserFlagBonus, 65);
         if (!empty($htmlParserResult['has_svg_payload'])) $parserFlagBonus = max($parserFlagBonus, 60);
 
-        // 路径遍历
         $pathParserResult = $pathParserResult ?? [];
         if (!empty($pathParserResult['is_path_traversal'])) $parserFlagBonus = max($parserFlagBonus, 65);
 
-        // CRLF 注入：原始CRLF序列、HTTP头注入、响应拆分
-        // 注意：CRLF 的 \r\n 会被 Normalizer 的 layerWhitespace 规范化为空格，
-        // 所以 signatureBonus 检测不到。这里通过 CRLF 解析器的标志位兜底。
-        // CRLF 解析器分析的是 route['crlf']（来自原始 body + URI 参数 + headers），能看到真实 \r\n
         $crlfParserResult = $crlfParserResult ?? [];
         if (!empty($crlfParserResult['is_crlf'])) $parserFlagBonus = max($parserFlagBonus, 50);
         if (!empty($crlfParserResult['header_injection_hits'])) $parserFlagBonus = max($parserFlagBonus, 65);
         if (!empty($crlfParserResult['response_splitting'])) $parserFlagBonus = max($parserFlagBonus, 75);
 
-        // 应用保底加成：取当前总分与"标志位保底分"的最大值
         if ($parserFlagBonus > $total) {
             $total = $parserFlagBonus;
         }
 
         // ===== 上下文分析器强证据加成 =====
-        // 参数位置异常 + 注入证据 -> 跨位置注入意图
         if ($paramPositionScore >= 50 && $intentScore >= 40) $total += 10;
         if (!empty($paramPositionResult['cross_position_patterns'])) $total += 8;
-        // 跨请求上下文强证据：CSRF/重放/会话劫持 -> 直接加成
         if (!empty($requestContextResult['csrf_risk']['is_csrf'])) $total += 12;
         if (!empty($requestContextResult['replay_risk']['is_replay'])) $total += 10;
         if (!empty($requestContextResult['session_anomaly']['is_anomaly'])) $total += 12;
@@ -589,8 +555,6 @@ class SemanticEngine {
         if (!empty($requestContextResult['api_abuse']['is_abuse'])) $total += 10;
 
         // ===== 明确攻击签名兜底加成 =====
-        // 当解析器得分偏低但归一化后的文本包含明确的攻击签名时，给予兜底分数
-        // 防止短payload或变形payload因解析器保守而漏检
         $signatureBonus = self::calcSignatureBonus($decodedText, $total);
         if ($signatureBonus > $total) {
             $total = $signatureBonus;
@@ -819,6 +783,7 @@ class SemanticEngine {
             'indicators'            => self::buildBaseIndicators($charResult, $wordResult, $structResult, $paramMismatches, $businessResult, $logicResult, $intentResult, $intentAnalyzerResult, $obfuscationResult, $chainInfo, $memoryAnomalies, $adversarialResult, $multiVectorResult),
         ];
     }
+
 
     /**
      * 组合所有结果
@@ -1088,6 +1053,7 @@ class SemanticEngine {
     }
 
     public static function getWeights(): array {
+		self::initWeights();
         return self::$weights;
     }
 
@@ -1481,5 +1447,189 @@ class SemanticEngine {
         if (preg_match('#@[\w.-]+\s*$#i', $text) && preg_match('#https?://#i', $text)) $bonus = max($bonus, 55);
         
         return $bonus;
+    }
+
+    // ====================== [v5.4] 权重管理 ======================
+
+    /**
+     * [v5.4] 初始化权重
+     *
+     * 加载顺序：
+     *   1. 硬编码默认值（$default_weights）
+     *   2. 持久化文件（learning/semantic_weights.json）覆盖
+     *
+     * 安全：
+     *   - 只覆盖已知 key，忽略未知 key（防注入）
+     *   - 值范围限制在 [WEIGHT_MIN, WEIGHT_MAX]
+     *   - 非数值忽略
+     *   - 文件读失败静默降级到默认值
+     */
+    private static function initWeights(): void {
+        if (self::$weights !== null) return;
+
+        // 1. 先加载默认值
+        self::$weights = self::$default_weights;
+
+        // 2. 尝试从持久化文件覆盖
+        $file = self::getWeightsFile();
+        if ($file === null || !is_file($file)) {
+            return;
+        }
+
+        $raw = @file_get_contents($file);
+        if ($raw === false || $raw === '') {
+            return;
+        }
+
+        $saved = json_decode($raw, true);
+        if (!is_array($saved)) {
+            return;
+        }
+
+        // 3. 逐项覆盖，严格校验
+        foreach ($saved as $key => $value) {
+            if (!isset(self::$weights[$key])) continue;
+            if (!is_numeric($value)) continue;
+            $v = (float)$value;
+            if ($v < self::WEIGHT_MIN || $v > self::WEIGHT_MAX) continue;
+            self::$weights[$key] = $v;
+        }
+    }
+
+    /**
+     * [v5.4] 设置权重（供 Learning_SemanticWeightBridge 调用）
+     *
+     * @param array $adjustments ['weight_key' => delta, ...] delta 是增量
+     * @return array ['weight_key' => ['old' => x, 'new' => y], ...]
+     */
+    public static function setWeights(array $adjustments): array {
+        self::initWeights();
+
+        $applied = [];
+        if (empty($adjustments)) return $applied;
+
+        $file = self::getWeightsFile();
+        if ($file === null) {
+            return self::applyWeightsToMemory($adjustments);
+        }
+
+        $dir = dirname($file);
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0775, true);
+        }
+
+        // 文件锁（防并发覆盖）
+        $lockFile = $file . '.lock';
+        $fp = @fopen($lockFile, 'c');
+        if ($fp === false) {
+            return self::applyWeightsToMemory($adjustments);
+        }
+
+        if (!flock($fp, LOCK_EX)) {
+            fclose($fp);
+            return self::applyWeightsToMemory($adjustments);
+        }
+
+        try {
+            // 读文件最新值（防覆盖别人刚改的）
+            $current = [];
+            if (is_file($file)) {
+                $raw = @file_get_contents($file);
+                if ($raw !== false && $raw !== '') {
+                    $decoded = json_decode($raw, true);
+                    if (is_array($decoded)) $current = $decoded;
+                }
+            }
+
+            foreach ($adjustments as $key => $delta) {
+                if (!isset(self::$default_weights[$key])) continue;
+                if (!is_numeric($delta)) continue;
+
+                $base = isset($current[$key]) && is_numeric($current[$key])
+                    ? (float)$current[$key]
+                    : (float)self::$default_weights[$key];
+
+                $delta = max(-self::WEIGHT_DELTA_MAX, min(self::WEIGHT_DELTA_MAX, (float)$delta));
+                $new = max(self::WEIGHT_MIN, min(self::WEIGHT_MAX, $base + $delta));
+                $new = round($new, 4);
+
+                if (abs($new - $base) < 0.0001) continue;
+
+                $current[$key] = $new;
+                $applied[$key] = ['old' => round($base, 4), 'new' => $new];
+            }
+
+            if (!empty($applied)) {
+                $json = json_encode($current, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                if ($json !== false) {
+                    $tmp = $file . '.tmp.' . getmypid() . '.' . mt_rand(1000, 9999);
+                    if (@file_put_contents($tmp, $json, LOCK_EX) !== false) {
+                        if (!@rename($tmp, $file)) {
+                            @unlink($tmp);
+                        }
+                    }
+                }
+
+                foreach ($applied as $key => $change) {
+                    self::$weights[$key] = $change['new'];
+                }
+            }
+        } finally {
+            flock($fp, LOCK_UN);
+            fclose($fp);
+        }
+
+        return $applied;
+    }
+
+    /**
+     * [v5.4] 降级方案：只改内存（无法写文件时用）
+     */
+    private static function applyWeightsToMemory(array $adjustments): array {
+        $applied = [];
+        foreach ($adjustments as $key => $delta) {
+            if (!isset(self::$weights[$key])) continue;
+            if (!is_numeric($delta)) continue;
+            $delta = max(-self::WEIGHT_DELTA_MAX, min(self::WEIGHT_DELTA_MAX, (float)$delta));
+            $old = self::$weights[$key];
+            $new = max(self::WEIGHT_MIN, min(self::WEIGHT_MAX, $old + $delta));
+            if (abs($new - $old) < 0.0001) continue;
+            self::$weights[$key] = round($new, 4);
+            $applied[$key] = ['old' => round($old, 4), 'new' => self::$weights[$key]];
+        }
+        return $applied;
+    }
+
+    /**
+     * [v5.4] 重置权重到默认值（供控制台/调试用）
+     */
+    public static function resetWeights(): bool {
+        self::$weights = self::$default_weights;
+        $file = self::getWeightsFile();
+        if ($file !== null && is_file($file)) {
+            @unlink($file);
+        }
+        return true;
+    }
+
+    /**
+     * [v5.4] 获取默认权重（供控制台展示对比）
+     */
+    public static function getDefaultWeights(): array {
+        return self::$default_weights;
+    }
+
+    /**
+     * [v5.4] 权重文件路径
+     */
+    private static function getWeightsFile(): ?string {
+        if (self::$weights_file !== null) {
+            return self::$weights_file;
+        }
+        if (!defined('WAF_LOG_PATH') || WAF_LOG_PATH === '') {
+            return null;
+        }
+        self::$weights_file = WAF_LOG_PATH . '/learning/semantic_weights.json';
+        return self::$weights_file;
     }
 }
