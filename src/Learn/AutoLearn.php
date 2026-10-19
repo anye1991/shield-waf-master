@@ -814,4 +814,87 @@ class AutoLearn {
     private static function loadStats() {
         return self::cachedLoad('stats', ['payloads' => [], 'total_attacks' => 0, 'type_trend' => []]);
     }
-    private static function saveStats($data) { self::cached
+    private static function saveStats($data) { self::cachedSave('stats', $data); }
+    private static function loadPatterns() {
+        return self::cachedLoad('patterns', ['rules' => [], 'total_learned' => 0, 'last_learn_time' => 0]);
+    }
+    private static function savePatterns($data) { self::cachedSave('patterns', $data); }
+    private static function loadWeights() {
+        return self::cachedLoad('weights', ['feedback_adjustments' => [], 'last_feedback_time' => 0]);
+    }
+    private static function saveWeights($data) { self::cachedSave('weights', $data); }
+    private static function loadFeedback() { return self::cachedLoad('feedback', []); }
+    private static function saveFeedback($data) { self::cachedSave('feedback', $data); }
+    private static function loadNormal() {
+        return self::cachedLoad('normal', ['patterns' => [], 'total_normal' => 0]);
+    }
+    private static function saveNormal($data) { self::cachedSave('normal', $data); }
+
+    private static function getFilePath($key) {
+        $map = [
+            'stats' => self::$stats_file,
+            'patterns' => self::$patterns_file,
+            'weights' => self::$weights_file,
+            'feedback' => self::$feedback_file,
+            'normal' => self::$normal_file,
+        ];
+        return $map[$key] ?? null;
+    }
+
+    private static function cachedLoad($key, $default) {
+        $now = time();
+        if (isset(self::$static_cache[$key])
+            && isset(self::$static_cache_ts[$key])
+            && ($now - self::$static_cache_ts[$key]) < self::STATIC_CACHE_TTL) {
+            return self::$static_cache[$key];
+        }
+        $file = self::getFilePath($key);
+        if ($file === null) return $default;
+        $data = waf_safe_read_json($file, $default);
+        self::$static_cache[$key] = $data;
+        self::$static_cache_ts[$key] = $now;
+        return $data;
+    }
+
+    private static function cachedSave($key, $data) {
+        $file = self::getFilePath($key);
+        if ($file === null) return;
+        waf_safe_write_json($file, $data);
+        self::$static_cache[$key] = $data;
+        self::$static_cache_ts[$key] = time();
+    }
+
+    public static function invalidateCache($key = null) {
+        if ($key === null) {
+            self::$static_cache = [];
+            self::$static_cache_ts = [];
+        } else {
+            unset(self::$static_cache[$key], self::$static_cache_ts[$key]);
+        }
+    }
+
+    private static function pruneStats($stats) {
+        if (empty($stats['payloads'])) return $stats;
+        $cutoff = time() - 30 * 86400;
+        foreach ($stats['payloads'] as $hash => $info) {
+            if ($info['last_seen'] < $cutoff) unset($stats['payloads'][$hash]);
+        }
+        if (!empty($stats['type_trend'])) {
+            $trendCutoff = date('Y-m-d', time() - 7 * 86400);
+            foreach ($stats['type_trend'] as $day => $data) {
+                if ($day < $trendCutoff) unset($stats['type_trend'][$day]);
+            }
+        }
+        return $stats;
+    }
+
+    /**
+     * [v5.4] 语义权重调整节流锁文件路径
+     */
+    private static function getSemanticWeightLockFile(): string {
+        return WAF_LOG_PATH . '/learning/semantic_weight_lock.json';
+    }
+}
+
+// 向后兼容别名
+class_alias('AutoLearn', 'WafAutoLearner');
