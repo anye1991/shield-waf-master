@@ -1,4 +1,4 @@
-# 🛡️ 盾甲 WAF (Shield WAF) v5.3.0
+# 🛡️ 盾甲 WAF (Shield WAF) v5.4.0
 
 [![Version](https://img.shields.io/badge/version-5.3.0-blue)](https://gitee.com/nights-shadow/shield-waf)
 [![PHP](https://img.shields.io/badge/PHP-7.4%2B-purple)](https://php.net/)

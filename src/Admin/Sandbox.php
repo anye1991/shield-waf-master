@@ -351,75 +351,49 @@ class WafSandbox {
      * 5. 如果是恶意，只移除恶意行，保留原始内容
      * 6. 写回文件，恢复原始内容
      */
+        /**
+     * 精准切割 — 已修复数组索引错位 Bug
+     */
     public static function surgicalCut(string $path): array {
-        if (!is_file($path)) {
-            return ['success' => false, 'error' => 'file not found'];
-        }
-
-        // WAF 自身文件不切割
-        if (self::isProtectedFile($path)) {
-            return ['success' => false, 'error' => 'protected file'];
-        }
+        if (!is_file($path)) return ['success' => false, 'error' => 'file not found'];
+        if (self::isProtectedFile($path)) return ['success' => false, 'error' => 'protected file'];
 
         $baselineHash = self::getBaselineHash($path);
-        if ($baselineHash === null) {
-            return ['success' => false, 'error' => 'not in baseline'];
-        }
+        if ($baselineHash === null) return ['success' => false, 'error' => 'not in baseline'];
 
         $currentContent = @file_get_contents($path);
-        if ($currentContent === false) {
-            return ['success' => false, 'error' => 'read failed'];
-        }
+        if ($currentContent === false) return ['success' => false, 'error' => 'read failed'];
 
-        // 如果当前文件哈希与基线一致，说明没被修改
         if (md5($currentContent) === $baselineHash) {
             return ['success' => true, 'action' => 'no_change', 'message' => '文件未被修改'];
         }
 
-        // 没有原始文件备份无法做精准切割 → 只能整体隔离
-        // 基线只存了哈希，没有原始内容 → 需要从备份恢复
         $backupContent = self::getBaselineBackup($path);
         if ($backupContent === null) {
-            // 没有备份 → 隔离当前文件并告警
             self::quarantineFile($path, "基线无备份，无法精准切割，已隔离", ['score' => 0, 'type' => 'modified']);
             return ['success' => false, 'error' => 'no backup available', 'action' => 'quarantined'];
         }
 
-        // 行级 diff：找出新增的行
         $originalLines = explode("\n", $backupContent);
         $currentLines  = explode("\n", $currentContent);
         $diff = self::lineDiff($originalLines, $currentLines);
 
         if (empty($diff['added'])) {
-            // 没有新增行，可能是删除或修改 → 直接恢复原始内容
             file_put_contents($path, $backupContent);
             self::log("SURGICAL_CUT 恢复原始文件(无新增): $path");
-            return [
-                'success'     => true,
-                'action'      => 'restored',
-                'added_lines' => 0,
-                'removed_lines' => count($diff['removed']),
-                'message'     => '文件已恢复为原始内容',
-            ];
+            return ['success' => true, 'action' => 'restored', 'added_lines' => 0, 'removed_lines' => count($diff['removed']), 'message' => '文件已恢复为原始内容'];
         }
 
-        // 对新增行做恶意检测
-        // 构建上下文（所有新增行拼接），用于跨行变量函数检测
-        // 攻击者常把 $a='sys'.'tem'; 和 $a($_GET['cmd']); 分两行写
         $context = '';
-        foreach ($diff['added'] as $lineInfo) {
-            $context .= $lineInfo['content'] . "\n";
-        }
+        foreach ($diff['added'] as $lineInfo) { $context .= $lineInfo['content'] . "\n"; }
 
         $maliciousLines = [];
         foreach ($diff['added'] as $lineInfo) {
-            $lineNum = $lineInfo['line'];
-            $lineContent = $lineInfo['content'];
-            $analysis = self::analyzeLineForMalware($lineContent, $context);
+            $analysis = self::analyzeLineForMalware($lineInfo['content'], $context);
             if ($analysis['is_malicious']) {
                 $maliciousLines[] = [
-                    'line'    => $lineNum,
-                    'content' => $lineContent,
+                    'line'    => $lineInfo['line'],
+                    'content' => $lineInfo['content'],
                     'score'   => $analysis['score'],
                     'reason'  => $analysis['reason'],
                 ];
@@ -427,39 +401,28 @@ class WafSandbox {
         }
 
         if (empty($maliciousLines)) {
-            // 新增行不是恶意 → 可能是正常更新，不处理
-            return [
-                'success'       => true,
-                'action'        => 'skip',
-                'added_lines'   => count($diff['added']),
-                'malicious_lines' => 0,
-                'message'       => '新增内容非恶意，跳过',
-            ];
+            return ['success' => true, 'action' => 'skip', 'added_lines' => count($diff['added']), 'malicious_lines' => 0, 'message' => '新增内容非恶意，跳过'];
         }
 
-        // 精准切割：移除恶意行，保留其余内容
         $cleanLines = $currentLines;
         foreach (array_reverse($maliciousLines) as $ml) {
-            // 按行号删除（从后往前删，避免行号偏移）
             $lineIdx = $ml['line'] - 1;
             if (isset($cleanLines[$lineIdx])) {
                 unset($cleanLines[$lineIdx]);
             }
         }
+        // [关键优化] 重新构建索引，防止 unset 导致的行错位
+        $cleanLines = array_values($cleanLines);
         $cleanContent = implode("\n", $cleanLines);
 
-        // 切割前先备份当前文件（用于回滚）
         $cutBackupDir = self::$quarantine_dir . 'cut_backup/';
         if (!is_dir($cutBackupDir)) @mkdir($cutBackupDir, 0755, true);
-        $cutBackupFile = $cutBackupDir . md5($path) . '_' . time() . '.bak';
-        @file_put_contents($cutBackupFile, $currentContent);
+        @file_put_contents($cutBackupDir . md5($path) . '_' . time() . '.bak', $currentContent);
 
-        // 写回清理后的内容
         file_put_contents($path, $cleanContent);
 
         $cutCount = count($maliciousLines);
         self::log("SURGICAL_CUT 精准切割完成: $path, 移除 {$cutCount} 行恶意代码");
-        // 集成点 1：事件回流到 AutoLearn
         self::notifyAutoLearn('surgical_cut', $path, ['score' => 80]);
 
         return [
@@ -743,30 +706,33 @@ class WafSandbox {
      * @param string $line       原始行
      * @param array  $indicators [out] 记录命中的脱壳类型
      */
+        /**
+     * 静态脱壳 — 已加入超长行截断防 ReDoS
+     */
     private static function deobfuscateLine(string $line, array &$indicators = []): string {
         $text = $line;
 
-        // 1. PHP-aware 注释剥离（不破坏字符串内部）
+        // [极限优化] 单行超长时强行截断，防止混淆代码引发正则回溯爆炸打死服务器
+        if (strlen($text) > 8192) {
+            $text = substr($text, 0, 8192);
+            $indicators[] = '超长行截断(防DoS)';
+        }
+
         $stripped = self::stripPhpComments($text);
         if ($stripped !== $text) {
             $indicators[] = '注释插入';
             $text = $stripped;
         }
 
-        // 2. chr() 拼装还原：chr(101).chr(118).chr(97).chr(108) => "eval"
         if (preg_match_all('/chr\s*\(\s*(\d+)\s*\)/i', $text, $chrMatches)) {
             if (count($chrMatches[0]) >= 2) {
                 $assembled = '';
-                foreach ($chrMatches[1] as $code) {
-                    $c = (int)$code & 0xFF;
-                    $assembled .= chr($c);
-                }
+                foreach ($chrMatches[1] as $code) { $assembled .= chr((int)$code & 0xFF); }
                 $text = str_replace($chrMatches[0], '"' . $assembled . '"', $text);
                 $indicators[] = 'chr拼装';
             }
         }
 
-        // 3. Hex 转义还原："\x65\x76\x61\x6c" => "eval"
         if (preg_match('/\\\\x[0-9a-f]{2}/i', $text)) {
             $newText = preg_replace_callback('/"(?:\\\\x[0-9a-f]{2})+"/i', function($m) {
                 $decoded = '';
@@ -776,13 +742,9 @@ class WafSandbox {
                 }
                 return $m[0];
             }, $text);
-            if ($newText !== $text) {
-                $text = $newText;
-                $indicators[] = 'Hex转义';
-            }
+            if ($newText !== $text) { $text = $newText; $indicators[] = 'Hex转义'; }
         }
 
-        // 4. Octal 转义还原："\101\102\103" => "ABC"
         if (preg_match('/\\\\[0-7]{3}/', $text)) {
             $newText = preg_replace_callback('/"(?:\\\\[0-7]{3})+"/', function($m) {
                 $decoded = '';
@@ -792,33 +754,20 @@ class WafSandbox {
                 }
                 return $m[0];
             }, $text);
-            if ($newText !== $text) {
-                $text = $newText;
-                $indicators[] = 'Octal转义';
-            }
+            if ($newText !== $text) { $text = $newText; $indicators[] = 'Octal转义'; }
         }
 
-        // 5. 字符串字面量拼接还原：'ev'.'al' => "eval"
-        //    匹配形如 'ev'.'al' 或 "ev"."al" 的连用（≥2 段拼接）
         if (preg_match('/([\'"][a-z0-9_]+[\'"]\s*\.\s*){1,}[\'"][a-z0-9_]+[\'\"]/i', $text)) {
-            $newText = preg_replace_callback(
-                '/(?:[\'"]([a-z0-9_]+)[\'"]\s*\.\s*){1,}[\'"]([a-z0-9_]+)[\'\"]/i',
-                function($m) {
-                    $full = $m[0];
-                    if (preg_match_all('/[\'"]([a-z0-9_]+)[\'"]/i', $full, $parts)) {
-                        return '"' . implode('', $parts[1]) . '"';
-                    }
-                    return $full;
-                },
-                $text
-            );
-            if ($newText !== $text) {
-                $text = $newText;
-                $indicators[] = '字符串拼接';
-            }
+            $newText = preg_replace_callback('/(?:[\'"]([a-z0-9_]+)[\'"]\s*\.\s*){1,}[\'"]([a-z0-9_]+)[\'\"]/i', function($m) {
+                $full = $m[0];
+                if (preg_match_all('/[\'"]([a-z0-9_]+)[\'"]/i', $full, $parts)) {
+                    return '"' . implode('', $parts[1]) . '"';
+                }
+                return $full;
+            }, $text);
+            if ($newText !== $text) { $text = $newText; $indicators[] = '字符串拼接'; }
         }
 
-        // 6. URL/HTML 解码（依赖 AdversarialDefense 14 层解码引擎）
         if (class_exists('AdversarialDefense', false)) {
             $decoded = AdversarialDefense::normalize($text);
             if ($decoded !== $text && $decoded !== '') {
@@ -917,10 +866,12 @@ class WafSandbox {
      * 实时文件监控 — 对比请求开始和结束时的文件快照
      * 新落地的恶意文件秒删除，修改的现有文件触发分析
      */
+        /**
+     * 实时监控 — 加入后缀过滤，防误杀业务图片
+     */
     public static function realtimeMonitor() {
         $before = self::loadSnapshot();
         if (empty($before)) {
-            // 首次运行无快照，直接建立快照并返回（下次请求开始监控）
             $after = self::takeSnapshot(true);
             self::saveSnapshot($after);
             self::log("REALTIME_INIT 首次建立实时监控快照: " . count($after) . " 个文件");
@@ -930,7 +881,6 @@ class WafSandbox {
         $mode = self::getMode();
         $baselineLocked = self::isBaselineLocked();
 
-        // ⚠️ 必须强制刷新快照，否则 10 秒缓存会导致 before/after 完全相同，监控失效
         $after = self::takeSnapshot(true);
         $newFiles = array_diff_key($after, $before);
         $modifiedFiles = [];
@@ -941,15 +891,12 @@ class WafSandbox {
             }
         }
 
-        // 处理新文件
         foreach ($newFiles as $path => $info) {
-            // ⚠️ 保护检查：WAF 自身文件永不删除
             if (self::isProtectedFile($path)) {
                 self::log("SKIP_PROTECTED 跳过受保护文件: $path");
                 continue;
             }
 
-            // 学习模式：只记录告警，不删除
             if ($mode === 'learning') {
                 $analysis = self::analyzeFile($path);
                 if ($analysis['is_malicious']) {
@@ -959,27 +906,29 @@ class WafSandbox {
                 continue;
             }
 
-            // 保护模式：基线锁定后，不在基线中的新文件直接秒删除
             if ($mode === 'protecting' && $baselineLocked) {
                 if (!self::isInBaseline($path)) {
-                    // 不在基线中的新文件 → 秒删除
-                    @unlink($path);
-                    self::log("SECS_DELETE 新文件不在基线中，已秒删: $path");
-                    self::alertWebhook("秒删-未授权新文件", $path, ['score' => 100, 'type' => 'unauthorized_new']);
-                    // 集成点 1：事件回流到 AutoLearn
-                    self::notifyAutoLearn('instant_delete_unauthorized', $path, ['score' => 100]);
+                    // [极限优化] 只有当扩展名是可执行脚本时，才直接秒删。防止误伤正常业务（如图片附件）
+                    $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+                    if (in_array($ext, self::$protected_ext)) {
+                        @unlink($path);
+                        self::log("SECS_DELETE 未授权可执行新文件，已秒删: $path");
+                        self::alertWebhook("秒删-未授权新文件", $path, ['score' => 100, 'type' => 'unauthorized_new']);
+                        self::notifyAutoLearn('instant_delete_unauthorized', $path, ['score' => 100]);
+                    } else {
+                        self::log("SKIP_DELETE 非脚本新文件，移交隔离区: $path");
+                        self::quarantineFile($path, "未授权新文件(非脚本)", ['score' => 0, 'type' => 'unknown']);
+                    }
                     continue;
                 }
             }
 
-            // 保护模式但在基线中的新文件，或基线模式 → 分析
             $analysis = self::analyzeFile($path);
             if ($analysis['is_malicious']) {
                 if (defined('WAF_SANDBOX_INSTANT_DELETE_NEW') && WAF_SANDBOX_INSTANT_DELETE_NEW) {
                     @unlink($path);
                     self::log("SECS_DELETE 新落地恶意文件已秒删: $path (score={$analysis['score']})");
                     self::alertWebhook("秒删恶意文件", $path, $analysis);
-                    // 集成点 1：事件回流到 AutoLearn
                     self::notifyAutoLearn('instant_delete', $path, $analysis);
                 } else {
                     self::quarantineFile($path, "新落地恶意文件 (score={$analysis['score']})", $analysis);
@@ -987,15 +936,12 @@ class WafSandbox {
             }
         }
 
-        // 处理修改的文件
         foreach ($modifiedFiles as $path) {
-            // ⚠️ 保护检查：WAF 自身文件永不隔离
             if (self::isProtectedFile($path)) {
                 self::log("SKIP_PROTECTED 跳过受保护文件(已修改): $path");
                 continue;
             }
 
-            // 学习模式：只记录告警
             if ($mode === 'learning') {
                 $analysis = self::analyzeFile($path);
                 if ($analysis['is_malicious']) {
@@ -1005,7 +951,6 @@ class WafSandbox {
                 continue;
             }
 
-            // 保护模式且基线已锁定 → 精准切割
             if ($mode === 'protecting' && $baselineLocked && self::isInBaseline($path)) {
                 $cutResult = self::surgicalCut($path);
                 if ($cutResult['action'] === 'cut') {
@@ -1018,7 +963,6 @@ class WafSandbox {
                 continue;
             }
 
-            // 保护模式但不在基线中，或基线模式 → 原有逻辑
             $analysis = self::analyzeFile($path);
             if ($analysis['is_malicious']) {
                 $locations = self::locateMaliciousCode($path);
@@ -1035,7 +979,6 @@ class WafSandbox {
             }
         }
 
-        // 更新快照
         self::saveSnapshot($after);
     }
 
@@ -1075,27 +1018,50 @@ class WafSandbox {
 
     // ====================== 文件快照管理 ======================
 
+     /**
+     * 加载快照 — 加入文件锁，防止并发写坏 JSON
+     */
     private static function loadSnapshot() {
-        return waf_safe_read_json(self::$snapshot_file, []);
+        if (!is_file(self::$snapshot_file)) return [];
+        $fp = @fopen(self::$snapshot_file, 'r');
+        if (!$fp) return [];
+        $content = '';
+        if (flock($fp, LOCK_SH)) {
+            $content = stream_get_contents($fp);
+            flock($fp, LOCK_UN);
+        }
+        fclose($fp);
+        $data = json_decode($content, true);
+        return is_array($data) ? $data : [];
     }
 
+    /**
+     * 保存快照 — 加入文件锁 + 原子写
+     */
     private static function saveSnapshot($snapshot) {
-        waf_safe_write_json(self::$snapshot_file, $snapshot);
+        $tmp = self::$snapshot_file . '.tmp';
+        $json = json_encode($snapshot, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if (@file_put_contents($tmp, $json, LOCK_EX) !== false) {
+            @rename($tmp, self::$snapshot_file);
+        }
     }
 
     /**
      * 生成当前文件快照
      * @param bool $forceRefresh 是否强制刷新（忽略缓存），实时监控比较时必须传 true
      */
+        /**
+     * 生成当前文件快照 — 加入增量计算 mtime 优化
+     */
     public static function takeSnapshot($forceRefresh = false) {
         $cache = self::$snapshot_file;
-        // 快照缓存 10 秒内不重复扫描文件系统（实时监控比较时除外）
         if (!$forceRefresh && is_file($cache) && time() - filemtime($cache) < 10) {
-            $cached = json_decode(file_get_contents($cache), true);
+            $cached = self::loadSnapshot();
             if (is_array($cached)) return $cached;
         }
 
         $snapshot = [];
+        $oldSnapshot = self::loadSnapshot(); // 拿旧快照做对比
         $dirs = self::getMonitorDirs();
         $excludeDirs = self::getExcludeDirs();
 
@@ -1114,22 +1080,26 @@ class WafSandbox {
                 if (!$file->isFile()) continue;
                 $path = $file->getPathname();
 
-                // 排除目录
                 $skip = false;
                 foreach ($excludeDirs as $excl) {
                     if (strpos($path, $excl) !== false) { $skip = true; break; }
                 }
                 if ($skip) continue;
-
-                // ⚠️ 排除 WAF 自身文件（不在快照中记录，永不扫描）
                 if (self::isProtectedFile($path)) continue;
 
                 $ext = strtolower($file->getExtension());
                 if (!in_array($ext, self::$protected_ext)) continue;
 
+                // [极限优化] 如果文件修改时间没变，直接复用旧 MD5，省去硬盘读取
+                $mtime = $file->getMTime();
+                if (!$forceRefresh && isset($oldSnapshot[$path]) && $oldSnapshot[$path]['mtime'] === $mtime) {
+                    $snapshot[$path] = $oldSnapshot[$path];
+                    continue;
+                }
+
                 $snapshot[$path] = [
                     'md5'   => md5_file($path),
-                    'mtime' => $file->getMTime(),
+                    'mtime' => $mtime,
                     'size'  => $file->getSize(),
                 ];
             }
