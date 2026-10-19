@@ -1,6 +1,6 @@
 <?php
 /**
- * 盾甲 WAF 自适应学习系统 (learn/AutoLearn.php)
+ * 盾甲 WAF 自适应学习系统 (src/Learn/AutoLearn.php)
  *
  * 功能：
  *  1. 记录所有被拦截的攻击载荷（归一化后），统计频率
@@ -8,6 +8,7 @@
  *  3. 动态调整攻击类型权重（根据近期攻击趋势）
  *  4. 支持误报/漏报反馈，自动修正评分
  *  5. 自动学习正常请求特征，建立白名单，降低误报率
+ *  6. [v5.4] 智能学习闭环：样本采集 → 质量过滤 → 训练调度 / 审核队列 → 模型评估
  *
  * 存储文件（waf_logs/ 目录）：
  *  - learned_patterns.json  : 自动学习到的特征规则
@@ -15,6 +16,7 @@
  *  - weight_adjustments.json: 权重修正数据
  *  - feedback_log.json      : 误报/漏报反馈记录
  *  - normal_patterns.json   : 正常请求模式白名单
+ *  - learning/*.json        : [v5.4] 智能学习模块数据
  */
 defined('ABSPATH') || exit;
 
@@ -22,6 +24,16 @@ if (!function_exists('waf_safe_read_json')) {
     require_once __DIR__ . '/../Support/Functions.php';
 }
 require_once __DIR__ . '/NaiveBayesClassifier.php';
+
+// ====================== v5.4 智能学习模块加载 ======================
+// 与 AutoLearn.php 同级目录，幂等加载，缺失时降级到老逻辑
+foreach (['Storage', 'SampleCollector', 'SampleFilter', 'ReviewQueue', 'ModelEvaluator', 'TrainingScheduler'] as $__learningCls) {
+    $__learningFile = __DIR__ . '/' . $__learningCls . '.php';
+    if (is_file($__learningFile) && !class_exists('Learning_' . $__learningCls)) {
+        require_once $__learningFile;
+    }
+}
+unset($__learningCls, $__learningFile);
 
 class AutoLearn {
     private static $patterns_file = null;
@@ -99,9 +111,42 @@ class AutoLearn {
             self::tryLearnPattern($normalizedPayload, $stats['payloads'][$hash]);
         }
 
-        if (!empty($normalizedPayload) && strlen($normalizedPayload) < 10000) {
-            NaiveBayesClassifier::train($normalizedPayload, 'attack');
-            NaiveBayesClassifier::save();
+        // ========== v5.4 智能学习：采集 → 过滤 → 训练队列 / 审核队列 ==========
+        self::feedBayesAttack($normalizedPayload, $attackResult);
+    }
+
+    /**
+     * [v5.4] 攻击样本投喂贝叶斯
+     * 高置信度 → 训练队列；中风险 → 审核队列；低置信度 → 丢弃
+     */
+    private static function feedBayesAttack($normalizedPayload, $attackResult) {
+        $hasLearning = class_exists('Learning_SampleCollector')
+                    && class_exists('Learning_SampleFilter')
+                    && class_exists('Learning_TrainingScheduler');
+
+        if (!$hasLearning) {
+            // 降级：学习模块缺失时保持老行为
+            if (!empty($normalizedPayload) && strlen($normalizedPayload) < 10000) {
+                NaiveBayesClassifier::train($normalizedPayload, 'attack');
+                NaiveBayesClassifier::save();
+            }
+            return;
+        }
+
+        if (empty($normalizedPayload) || strlen($normalizedPayload) >= 10000) return;
+
+        $sample = Learning_SampleCollector::collectAttack($normalizedPayload, $attackResult);
+
+        if (Learning_SampleFilter::isHighConfidenceAttack($sample)) {
+            Learning_TrainingScheduler::enqueue($sample);
+            Learning_TrainingScheduler::maybeFlush();
+        } elseif (class_exists('Learning_ReviewQueue') && Learning_SampleFilter::isMediumRisk($sample)) {
+            Learning_ReviewQueue::push($sample);
+        }
+
+        // 抽样加入评估池（不参与训练，仅用于评估模型质量）
+        if (class_exists('Learning_ModelEvaluator') && mt_rand(1, 50) === 1) {
+            Learning_ModelEvaluator::addEvalSample($normalizedPayload, 'attack');
         }
     }
 
@@ -240,12 +285,41 @@ class AutoLearn {
 
         self::saveNormal($normal);
 
-        if (mt_rand(1, 100) <= 10) {
-            $normalText = $path . '?' . implode('&', array_map('strval', $params));
-            if (strlen($normalText) < 500) {
+        // ========== v5.4 智能学习：正常样本经均衡过滤后入训练队列 ==========
+        self::feedBayesNormal($path, $params);
+    }
+
+    /**
+     * [v5.4] 正常样本投喂贝叶斯
+     * 经类别均衡过滤后入训练队列，避免正常样本淹没攻击样本
+     */
+    private static function feedBayesNormal($path, $params) {
+        $normalText = $path . '?' . implode('&', array_map('strval', $params));
+        if (strlen($normalText) >= 500) return;
+
+        $hasLearning = class_exists('Learning_SampleCollector')
+                    && class_exists('Learning_SampleFilter')
+                    && class_exists('Learning_TrainingScheduler');
+
+        if (!$hasLearning) {
+            // 降级：保持老行为（10% 概率训练）
+            if (mt_rand(1, 100) <= 10) {
                 NaiveBayesClassifier::train($normalText, 'normal');
                 NaiveBayesClassifier::save();
             }
+            return;
+        }
+
+        $sample = Learning_SampleCollector::collectNormal($normalText, ['path' => $path, 'params' => $params]);
+
+        if (Learning_SampleFilter::isTrainableNormal($sample)) {
+            Learning_TrainingScheduler::enqueue($sample);
+            Learning_TrainingScheduler::maybeFlush();
+        }
+
+        // 抽样加入评估池
+        if (class_exists('Learning_ModelEvaluator') && mt_rand(1, 50) === 1) {
+            Learning_ModelEvaluator::addEvalSample($normalText, 'normal');
         }
     }
 
@@ -412,27 +486,9 @@ class AutoLearn {
 
     /**
      * 集成点 1：沙箱 → AutoLearn 事件回流
-     *
-     * 沙箱在以下事件触发后调用本方法，把来源 IP 标记为高危：
-     *   - quarantineFile() 文件隔离
-     *   - surgicalCut() 精准切割
-     *   - 新落地恶意文件秒删
-     *
-     * 标记后，AutoLearn 在 getDeviationScore 时对该 IP 加分，
-     * 下一次请求即可被拦截，无需等下一次沙箱扫描。
-     *
-     * 安全设计：
-     *   - CLI 扫描（无 REMOTE_ADDR）跳过
-     *   - 高危标记带 TTL，30 天后自动失效（防误标记）
-     *   - 单 IP 事件计数上限 100，防止内存膨胀
-     *
-     * @param string $ip      触发沙箱事件的 IP（CLI 时传空串跳过）
-     * @param string $reason  事件原因（quarantine/surgical_cut/instant_delete）
-     * @param array  $context 附加上下文（文件路径、评分等）
      */
     public static function markIpFromSandbox(string $ip, string $reason, array $context = []) {
         if ($ip === '' || $ip === 'cli' || $ip === 'unknown') return;
-        // 防止 IP 格式异常（防注入）
         if (!filter_var($ip, FILTER_VALIDATE_IP)) return;
 
         self::init();
@@ -447,7 +503,7 @@ class AutoLearn {
                 'last_seen'     => time(),
                 'event_count'   => 0,
                 'events'         => [],
-                'frozen'         => false,  // 是否被基线锁定联动冻结
+                'frozen'         => false,
             ];
         }
 
@@ -455,7 +511,6 @@ class AutoLearn {
         $entry['last_seen'] = time();
         $entry['event_count']++;
 
-        // 事件详情（上限 100 条，超出则只保留最近 100 条）
         if (count($entry['events']) >= 100) {
             $entry['events'] = array_slice($entry['events'], -99);
         }
@@ -466,7 +521,6 @@ class AutoLearn {
             'score'  => $context['score'] ?? 0,
         ];
 
-        // 高危阈值：事件数 >= 3 升级为 frozen（行为基线立即冻结）
         if ($entry['event_count'] >= 3 && !$entry['frozen']) {
             $entry['frozen'] = true;
             $entry['frozen_at'] = time();
@@ -474,9 +528,7 @@ class AutoLearn {
 
         $data['total_events']++;
 
-        // 全局 IP 数上限 10000（防内存膨胀）
         if (count($data['ips']) > 10000) {
-            // 淘汰最久未触发的 10%
             uasort($data['ips'], function($a, $b) {
                 return $a['last_seen'] <=> $b['last_seen'];
             });
@@ -488,7 +540,6 @@ class AutoLearn {
 
     /**
      * 查询某 IP 在沙箱事件中的高危分（用于 getDeviationScore 加成）
-     * 返回 0.0-1.0 的偏差加成系数
      */
     public static function getSandboxIpRisk(string $ip): float {
         if ($ip === '' || !filter_var($ip, FILTER_VALIDATE_IP)) return 0.0;
@@ -500,15 +551,12 @@ class AutoLearn {
 
         $entry = $data['ips'][$ip];
 
-        // 30 天 TTL：超期降权
         $ageDays = (time() - $entry['last_seen']) / 86400;
         if ($ageDays > 30) return 0.0;
 
-        // 事件数 1-2 → 0.3，3-9 → 0.6，10+ → 1.0
         $cnt = $entry['event_count'];
         $risk = $cnt >= 10 ? 1.0 : ($cnt >= 3 ? 0.6 : 0.3);
 
-        // 时间衰减：7 天后衰减一半
         if ($ageDays > 7) {
             $risk *= 0.5;
         }
@@ -518,19 +566,6 @@ class AutoLearn {
 
     /**
      * 集成点 2：AutoLearn → Sandbox 特征反哺
-     *
-     * 返回高频攻击特征（单向只读建议）。
-     * 沙箱扫描时合并查询这些特征。
-     *
-     * 安全设计（防反向污染）：
-     *   - 只采纳 hit_count >= $minHits 的（默认 10，需被多次确认）
-     *   - 返回的 severity 上限 15（沙箱侧最多加 10 分）
-     *   - 必须配合沙箱原有特征才能加分，不能单独触发判定
-     *   - 排除常见函数名（避免污染，例如 'if(' 'count('）
-     *
-     * @param int $minHits 最小命中次数（默认 10）
-     * @param int $limit   最多返回多少条
-     * @return array ['pattern' => weight, ...]
      */
     public static function getHotSignatures(int $minHits = 10, int $limit = 50): array {
         self::init();
@@ -544,12 +579,10 @@ class AutoLearn {
             $pattern = $rule['pattern'] ?? '';
             if ($pattern === '') continue;
 
-            // 排除常见合法函数名，防止反向污染误杀
             if (preg_match('/^(if|for|while|echo|print|array|count|strlen|isset|empty|date|time|substr|trim|explode|implode|sprintf|printf)\(/i', $pattern)) {
                 continue;
             }
 
-            // severity 上限 15（沙箱侧最多加 10 分，不能单独触发判定）
             $weight = min(($rule['severity'] ?? 60) / 4, 15);
             if ($weight < 5) continue;
 
@@ -562,10 +595,6 @@ class AutoLearn {
 
     /**
      * 集成点 3：基线状态联动 — 冻结 AutoLearn 行为基线
-     *
-     * 在 Sandbox::lockBaseline() 时调用。
-     * 冻结后：recordNormal() 不再更新（防攻击者"教坏"基线），
-     * 已有正常模式继续生效。
      */
     public static function freezeBaseline(string $reason = 'sandbox_lock'): array {
         self::init();
@@ -584,7 +613,6 @@ class AutoLearn {
 
     /**
      * 解冻 AutoLearn 行为基线
-     * 在 Sandbox::unlockBaseline() 时调用。
      */
     public static function unfreezeBaseline(): array {
         self::init();
@@ -639,6 +667,67 @@ class AutoLearn {
             'normal_patterns'    => count($normal['patterns'] ?? []),
             'total_normal'       => $normal['total_normal'] ?? 0,
         ];
+    }
+
+    // ====================== [v5.4] 学习系统扩展报告 ======================
+
+    /**
+     * [v5.4] 获取智能学习系统的完整状态（供控制台展示）
+     * 包含：训练队列、审核队列、评估指标、模型快照
+     */
+    public static function getLearningStatus(): array {
+        self::init();
+        $status = [
+            'enabled'    => class_exists('Learning_SampleFilter'),
+            'scheduler'  => null,
+            'review'     => null,
+            'evaluation' => null,
+            'snapshots'  => [],
+            'cold_start' => true,
+        ];
+
+        if (class_exists('Learning_TrainingScheduler')) {
+            $status['scheduler'] = Learning_TrainingScheduler::stats();
+        }
+        if (class_exists('Learning_ReviewQueue')) {
+            $status['review'] = Learning_ReviewQueue::stats();
+        }
+        if (class_exists('Learning_ModelEvaluator')) {
+            $history = Learning_ModelEvaluator::history(1);
+            $status['evaluation'] = !empty($history) ? end($history) : null;
+            $status['snapshots'] = Learning_ModelEvaluator::listSnapshots();
+        }
+        if (class_exists('Learning_SampleFilter')) {
+            $status['cold_start'] = Learning_SampleFilter::isColdStart();
+        }
+
+        return $status;
+    }
+
+    /**
+     * [v5.4] 手动触发评估（控制台/CLI 调用）
+     */
+    public static function evaluateModel(): array {
+        if (!class_exists('Learning_ModelEvaluator')) {
+            return ['ok' => false, 'reason' => 'evaluator_missing'];
+        }
+        return Learning_ModelEvaluator::evaluate();
+    }
+
+    /**
+     * [v5.4] 手动保存模型快照（控制台/CLI 调用）
+     */
+    public static function snapshotModel(): bool {
+        if (!class_exists('Learning_ModelEvaluator')) return false;
+        return Learning_ModelEvaluator::snapshot();
+    }
+
+    /**
+     * [v5.4] 强制 flush 训练队列（CLI/定时任务调用）
+     */
+    public static function flushTrainingQueue(): int {
+        if (!class_exists('Learning_TrainingScheduler')) return 0;
+        return Learning_TrainingScheduler::flushNow();
     }
 
     // ====================== 文件读写（带进程内静态缓存） ======================
