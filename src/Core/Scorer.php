@@ -2,12 +2,13 @@
 /**
  * 盾甲 WAF 智能评分系统 (Scorer.php) - 极致优化版
  *
- * 四维基础评分 + 编码绕过专项加成：
+ * 四维基础评分 + 编码绕过专项加成 + [v5.4] 多引擎融合补刀：
  *   - 熵值分析 (Entropy, 权重 15%): 信息熵与特殊字符比例
  *   - 语义分析 (Semantic, 权重 40%): 10维语义 + 11大深度解析器
  *   - 编译偏差分析 (Compiler, 权重 20%): URI/参数结构异常
  *   - 偏离分析 (Deviation, 权重 15%): 与历史正常请求对比
  *   - 编码绕过加成 (+0~40分): 14层解码深度 + 混淆技术 + 对抗样本特征
+ *   - [v5.4] 融合补刀: Robinson-Fisher + n-gram 指纹匹配
  *
  * 评分阈值：
  *   0-30   → 通过
@@ -114,6 +115,12 @@ class WafScorer {
             $totalScore = max($totalScore, $clearAttackEvidenceBonus);
         }
 
+        // ====== [v5.4] 多引擎融合补刀（RF + 指纹） ======
+        $fusion = self::calcFusionEvidence($payload, $body, $semanticResult);
+        if ($fusion['bonus'] > 0) {
+            $totalScore = max($totalScore, $fusion['bonus']);
+        }
+
         $action = self::decideAction($totalScore);
 
         // ====== 自动学习：记录请求到记忆池，建立行为基线 ======
@@ -158,6 +165,7 @@ class WafScorer {
             'semantic_detail' => $semanticResult,
             'fp_guard'        => $fpResult,
             'fp_adjustment'   => $fpAdjustment,
+            'fusion_evidence' => $fusion ?? null,  // [v5.4] 融合补刀详情
             'memory_pool'     => $evolutionResult ?? null,
             'learned'        => [
                 'behavior_baseline_exists' => !empty($evolutionResult['baseline_exists']),
@@ -458,6 +466,51 @@ class WafScorer {
         }
 
         return (float)round($score, 1);
+    }
+
+    // ====================== [v5.4] 多引擎融合补刀 ======================
+
+    /**
+     * 多引擎融合证据：Robinson-Fisher + n-gram 指纹
+     * 仅作补刀，返回最高保底分
+     */
+    private static function calcFusionEvidence($payload, $body, array $semanticResult): array {
+        $bonus = 0;
+        $details = [];
+        
+        // 1. Robinson-Fisher 分类器
+        if (class_exists('Learning_RobinsonFisher')) {
+            $text = !empty($payload) ? $payload : $body;
+            if (strlen($text) >= 8) {
+                try {
+                    $rf = Learning_RobinsonFisher::classify($text);
+                    $details['rf'] = $rf;
+                    if (($rf['reason'] ?? '') === 'classified' && ($rf['extreme_count'] ?? 0) >= 3) {
+                        if ($rf['score'] >= 85) {
+                            $bonus = max($bonus, 85);
+                        } elseif ($rf['score'] >= 70) {
+                            $bonus = max($bonus, 65);
+                        }
+                    }
+                } catch (\Throwable $e) {}
+            }
+        }
+        
+        // 2. n-gram SimHash 指纹匹配
+        if (class_exists('Learning_FingerprintMatcher')) {
+            $text = !empty($payload) ? $payload : $body;
+            if (strlen($text) >= 8) {
+                try {
+                    $fp = Learning_FingerprintMatcher::match($text);
+                    $details['fingerprint'] = $fp;
+                    if (!empty($fp['matched'])) {
+                        $bonus = max($bonus, 88); // 已知攻击变体，强保底
+                    }
+                } catch (\Throwable $e) {}
+            }
+        }
+        
+        return ['bonus' => (float)$bonus, 'details' => $details];
     }
 
     // ====================== 明确攻击证据强化加成 ======================
