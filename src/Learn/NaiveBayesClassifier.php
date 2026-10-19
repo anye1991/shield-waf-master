@@ -9,6 +9,7 @@ defined('ABSPATH') || exit;
  * 用途：辅助WAF评分，作为机器学习维度融入整体评分系统
  *
  * [v5.4] 新增：
+ *  - getRawModel()            获取原始模型数据（供 RobinsonFisher 等外部引擎读取）
  *  - getScoreDimensions()     5 维评分（贝叶斯概率/置信度/词汇匹配/特殊特征/长度惩罚）
  *  - getScoreDimensionsSafe() 容错版 5 维评分（异常时返回零值，不抛错）
  *  - getModelStats()          模型健康度统计（样本均衡/词汇覆盖/训练新鲜度）
@@ -276,6 +277,19 @@ class NaiveBayesClassifier {
         }
         $score = $result['attack_prob'] * 100 * $result['confidence'];
         return (float)round(min($score, 100), 1);
+    }
+
+    // ====================== [v5.4] 原始模型读取 ======================
+
+    /**
+     * [v5.4] 获取原始模型数据（供 RobinsonFisher / FingerprintMatcher 等外部引擎读取）
+     *
+     * 返回完整模型数组，调用方自行负责不修改。
+     * 空模型时返回 emptyModel() 结构。
+     */
+    public static function getRawModel(): array {
+        self::loadModel();
+        return self::$model ?? self::emptyModel();
     }
 
     // ====================== [v5.4] 5 维评分 ======================
