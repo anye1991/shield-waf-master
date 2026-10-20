@@ -624,3 +624,16 @@ if ($is_admin) {
         waf_block('Access denied');
     }
 }
+
+// ====================== [v5.4] 自动触发 AI 权重反哺与训练 flush ======================
+// 利用请求结束后的空闲时间，异步执行 AI 学习任务，不阻塞用户响应。
+register_shutdown_function(function() {
+    // 1. 尝试把攒批的训练数据吃进模型（默认攒够 20 条或超时 5 分钟触发）
+    if (class_exists('Learning_TrainingScheduler')) {
+        try { Learning_TrainingScheduler::maybeFlush(); } catch (\Throwable $e) {}
+    }
+    // 2. 尝试根据近期攻击趋势微调语义引擎权重（默认 1 小时节流一次）
+    if (class_exists('AutoLearn')) {
+        try { AutoLearn::maybeAdjustSemanticWeights(); } catch (\Throwable $e) {}
+    }
+});
