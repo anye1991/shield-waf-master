@@ -53,6 +53,7 @@ if (!is_writable($wafLogDir)) {
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/src/Support/Functions.php';
 require_once __DIR__ . '/src/Core/RequestContext.php';
+require_once __DIR__ . '/src/Core/Normalizer.php'; // 确保全量归一化最先加载
 
 // ====================== 静态资源请求快速放行（避免图片/CSS/JS 被 WAF 误拦截） ======================
 function waf_is_static_request() {
