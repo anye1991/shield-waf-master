@@ -8,7 +8,9 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13568/badge)](https://www.bestpractices.dev/zh-CN/projects/13568/passing)
 > **下一代 PHP Web 应用防火墙 · 14 层编码归一化 · 11 解析器语义引擎 · 贝叶斯机器学习 · 双证据融合 · 双重密码加密**
 > **署名：暗夜铭少**
-
+🚀 为什么有这个开源版？
+本项目（PHP 版）为 YSL 语枢的参考实现与学术交流版。如果你需要生产级的高并发（2核0占用）、纯 Go 单二进制、SOC 态势大屏、离线一机一码授权，请访问企业级商业官网：YSL语枢·盾甲WAF (提供 30 天全功能免费评估)
+> https://waf.duduziy.com
 ---
 
 ## 🎉 v5.3.0 极限突破：检测率 100%，误报率 0%
