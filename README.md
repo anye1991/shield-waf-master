@@ -248,6 +248,12 @@ php -d auto_prepend_file=/opt/ysl-waf/shield-waf.php \
 
 ## 态势大屏
 
+<p align="center">
+  <img src="docs/dashboard.gif" alt="YSL语枢-盾甲WAF 态势大屏动态预览" width="720"/>
+</p>
+
+> 上图为态势大屏的**动态效果示意**（程序化生成，非真实截图）：实时流量柱起伏、拦截计数跳动、状态灯呼吸与事件流滚动。实际大屏为纯服务端渲染网页，部署后访问 `/waf-screen?key=<你的key>` 即可查看真实数据。
+
 `/waf-screen?key=<同一把 key>`，全屏可视化 + **控制台抽屉**，与零 JS 控制台互补：
 控制台保持零图表以便在 CSP 与离线环境工作，大屏专注演示、值守与实际操作。
 
