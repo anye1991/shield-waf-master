@@ -1,0 +1,41 @@
+# 运行期数据：绝不入库
+var/logs/*
+var/data/*
+!var/logs/.gitkeep
+!var/data/.gitkeep
+*.log
+*.lock
+*.key
+
+# 私有明文核心（论文核心源码，禁止进入公开仓库，仅本地/私有分发）
+core-src/
+ai-src/
+
+# 本地构建目录：php-beast 源码副本 + 密钥，绝不入库
+.build/
+
+# 构建产物
+dist/
+*.phar
+*.tar.gz
+
+# 站点集成产生的文件
+.user.ini
+.user.ini.waf-backup
+
+# 内核封存包与截图等参考物，不进仓库
+*.7z
+*.png
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+
+# 文件 DNA 基线 / 备份 / 隔离留档（内含 .baseline.key 签名密钥，绝不入库）
+var/dna/
+
+# 运行期日志（Docker / 本地压测产生，绝不入库）
+logs/
+
+# 极限对抗回放运行期产物
+tests/adv_leaks.tsv

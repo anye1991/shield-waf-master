@@ -1,0 +1,66 @@
+{
+    "target": "b",
+    "mode": "cold",
+    "total": 346,
+    "TP": 141,
+    "FN": 1,
+    "TN": 146,
+    "FP": 34,
+    "recall": 99.3,
+    "fpr": 18.89,
+    "accuracy": 89.13,
+    "evade": {
+        "total": 24,
+        "blocked": 21
+    },
+    "errors": {
+        "curl": 0,
+        "http5xx": 0
+    },
+    "latency_ms": {
+        "p50": 154.9,
+        "p90": 169.3,
+        "p99": 177.2,
+        "max": 279.4,
+        "avg": 156.6
+    },
+    "FN_SAMPLES": [
+        "sqli_stacked#0 => 200 | '; DROP TABLE users--"
+    ],
+    "FP_SAMPLES": [
+        "benign#0 => 403 | The union of two sets A and B is a basic concept in set theory",
+        "Pbenign#0 => 403 | The union of two sets A and B is a basic concept in set theory",
+        "benign#1 => 403 | Please select a shipping address for your order today",
+        "Pbenign#1 => 403 | Please select a shipping address for your order today",
+        "benign#4 => 403 | The tag <script> is used to embed JavaScript in HTML",
+        "Pbenign#4 => 403 | The tag <script> is used to embed JavaScript in HTML",
+        "benign#5 => 403 | <script> is a tag used in HTML documents",
+        "Pbenign#5 => 403 | <script> is a tag used in HTML documents",
+        "benign#6 => 403 | Use SELECT to query data FROM a table in SQL",
+        "Pbenign#6 => 403 | Use SELECT to query data FROM a table in SQL",
+        "benign#7 => 403 | A database index can improve select performance from large tables",
+        "Pbenign#7 => 403 | A database index can improve select performance from large tables",
+        "benign#11 => 403 | The report explains how to drop a column and insert a row safely",
+        "Pbenign#11 => 403 | The report explains how to drop a column and insert a row safely",
+        "benign#15 => 403 | The sleep function pauses execution for a number of seconds",
+        "Pbenign#15 => 403 | The sleep function pauses execution for a number of seconds",
+        "benign#16 => 403 | Benchmark results are discussed in the appendix",
+        "Pbenign#16 => 403 | Benchmark results are discussed in the appendix",
+        "benign#22 => 403 | A union type combines several possible value types",
+        "Pbenign#22 => 403 | A union type combines several possible value types",
+        "benign#23 => 403 | Delete the temporary file after processing is complete",
+        "Pbenign#23 => 403 | Delete the temporary file after processing is complete",
+        "benign#24 => 403 | Update the record only when the version matches",
+        "Pbenign#24 => 403 | Update the record only when the version matches",
+        "benign#45 => 403 | The equals sign = and the semicolon ; are common punctuation",
+        "Pbenign#45 => 403 | The equals sign = and the semicolon ; are common punctuation",
+        "benign#56 => 403 | 文档中提到的 union 是集合运算，不是数据库注入",
+        "Pbenign#56 => 403 | 文档中提到的 union 是集合运算，不是数据库注入",
+        "benign#62 => 403 | 本段文字包含 select、from、where 等 SQL 教程词汇，但没有攻击�",
+        "Pbenign#62 => 403 | 本段文字包含 select、from、where 等 SQL 教程词汇，但没有攻击�",
+        "benign#88 => 403 | When a query contains the word union it does not necessarily mean a SQL injectio",
+        "Pbenign#88 => 403 | When a query contains the word union it does not necessarily mean a SQL injectio",
+        "benign#89 => 403 | Developers frequently write documentation that includes the literal string scrip",
+        "Pbenign#89 => 403 | Developers frequently write documentation that includes the literal string scrip"
+    ]
+}

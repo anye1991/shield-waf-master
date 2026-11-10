@@ -1,0 +1,29 @@
+{
+    "target": "a",
+    "mode": "hot",
+    "total": 346,
+    "TP": 142,
+    "FN": 0,
+    "TN": 180,
+    "FP": 0,
+    "recall": 100,
+    "fpr": 0,
+    "accuracy": 100,
+    "evade": {
+        "total": 24,
+        "blocked": 22
+    },
+    "errors": {
+        "curl": 0,
+        "http5xx": 0
+    },
+    "latency_ms": {
+        "p50": 173.3,
+        "p90": 190.4,
+        "p99": 5221.7,
+        "max": 8234.8,
+        "avg": 278.2
+    },
+    "FN_SAMPLES": [],
+    "FP_SAMPLES": []
+}
