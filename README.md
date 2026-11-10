@@ -11,6 +11,7 @@
   <img src="https://img.shields.io/badge/语言-中文-important" alt="语言">
   <img src="https://img.shields.io/badge/作者-暗夜铭少-blueviolet" alt="作者">
   <img src="https://img.shields.io/badge/版权-保留所有权利-lightgrey" alt="版权">
+  <a href="https://www.bestpractices.dev/zh-CN/projects/13568/passing"><img src="https://www.bestpractices.dev/projects/13568/badge" alt="OpenSSF 最佳实践"></a>
 </p>
 
 ## 简介
