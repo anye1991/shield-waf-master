@@ -12,9 +12,10 @@
   <img src="https://img.shields.io/badge/作者-暗夜铭少-blueviolet" alt="作者">
   <img src="https://img.shields.io/badge/授权-MIT-green" alt="授权 MIT">
   <a href="https://www.bestpractices.dev/zh-CN/projects/13568"><img src="https://www.bestpractices.dev/projects/13568/badge" alt="OpenSSF 最佳实践 · Gold"></a>
+  <a href="https://www.bestpractices.dev/zh-CN/projects/16060"><img src="https://www.bestpractices.dev/projects/16060/badge" alt="OpenSSF 最佳实践 · 16060"></a>
 </p>
 
-<p align="center"><sub>本项目的工程实践已通过 OpenSSF Best Practices <b>Gold</b> 级认证（2026-11-10 授予，<a href="https://www.bestpractices.dev/zh-CN/projects/13568">项目页</a>）。</sub></p>
+<p align="center"><sub>本项目的工程实践已通过 OpenSSF Best Practices 认证（<a href="https://www.bestpractices.dev/zh-CN/projects/13568">Shield WAF</a> · <a href="https://www.bestpractices.dev/zh-CN/projects/16060">YSL 语枢</a>，2026-11 授予）。</sub></p>
 
 ## 简介
 

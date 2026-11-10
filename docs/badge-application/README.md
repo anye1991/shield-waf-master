@@ -192,7 +192,20 @@
 
 ## 6. 获证后维护
 
-1. **徽章已挂在 README 头部**，官方实时 SVG 会自动显示 gold；点击直达项目页。
+1. **徽章已挂在 README 头部**（13568 + 16060 两枚），官方实时 SVG 会自动显示当前等级；点击直达项目页。
+
+   项目官网首页同步放置用的 HTML 片段（深色/浅色页面均适用）：
+
+   ```html
+   <div class="openSSF-badges" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+     <a href="https://www.bestpractices.dev/zh-CN/projects/13568" target="_blank" rel="noopener">
+       <img src="https://www.bestpractices.dev/projects/13568/badge" alt="OpenSSF Best Practices · Gold" height="20">
+     </a>
+     <a href="https://www.bestpractices.dev/zh-CN/projects/16060" target="_blank" rel="noopener">
+       <img src="https://www.bestpractices.dev/projects/16060/badge" alt="OpenSSF Best Practices · 16060" height="20">
+     </a>
+   </div>
+   ```
 2. **年度复核**：条目有效期靠持续满足维持，重点复查 `maintained`、`report_responses`、`vulnerability_report_credit`、`documentation_current`、`test_*_coverage*`。
 3. **每条准则的「理由文本」可继续完善**：官方明确鼓励补充 justification 与 URL，材料变强不会掉级。
 4. **仓库结构变动时**（例如文档改名、目录调整），同步更新本表「证据链接」列，避免链接失效。
