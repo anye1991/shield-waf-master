@@ -26,11 +26,11 @@
 |---|---|---|---|
 | description_good | MUST | 站点简明描述软件用途 | https://waf.duduziy.com |
 | interact | MUST | 提供获取/反馈/贡献方式 | https://github.com/anye1991/shield-waf-master/issues |
-| contribution | MUST | 说明贡献流程（PR？） | https://github.com/anye1991/shield-waf-master/blob/main/CONTRIBUTING.md |
+| contribution | MUST | 说明贡献流程（PR？） | https://github.com/anye1991/shield-waf-master/blob/main/docs/CONTRIBUTING.md |
 | floss_license | MUST | 以 FLOSS 许可发布 | https://github.com/anye1991/shield-waf-master/blob/main/LICENSE |
 | license_location | MUST | 许可证置于仓库标准位置 | https://github.com/anye1991/shield-waf-master/blob/main/LICENSE |
 | documentation_basics | MUST | 提供基础文档 | https://github.com/anye1991/shield-waf-master/blob/main/README.md |
-| documentation_interface | MUST | 描述对外接口（输入/输出） | https://github.com/anye1991/shield-waf-master/blob/main/ARCHITECTURE.md |
+| documentation_interface | MUST | 描述对外接口（输入/输出） | https://github.com/anye1991/shield-waf-master/blob/main/docs/ARCHITECTURE.md |
 | sites_https | MUST | 站点/仓库/下载支持 HTTPS/TLS | https://waf.duduziy.com |
 | discussion | MUST | 可检索、可按 URL 定位的讨论机制 | https://github.com/anye1991/shield-waf-master/issues |
 | maintained | MUST | 项目处于维护状态 | https://github.com/anye1991/shield-waf-master/commits/main |
@@ -41,14 +41,14 @@
 | repo_public | MUST | 公开可读的版本控制仓库 | https://github.com/anye1991/shield-waf-master |
 | repo_track | MUST | 记录改动/作者/时间 | https://github.com/anye1991/shield-waf-master/commits/main |
 | repo_interim | MUST | 含发布间的中间版本 | https://github.com/anye1991/shield-waf-master/commits/main |
-| version_unique | MUST | 每次发布有唯一版本号 | https://github.com/anye1991/shield-waf-master/blob/main/CHANGELOG.md |
-| release_notes | MUST | 每次发布有人类可读发布说明 | https://github.com/anye1991/shield-waf-master/blob/main/CHANGELOG.md |
+| version_unique | MUST | 每次发布有唯一版本号 | https://github.com/anye1991/shield-waf-master/blob/main/docs/CHANGELOG.md |
+| release_notes | MUST | 每次发布有人类可读发布说明 | https://github.com/anye1991/shield-waf-master/blob/main/docs/CHANGELOG.md |
 | release_notes_vulns | MUST | 发布说明列出已修复公开漏洞 | https://github.com/anye1991/shield-waf-master/releases |
 
 ### Reporting
 | 准则 | 级别 | 要求 | 证据链接 |
 |---|---|---|---|
-| report_process | MUST | 提供用户提交 bug 的流程 | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY.md |
+| report_process | MUST | 提供用户提交 bug 的流程 | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY.md |
 | report_responses | MUST | 近 2–12 月内 majority bug 有回应 | https://github.com/anye1991/shield-waf-master/issues?q=is%3Aissue |
 
 ### Quality / Security / Analysis
@@ -56,8 +56,8 @@
 |---|---|---|---|
 | build | MUST | 能用常见工具构建/安装 | https://github.com/anye1991/shield-waf-master/blob/main/install.php |
 | tests | MUST | 有自动化测试套件 | https://github.com/anye1991/shield-waf-master/tree/main/tests |
-| vulnerabilities_fixed / critical_fixed | SHOULD | 及时修复已报告漏洞 | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY.md |
-| crypto_weaknesses | MUST | 默认安全机制不依赖已知弱算法 | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY-REVIEW.md |
+| vulnerabilities_fixed / critical_fixed | SHOULD | 及时修复已报告漏洞 | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY.md |
+| crypto_weaknesses | MUST | 默认安全机制不依赖已知弱算法 | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY-REVIEW.md |
 | static_analysis | MUST | 使用静态分析工具 | https://github.com/anye1991/shield-waf-master/blob/main/.github/workflows/ci.yml |
 | dependency_monitoring | MUST | 监控外部依赖漏洞 | https://github.com/anye1991/shield-waf-master/blob/main/.github/dependabot.yml |
 
@@ -68,18 +68,18 @@
 ### 由 passing 升级为 MUST 的条目
 | 准则 | 级别 | N/A? | 证据链接 |
 |---|---|---|---|
-| contribution_requirements | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/CONTRIBUTING.md |
+| contribution_requirements | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/CONTRIBUTING.md |
 | report_tracker | MUST | — | https://github.com/anye1991/shield-waf-master/issues |
-| tests_documented_added | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/CONTRIBUTING.md |
+| tests_documented_added | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/CONTRIBUTING.md |
 | warnings_strict | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/.github/workflows/ci.yml |
-| crypto_weaknesses | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY-REVIEW.md |
+| crypto_weaknesses | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY-REVIEW.md |
 | static_analysis_common_vulnerabilities | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/tools/static_check.php |
-| dynamic_analysis_unsafe | MUST | ✅ N/A（PHP 内存安全） | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY-REVIEW.md |
+| dynamic_analysis_unsafe | MUST | ✅ N/A（PHP 内存安全） | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY-REVIEW.md |
 | automated_integration_testing | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/.github/workflows/ci.yml |
-| test_policy_mandated | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/CONTRIBUTING.md |
+| test_policy_mandated | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/CONTRIBUTING.md |
 | regression_tests_added50 | MUST | — | https://github.com/anye1991/shield-waf-master/tree/main/tests |
 | test_statement_coverage80 | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/.github/workflows/ci.yml |
-| coding_standards | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/CODING_STANDARDS.md |
+| coding_standards | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/CODING_STANDARDS.md |
 | coding_standards_enforced | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/tools/static_check.php |
 | external_dependencies | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/composer.json |
 | updateable_reused_components | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/composer.json |
@@ -88,40 +88,40 @@
 | build_repeatable | MUST | ✅ N/A（PHP 解释执行） | https://github.com/anye1991/shield-waf-master/blob/main/install.php |
 | installation_common | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/README.md |
 | installation_standard_variables | MUST | ✅ N/A（无安装系统） | https://github.com/anye1991/shield-waf-master/blob/main/install.php |
-| installation_development_quick | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/CONTRIBUTING.md |
-| implement_secure_design | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY.md |
-| input_validation | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY-REVIEW.md |
-| crypto_certificate_verification | MUST | ✅ N/A（库本身不用 TLS） | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY.md |
-| crypto_verification_private | MUST | ✅ N/A（库本身不用 TLS） | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY.md |
-| signed_releases | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY.md |
+| installation_development_quick | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/CONTRIBUTING.md |
+| implement_secure_design | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY.md |
+| input_validation | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY-REVIEW.md |
+| crypto_certificate_verification | MUST | ✅ N/A（库本身不用 TLS） | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY.md |
+| crypto_verification_private | MUST | ✅ N/A（库本身不用 TLS） | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY.md |
+| signed_releases | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY.md |
 | dependency_monitoring | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/.github/dependabot.yml |
 
 ### Silver 新增条目（★）
 | # | 准则 | 级别 | N/A? | 证据链接 |
 |---|---|---|---|---|
-| S1★ | dco | SHOULD | — | https://github.com/anye1991/shield-waf-master/blob/main/CONTRIBUTING.md |
-| S2★ | code_of_conduct | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/CODE_OF_CONDUCT.md |
-| S3★ | governance | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/GOVERNANCE.md |
-| S4★ | roles_responsibilities | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/GOVERNANCE.md |
-| S5★ | documentation_roadmap | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/ROADMAP.md |
-| S6★ | documentation_architecture | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/ARCHITECTURE.md |
-| S7★ | documentation_security | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY.md |
+| S1★ | dco | SHOULD | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/CONTRIBUTING.md |
+| S2★ | code_of_conduct | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/CODE_OF_CONDUCT.md |
+| S3★ | governance | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/GOVERNANCE.md |
+| S4★ | roles_responsibilities | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/GOVERNANCE.md |
+| S5★ | documentation_roadmap | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/ROADMAP.md |
+| S6★ | documentation_architecture | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/ARCHITECTURE.md |
+| S7★ | documentation_security | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY.md |
 | S8★ | documentation_quick_start | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/README.md |
 | S9★ | documentation_current | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/README.md |
 | S10★ | documentation_achievements | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/README.md |
-| S11★ | crypto_password_storage | MUST | ✅ N/A（软件不存密码） | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY.md |
+| S11★ | crypto_password_storage | MUST | ✅ N/A（软件不存密码） | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY.md |
 | S12★ | accessibility_best_practices | SHOULD | ⚠️ N/A（控制台为服务端渲染，非面向公众的 UI 库） | https://github.com/anye1991/shield-waf-master/blob/main/README.md |
 | S13★ | internationalization | SHOULD | ⚠️ N/A（单一中文产品形态） | https://github.com/anye1991/shield-waf-master/blob/main/README.md |
-| S14★ | access_continuity | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/GOVERNANCE.md |
-| S15★ | bus_factor | SHOULD | — | https://github.com/anye1991/shield-waf-master/blob/main/GOVERNANCE.md |
-| S16★ | maintenance_or_update | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/ROADMAP.md |
-| S17★ | vulnerability_report_credit | MUST | ✅ N/A（近 12 月无漏洞修复） | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY.md |
-| S18★ | vulnerability_response_process | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY.md |
-| S19★ | hardening | SHOULD | — | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY.md |
-| S20★ | crypto_used_network | SHOULD | ✅ N/A（库本身不发网络） | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY.md |
-| S21★ | crypto_tls12 | SHOULD | ✅ N/A（库本身不用 TLS） | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY.md |
-| S22★ | crypto_algorithm_agility | SHOULD | — | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY-REVIEW.md |
-| S23★ | crypto_credential_agility | SHOULD | ✅ N/A（不处理凭证） | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY.md |
+| S14★ | access_continuity | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/GOVERNANCE.md |
+| S15★ | bus_factor | SHOULD | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/GOVERNANCE.md |
+| S16★ | maintenance_or_update | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/ROADMAP.md |
+| S17★ | vulnerability_report_credit | MUST | ✅ N/A（近 12 月无漏洞修复） | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY.md |
+| S18★ | vulnerability_response_process | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY.md |
+| S19★ | hardening | SHOULD | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY.md |
+| S20★ | crypto_used_network | SHOULD | ✅ N/A（库本身不发网络） | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY.md |
+| S21★ | crypto_tls12 | SHOULD | ✅ N/A（库本身不用 TLS） | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY.md |
+| S22★ | crypto_algorithm_agility | SHOULD | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY-REVIEW.md |
+| S23★ | crypto_credential_agility | SHOULD | ✅ N/A（不处理凭证） | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY.md |
 
 ---
 
@@ -130,14 +130,14 @@
 ### 由 lower 升级为 MUST 的条目
 | 准则 | 级别 | N/A? | 证据链接 |
 |---|---|---|---|
-| bus_factor | MUST（原 SHOULD） | — | https://github.com/anye1991/shield-waf-master/blob/main/GOVERNANCE.md |
-| hardening | MUST（原 SHOULD） | — | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY.md |
+| bus_factor | MUST（原 SHOULD） | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/GOVERNANCE.md |
+| hardening | MUST（原 SHOULD） | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY.md |
 | dynamic_analysis | MUST（原 SUGGESTED） | — | https://github.com/anye1991/shield-waf-master/blob/main/.github/workflows/ci.yml |
 | repo_distributed | MUST（原 SUGGESTED） | — | https://github.com/anye1991/shield-waf-master |
 | test_invocation | MUST（原 SHOULD） | — | https://github.com/anye1991/shield-waf-master/tree/main/tests |
 | test_continuous_integration | MUST（原 SUGGESTED） | — | https://github.com/anye1991/shield-waf-master/blob/main/.github/workflows/ci.yml |
-| crypto_used_network | MUST NOT（原 SHOULD） | ✅ N/A（库本身不发网络） | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY.md |
-| crypto_tls12 | MUST（原 SHOULD） | ✅ N/A（库本身不用 TLS） | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY.md |
+| crypto_used_network | MUST NOT（原 SHOULD） | ✅ N/A（库本身不发网络） | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY.md |
+| crypto_tls12 | MUST（原 SHOULD） | ✅ N/A（库本身不用 TLS） | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY.md |
 | dynamic_analysis_enable_assertions | MUST（原 SUGGESTED） | — | https://github.com/anye1991/shield-waf-master/blob/main/.github/workflows/ci.yml |
 
 ### Gold 新增条目（★）
@@ -145,16 +145,16 @@
 |---|---|---|---|---|
 | G1★ | copyright_per_file | MUST | **Met+理由**（核心加密，版权统一在 LICENSE/NOTICE） | https://github.com/anye1991/shield-waf-master/blob/main/NOTICE |
 | G2★ | license_per_file | MUST | **Met+理由**（同上，SPDX 已在明文文件头） | https://github.com/anye1991/shield-waf-master/blob/main/NOTICE |
-| G3★ | contributors_unassociated | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/GOVERNANCE.md |
+| G3★ | contributors_unassociated | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/GOVERNANCE.md |
 | G4★ | small_tasks | MUST | — | https://github.com/anye1991/shield-waf-master/issues?q=label%3Agood-first-issue |
-| G5★ | require_2FA | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/CONTRIBUTING.md |
-| G6★ | secure_2FA | SHOULD | — | https://github.com/anye1991/shield-waf-master/blob/main/CONTRIBUTING.md |
-| G7★ | two_person_review | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/CONTRIBUTING.md |
-| G8★ | code_review_standards | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/CONTRIBUTING.md |
+| G5★ | require_2FA | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/CONTRIBUTING.md |
+| G6★ | secure_2FA | SHOULD | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/CONTRIBUTING.md |
+| G7★ | two_person_review | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/CONTRIBUTING.md |
+| G8★ | code_review_standards | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/CONTRIBUTING.md |
 | G9★ | build_reproducible | MUST | ✅ **N/A**（PHP 解释执行，无编译产物） | https://github.com/anye1991/shield-waf-master/blob/main/install.php |
 | G10★ | test_statement_coverage90 | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/.github/workflows/ci.yml |
 | G11★ | test_branch_coverage80 | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/.github/workflows/ci.yml |
-| G12★ | security_review | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/SECURITY-REVIEW.md |
+| G12★ | security_review | MUST | — | https://github.com/anye1991/shield-waf-master/blob/main/docs/SECURITY-REVIEW.md |
 | G13★ | hardened_site | MUST | — | https://waf.duduziy.com |
 
 ---

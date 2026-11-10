@@ -52,15 +52,15 @@
 
 | 文档 | 内容 |
 |---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | 高层架构、模块边界、YSL-1 四级流水线 |
-| [SECURITY.md](SECURITY.md) | 漏洞报告流程、威胁模型、信任边界、安全需求 |
-| [SECURITY-REVIEW.md](SECURITY-REVIEW.md) | 内部安全评审报告 |
-| [GOVERNANCE.md](GOVERNANCE.md) | 治理模型、角色职责、连续性保障 |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献流程、DCO、代码复核标准、小任务 |
-| [CODING_STANDARDS.md](CODING_STANDARDS.md) | 编码规范与安全约定 |
-| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | 行为准则 |
-| [ROADMAP.md](ROADMAP.md) | 路线图与 non-goals |
-| [CHANGELOG.md](CHANGELOG.md) | 更新日志与升级路径 |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | 高层架构、模块边界、YSL-1 四级流水线 |
+| [SECURITY.md](docs/SECURITY.md) | 漏洞报告流程、威胁模型、信任边界、安全需求 |
+| [SECURITY-REVIEW.md](docs/SECURITY-REVIEW.md) | 内部安全评审报告 |
+| [GOVERNANCE.md](docs/GOVERNANCE.md) | 治理模型、角色职责、连续性保障 |
+| [CONTRIBUTING.md](docs/CONTRIBUTING.md) | 贡献流程、DCO、代码复核标准、小任务 |
+| [CODING_STANDARDS.md](docs/CODING_STANDARDS.md) | 编码规范与安全约定 |
+| [CODE_OF_CONDUCT.md](docs/CODE_OF_CONDUCT.md) | 行为准则 |
+| [ROADMAP.md](docs/ROADMAP.md) | 路线图与 non-goals |
+| [CHANGELOG.md](docs/CHANGELOG.md) | 更新日志与升级路径 |
 | [NOTICE](NOTICE) | 版权与许可声明（含加密核心说明） |
 | [docs/badge-application/](docs/badge-application/) | OpenSSF 徽章申请材料汇总 |
 
