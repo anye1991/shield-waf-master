@@ -332,4 +332,4 @@ php dna.php watch --interval=30 --apply   # 轮询守护
 - **作者**：暗夜铭少
 - **邮箱**：azgq@foxmail.com
 - **网站**：https://waf.duduziy.com
-- **版权**：© 2026 暗夜铭少. 保留所有权利.
+- **版权与许可**：© 2026 暗夜铭少 and the YSL语枢-盾甲WAF contributors，以 [MIT 许可证](LICENSE) 发布。
