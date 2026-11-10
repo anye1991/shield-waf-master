@@ -197,7 +197,7 @@ php dna.php watch --interval=30 --apply   # 轮询守护
 | 控制台端到端 | `tests/control_check.php` **70/70** |
 | 蜜罐受控 | `tests/honeypot_check.php` **32/32** |
 | 控制矩阵 | `tests/feature_matrix_check.php` **37/37**：40/40 项可控、无假按钮 |
-| 极限对抗 | 2376 条回放 **2370 拦截 / 6 漏放（0.25%，均无效 base64）** |
+| 极限对抗 | 2376 条回放 **全部拦截 / 0 漏放**（含 base64 大小写混淆变体） |
 | 中文化 | `tests/i18n_check.php` **31/31** |
 | QPS 与响应页 | `tests/qps_check.php` **55/55** |
 | 精简压测 | 78 条 clean / 污染两态均 0/0；phar 0 Fatal / 0 Warning / 0 Deprecated |
