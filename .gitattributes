@@ -1,0 +1,15 @@
+# 换行约定
+*.sh   text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.ini  text eol=lf
+
+# 加密内核与扩展是二进制，禁止任何文本转换（否则会直接损坏文件）
+core/** binary
+ai/**   binary
+*.so    binary
+
+# 其他二进制
+*.gz   binary
+*.png  binary
+*.gif  binary

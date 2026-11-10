@@ -145,6 +145,7 @@ php install.php --check   # 应显示「php-beast 扩展已加载」
 | 文档 | 内容 |
 |---|---|
 | [docs/FEATURES.md](docs/FEATURES.md) | 功能与运行细节：开关、控制台/大屏、限流熔断、DNA、压测全量 |
+| [docs/E2E.md](docs/E2E.md) | 容器化验收报告：21 项功能向量、2376 条对抗样本、延迟数据、失败姿态 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 高层架构、模块边界、请求流水线、形态边界 |
 | [docs/SECURITY.md](docs/SECURITY.md) | 漏洞报告流程、威胁模型、信任边界 |
 | [docs/SECURITY-REVIEW.md](docs/SECURITY-REVIEW.md) | 内部安全评审报告 |
