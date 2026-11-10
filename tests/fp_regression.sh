@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 暗夜铭少 and the YSL语枢-盾甲WAF contributors
 # YSL语枢-盾甲WAF · 误报治理回归（HTTP 端到端）
 #
 # 前置：先启动带 auto_prepend_file 的服务，例如

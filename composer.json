@@ -1,0 +1,30 @@
+{
+    "name": "anye1991/shield-waf",
+    "description": "YSL语枢-盾甲WAF — 以自研 YSL-1 可执行语义规则语言为内核的 PHP Web 应用防火墙（嵌入式，auto_prepend_file 生效）",
+    "type": "project",
+    "license": "MIT",
+    "keywords": ["waf", "security", "php", "firewall", "ysl", "semantic"],
+    "homepage": "https://waf.duduziy.com",
+    "authors": [
+        {
+            "name": "暗夜铭少 and the YSL语枢-盾甲WAF contributors",
+            "email": "azgq@foxmail.com",
+            "homepage": "https://github.com/anye1991"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/anye1991/shield-waf-master/issues",
+        "source": "https://github.com/anye1991/shield-waf-master",
+        "email": "azgq@foxmail.com"
+    },
+    "require": {
+        "php": ">=8.1",
+        "ext-pdo_sqlite": "*"
+    },
+    "suggest": {
+        "ext/beast": "随附 ext/beast-8.1.so：运行时透明解密加密核心（必需，见 ext/beast.ini）"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

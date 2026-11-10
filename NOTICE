@@ -1,0 +1,34 @@
+NOTICE — 版权与许可声明
+========================
+
+本项目整体以 **MIT License** 发布（见根目录 `LICENSE`）。
+Copyright (c) 2026 暗夜铭少 and the YSL语枢-盾甲WAF contributors
+
+## 明文源文件
+
+所有明文 PHP / Shell 源文件（仓库根 `*.php`、`tests/`、`tools/`）均在文件头部携带：
+
+    Copyright (c) 2026 暗夜铭少 and the YSL语枢-盾甲WAF contributors
+    SPDX-License-Identifier: MIT
+
+## 加密分发的核心文件（core/ 与 ai/）
+
+`core/`（YSL-1 内核）与 `ai/`（AI 自学习模块）以 php-beast 定制扩展加密后分发，
+加密文件为二进制形态，**无法携带明文版权/许可头**。其版权与许可如下声明：
+
+    Copyright (c) 2026 暗夜铭少 and the YSL语枢-盾甲WAF contributors
+    License: MIT（适用本仓库根 LICENSE 的全部条款）
+
+依据：OpenSSF Best Practices 准则 `copyright_per_file` / `license_per_file`
+允许以「Met + 理由」方式声明——加密文件的版权与许可由本 NOTICE 与根 `LICENSE`
+统一、无差别地覆盖；明文构建源（`core-src/`、`ai-src/`，作者私有备份）中的
+每个文件同样携带上述 SPDX 头，加密产物与之一一对应。
+
+## 第三方组件
+
+| 组件 | 用途 | 许可 |
+|---|---|---|
+| php-beast（jmluang fork，定制密钥构建） | `ext/beast-8.1.so` 运行时透明解密 | PHP License 3.01 / MIT（上游） |
+| PHP >= 8.1 | 运行时 | PHP License 3.01 |
+
+除上述外，本项目**零外部运行时依赖**（无 Composer 包）。

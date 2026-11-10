@@ -216,7 +216,7 @@ function waf_record_bot_stats(array $botResult) {
     $stats['recent_events'] = array_slice($stats['recent_events'], 0, 50);
 
     // 限流写入：避免每个请求都写文件（10% 概率写入 + 动作非 allow 时必写）
-    $shouldWrite = ($action !== 'allow') || (rand(1, 100) <= 10);
+    $shouldWrite = ($action !== 'allow') || (random_int(1, 100) <= 10);
     if ($shouldWrite) {
         $json = json_encode($stats, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if ($json !== false) {
@@ -249,7 +249,7 @@ function waf_block($msg = '') {
         if (is_dir(WAF_LOG_PATH) && is_writable(WAF_LOG_PATH)) {
             $logFile = WAF_LOG_PATH . '/block_' . date('Y-m-d') . '.log';
             // 写入前检查轮转（1% 概率抽样检查，避免每次都 stat）
-            if (rand(1, 100) === 1) {
+            if (random_int(1, 100) === 1) {
                 waf_log_rotate($logFile);
             }
             $written = (@file_put_contents($logFile, $log_line, FILE_APPEND | LOCK_EX) !== false);

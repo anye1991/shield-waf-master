@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    name: 静态检查（语法 + 安全规则）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 PHP 8.1
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          coverage: none
+          ini-values: error_reporting=E_ALL, display_errors=1
+
+      - name: 语法检查（全部明文 PHP）
+        run: |
+          set -e
+          fail=0
+          for f in *.php tests/*.php tools/*.php; do
+            [ -e "$f" ] || continue
+            php -l "$f" || fail=1
+          done
+          exit $fail
+
+      - name: 静态安全检查（tools/static_check.php）
+        run: php tools/static_check.php
+
+  tests:
+    name: 测试套件（内核 / AI / 控制台 / 蜜罐 / 国际化）
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 PHP 8.1（含 pdo_sqlite）
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          extensions: pdo_sqlite
+          coverage: none
+
+      - name: 安装随附 php-beast 扩展（解密 core/、ai/）
+        run: |
+          EXTDIR="$(php -r 'echo ini_get("extension_dir");')"
+          cp ext/beast-8.1.so "$EXTDIR/beast.so"
+          INIDIR="$(php -r 'echo PHP_CONFIG_FILE_SCAN_DIR;')"
+          echo "extension=$EXTDIR/beast.so" | sudo tee "$INIDIR/99-beast.ini" >/dev/null
+          php -m | grep -i beast
+
+      - name: 兼容测试内固定路径 /app
+        run: sudo ln -sfn "$GITHUB_WORKSPACE" /app
+
+      - name: 运行自包含测试（不依赖外部 HTTP 的部分）
+        run: |
+          set -e
+          php tests/adversarial.php
+          php tests/ai_check.php
+          php tests/feature_matrix_check.php
+          php tests/i18n_check.php
+          php tests/honeypot_check.php

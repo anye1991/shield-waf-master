@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # 监控 GitHub Actions 依赖版本
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  # 本项目运行时零 Composer 依赖（见 composer.json require 仅 php 与 pdo_sqlite 扩展），
+  # 故无 composer 生态可监控；PHP 扩展（php-beast）随仓库 ext/ 分发，
+  # 其安全更新由维护者在 CHANGELOG 中人工跟进（对应准则 dependency_monitoring 的说明）。

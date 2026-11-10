@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/核心保护-已加密-2ea043" alt="核心加密">
   <img src="https://img.shields.io/badge/语言-中文-important" alt="语言">
   <img src="https://img.shields.io/badge/作者-暗夜铭少-blueviolet" alt="作者">
-  <img src="https://img.shields.io/badge/版权-保留所有权利-lightgrey" alt="版权">
+  <img src="https://img.shields.io/badge/授权-MIT-green" alt="授权 MIT">
   <a href="https://www.bestpractices.dev/zh-CN/projects/13568/passing"><img src="https://www.bestpractices.dev/projects/13568/badge" alt="OpenSSF 最佳实践"></a>
 </p>
 
@@ -44,6 +44,22 @@
 > 📄 **对应论文**：《语枢 YSL-1：一种面向下一代 Web 应用防火墙的可执行语义规则语言》（暗夜铭少，v2.0，2026）——含形式化定义、参考实现与完整可复现评测。
 >
 > ⚠️ **结论边界（与论文一致，不夸大）**：YSL-1 的收益在**检出率与抗变形保持率**，不在误报——语法层无法取得参数 sink 与业务上下文，误报需靠 HTTP 层证据降低。论文评测基于合成语料 + 单一真实站点（CSIC 2010）+ 四方言留一 + Python/Go 参考原型；**生产环境性能与多方言泛化均以设计论证 / 单点读数为准，不作普遍性能承诺**。本仓库是 YSL-1 设计理念的 PHP 工程化落地，运行指标以论文参考原型评测为参照，生产环境请以你自身流量实测为准。
+
+## 📚 项目文档
+
+| 文档 | 内容 |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 高层架构、模块边界、YSL-1 四级流水线 |
+| [SECURITY.md](SECURITY.md) | 漏洞报告流程、威胁模型、信任边界、安全需求 |
+| [SECURITY-REVIEW.md](SECURITY-REVIEW.md) | 内部安全评审报告 |
+| [GOVERNANCE.md](GOVERNANCE.md) | 治理模型、角色职责、连续性保障 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献流程、DCO、代码复核标准、小任务 |
+| [CODING_STANDARDS.md](CODING_STANDARDS.md) | 编码规范与安全约定 |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | 行为准则 |
+| [ROADMAP.md](ROADMAP.md) | 路线图与 non-goals |
+| [CHANGELOG.md](CHANGELOG.md) | 更新日志与升级路径 |
+| [NOTICE](NOTICE) | 版权与许可声明（含加密核心说明） |
+| [docs/badge-application/](docs/badge-application/) | OpenSSF 徽章申请材料汇总 |
 
 ## 📦 快速开始
 

@@ -4,7 +4,8 @@
  * 作者  : 暗夜铭少
  * 邮箱  : azgq@foxmail.com
  * 网站  : https://waf.duduziy.com
- * 版权  : (c) 2026 暗夜铭少. 保留所有权利.
+ * 版权  : (c) 2026 暗夜铭少 and the YSL语枢-盾甲WAF contributors
+ * 许可  : MIT -- SPDX-License-Identifier: MIT
  */
 
 declare(strict_types=1);
