@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner.png" alt="YSL语枢-盾甲WAF">
+  <img src="docs/banner.gif" alt="YSL语枢-盾甲WAF">
 </p>
 
 > 自研 **YSL 语枢内核** 驱动的 PHP Web 应用防火墙，内置 **AI 自学习** 与 **文件 DNA 防篡改**。核心代码已内置加密保护，部署只需安装随附的 PHP 扩展，无需阅读源码即可完整运行。
