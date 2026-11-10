@@ -96,6 +96,7 @@ function wafCnReasonMap(): array {
         'manual_drill'               => '控制台演练触发',
         'kernel_exception'           => '安全内核异常',
         'kernel_missing'             => '安全内核文件缺失',
+        'beast_missing'              => '运行环境缺少解密扩展（php-beast）',
         'fp_narrative_override'      => '叙述性文本误报复核放行',
     ];
 }

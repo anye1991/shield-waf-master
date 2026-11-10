@@ -63,9 +63,35 @@ if (!extension_loaded('pdo_sqlite')) {
     ok('pdo_sqlite 可用');
 }
 
-// core/、ai/ 为 php-beast 加密文件，必须由 beast 扩展解密后才能被 PHP 编译执行
+// core/、ai/ 为 php-beast 加密文件，必须由 beast 扩展解密后才能被 PHP 编译执行。
+// 这不是"可选组件"：缺它整站会 503（fail-closed），因此默认硬性拦截，不给静默放行的机会。
 if (!extension_loaded('beast')) {
-    out('  [WARN] 未检测到 php-beast 扩展：core/、ai/ 是加密文件，不装 beast 将无法运行（见 README「核心加密与 php-beast 扩展」）');
+    out('');
+    out('  ==================== 缺少解密扩展，无法上线 ====================');
+    out('  [FAIL] 未检测到 php-beast 扩展。');
+    out('         core/、ai/ 是加密文件，缺该扩展时内核无法解密——');
+    out('         站点会在**每一个请求**上返回 503，不是"少个功能"，是整体不可用。');
+    out('');
+    out('  安装步骤（Linux / PHP 8.1）：');
+    out('    1) 找到扩展目录：php -i | grep "^extension_dir"');
+    out('    2) 复制扩展：    cp ext/beast-8.1.so <extension_dir>/beast.so');
+    out('    3) 启用配置：    cp ext/beast.ini /etc/php/8.1/mods-available/beast.ini');
+    out('                     （或直接写入对应 SAPI 的 conf.d 目录）');
+    out('    4) 重启 PHP-FPM：systemctl restart php8.1-fpm');
+    out('    5) 验证：        php -m | grep beast   → 应输出 beast');
+    out('');
+    out('  三个高频坑：');
+    out('    · .so 按 PHP ABI 编译，必须与目标 PHP **主版本一致**（本包为 8.1）；8.2/8.3 加载会失败。');
+    out('    · 装了但没重启 PHP-FPM —— 扩展不会自动生效。');
+    out('    · CLI 与 FPM 可能是两个 PHP：命令行有 beast 不代表网站进程有，请用 FPM 同版本的 php 复验。');
+    out('');
+    out('  若确认 FPM 侧已装好、只是 CLI 版本不同，可加 --force 跳过本检查后继续。');
+    out('  ================================================================');
+    out('');
+    if (!isset($args['force'])) {
+        fail('已中止，未写入任何配置（加 --force 可跳过，但请自行确认 FPM 侧真的加载了 beast）');
+    }
+    out('  [WARN] 已按 --force 继续。上线前请务必确认 FPM 侧 php -m 里有 beast，否则全站 503。');
 } else {
     ok('php-beast 扩展已加载（可解密 core/、ai/）');
 }

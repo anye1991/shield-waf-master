@@ -144,6 +144,13 @@ if (!empty($qpsHit['block'])) {
     wafPage((int)$qpsHit['code'], $qpsHit + ['version' => SHIELD_WAF_VERSION]);
 }
 
+// 加密内核前置校验：core/、ai/ 为 php-beast 加密文件，缺扩展时无法解密。
+// 这里必须给出明确提示——否则 require 加密文件会直接 Parse error，用户只看到白屏 500。
+if (!extension_loaded('beast')) {
+    error_log('[ShieldWAF] php-beast 扩展未加载：core/、ai/ 为加密文件，无法解密运行（详见 README「部署」）');
+    wafPage(503, ['version' => SHIELD_WAF_VERSION, 'reason' => 'beast_missing']);
+}
+
 $kernel = $wafRoot . '/core/YslWaf.php';
 if (!is_file($kernel)) {
     error_log('[ShieldWAF] kernel missing: ' . $kernel);

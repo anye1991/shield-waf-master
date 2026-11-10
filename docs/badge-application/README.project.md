@@ -68,12 +68,24 @@
 
 ## 快速开始
 
+> ### ⚠️ 上线前必读：有一个硬性依赖，不是可选项
+>
+> 本仓库的 `core/`、`ai/` 是**加密分发**，必须由随附的 **php-beast 扩展**在加载时解密才能运行。
+> **没装扩展 ≠ 少个功能，而是站点每个请求都返回 503，整站不可用**（这是 fail-closed 设计：宁可不服务，也不在无防护状态下放行）。
+>
+> 三个硬条件，缺一不可：
+> 1. **PHP 主版本必须与扩展一致** —— 当前随附 `ext/beast-8.1.so`，只适用 **PHP 8.1**；8.2 / 8.3 加载会失败；
+> 2. **扩展必须装进网站进程（PHP-FPM）用的那套 PHP** —— 命令行 `php` 和 FPM 可能是两个版本，别只看 CLI；
+> 3. **装完必须重启 PHP-FPM** —— 不重启不生效。
+>
+> 一条命令自检：`php -m | grep beast`，**有输出才算通过**。完整步骤与排错见下方「部署（必装扩展）」。
+
 ```bash
 # 1) 放到站点之外的安全路径
 git clone <本仓库地址> /opt/ysl-waf
 cd /opt/ysl-waf
 
-# 2) 安装随附的 PHP 扩展（详见「部署」），并自检
+# 2) 安装随附的 PHP 扩展并自检（缺扩展时 install.php 会直接中止，不会写入配置）
 php install.php --check
 
 # 3) 一键接入站点（只写 .user.ini，不碰业务代码）
@@ -315,24 +327,55 @@ php dna.php watch --interval=30 --apply   # 轮询守护
 | 精简压测 | 78 条 clean / 污染两态均 0/0；phar 0 Fatal / 0 Warning / 0 Deprecated |
 | Docker 压测 | 完整 AI 召回 100% / 误报 0% / p50 172 ms |
 
-## 部署（配套扩展）
+## 部署（必装扩展）
 
-> 前提：目标机 PHP ≥ 8.1，并安装随附的扩展（见下）。
+### 0. 必装清单（照这个顺序做，别跳）
 
-安装扩展（任选其一）：
+| 序号 | 动作 | 完成判据 |
+|---|---|---|
+| 1 | 确认站点的 PHP 版本 | `php -v` 显示 **8.1.x**（`ext/beast-8.1.so` 只适配 8.1） |
+| 2 | 把 `ext/beast-8.1.so` 复制到**该 PHP 的**扩展目录，命名 `beast.so` | `php -i \| grep "^extension_dir"` 找目录 |
+| 3 | 启用扩展：把 `ext/beast.ini` 放进该 SAPI 的 `conf.d`（宝塔：PHP 设置 → 配置修改） | 文件内容 `extension=beast.so` |
+| 4 | **重启 PHP-FPM** | `systemctl restart php8.1-fpm`（宝塔：重载配置） |
+| 5 | 验证扩展在**网站进程**里生效 | `php -m \| grep beast` 有输出；再把 `phpinfo()` 放站点里确认 SAPI 为 fpm-fcgi 且 Loaded Configuration 一致 |
+| 6 | 跑自检并接入 | `php install.php --check` → `php install.php --site=/你的站点目录` |
 
-1. **宝塔**：对应 PHP 8.1 装好后，进「PHP 设置 → 扩展」搜索 `beast` 安装；或从本仓库 `ext/beast-8.1.so` 放到该 PHP 扩展目录并 `php.ini` 追加 `extension=beast.so`。
-2. **手动**：克隆 beast 扩展源码，`phpize && ./configure && make && make install`，再 `extension=beast.so`。
-3. **Docker**：`php:8.1-cli` 不支持 `docker-php-ext-install beast`，请 `COPY ext/beast-8.1.so 到扩展目录` 并写入 `ext/beast.ini`。
+> 第 5 步最容易翻车：命令行 `php` 与 FPM 使用的 PHP 常常不是同一套（宝塔多版本共存时尤其如此）。**以站点 `phpinfo()` 的 `extension_dir` / `Loaded Configuration File` 为准**，不是终端里那个。
 
-验证：`php -m | grep beast` 能看到即生效。随后 `php install.php --site=...` 一键接入。
+### 1. 安装扩展（任选其一）
+
+1. **宝塔**：安装 PHP 8.1 →「设置 → 扩展」搜索 `beast` 安装（无此扩展时用下面第 2 条），或把 `ext/beast-8.1.so` 复制到该 PHP 的 `extension_dir` 并在 `php.ini`（或 `conf.d`）追加 `extension=beast.so`。
+2. **手动编译**（与目标 PHP 版本严格对应）：取 beast 扩展源码，`phpize && ./configure && make && make install`，再 `extension=beast.so`。
+3. **容器**：`docker-php-ext-install beast` 不可用，请 `COPY ext/beast-8.1.so` 到业务镜像的扩展目录并写入 `ext/beast.ini`——注意是并入**业务镜像**，不是给 WAF 单开容器（见「为什么 PHP 版不提供 Docker 镜像」）。
+
+### 2. 验证（三步，缺一不可）
+
+```bash
+php -v | head -1              # 必须是 8.1.x
+php -m | grep -i beast        # 必须有输出
+php install.php --check       # 应打印「php-beast 扩展已加载」+ 各项 OK
+```
+
+想再稳一点：在站点根目录放一个临时 `phpinfo()` 页，浏览器打开确认 `Server API = FPM/FastCGI`、`extension_dir` 与实际放置目录一致、页面里能搜到 `beast`，确认后立即删除该文件。
+
+### 3. 故障排查（症状 → 原因）
+
+| 症状 | 最可能原因 | 处理 |
+|---|---|---|
+| 全站 **503**，页面提示「运行环境缺少解密扩展（php-beast）」 | 扩展没装 / 没重启 / 装错 PHP 版本 | 按上面第 0 节 6 步逐条核对 |
+| 全站 **500 白屏**，日志有 `Parse error` 且指向 `core/Ysl*.php` | 加密内核被 PHP 当明文解析——即**扩展未加载** | 同上；本版外壳已加前置体检，正常情况下不会走到白屏 |
+| 命令行 `php -m` 有 beast，但网站仍 503 | CLI 与 FPM 是两套 PHP | 用站点 `phpinfo()` 的路径核对，扩装到 FPM 那套 |
+| `PHP Warning: Unable to load dynamic library 'beast.so'` | `.so` 与 PHP 主版本 ABI 不匹配 | 本包只支持 **8.1**，换 8.1 或自行按目标版本编译 |
+| 装了扩展、站点正常，但控制台「AI 自学习」显示未启用 | AI 层加载异常（`WAF_AI_ENABLED=0` 或 `pdo_sqlite` 缺失） | 查 `var/logs` 里 `[ShieldWAF] AI layer` 记录；主检测不受影响 |
+
+> 为什么这么较真：WAF 的取舍是**fail-closed**——环境不完整时宁可 503 也不静默放行。所以「扩展」这一环必须在交付前确认，否则用户看到的是「网站打不开」，而不是「防护没生效」。
 
 > 单文件 `phar`（`build.php`）为可选实验能力，与配套扩展的兼容性未验证，**不推荐生产**。
 
 ## 交付清单
 
 - 本仓库（源码目录模式）：入口、内核、AI、支撑、外壳、安装脚本，克隆即完整可运行
-- `ext/beast-8.1.so` + `ext/beast.ini` —— 随附的 PHP 扩展与启用配置（**部署必需**）
+- `ext/beast-8.1.so` + `ext/beast.ini` —— 随附的解密扩展与启用配置（**硬性依赖，非可选**：未加载时整站 503）
 - `install.php` —— 自检 / 安装 / 卸载（只写 `.user.ini`）
 - `demo/`、`tests/` —— 演示站与可重复验证
 - 本 README
