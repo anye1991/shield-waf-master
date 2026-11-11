@@ -9,6 +9,8 @@
 ### 新增
 - 治理与合规文档体系：`GOVERNANCE.md`、`CODE_OF_CONDUCT.md`、`SECURITY.md`、`CONTRIBUTING.md`、`ROADMAP.md`、`ARCHITECTURE.md`、`CODING_STANDARDS.md`（对齐 OpenSSF 最佳实践 silver/gold 申请）
 - CI：GitHub Actions（语法检查 + 静态安全检查 + 测试套件）
+- 极限测试工具：`tools/stress_extreme.sh` + `tools/stress/`，一键跑边界/畸形、深层混淆逃逸、
+  多 worker 并发、20s 长稳、限流熔断状态五个阶段；报告见 `docs/EXTREME.md`
 - 依赖监控：Dependabot 配置
 - MIT `LICENSE` 文件与 `NOTICE`（加密核心版权/许可统一声明）
 
@@ -23,6 +25,23 @@
 - **可观测性**：模块降级（自动回退内联实现）不再以 error 级刷日志，统一降为 debug
   （`WAF_DEBUG=1` 时输出并带异常消息与位置）；审计落盘、子系统装配、熔断计数三类
   失败仍保留 error。此前干净请求会偶发 `YslArbiter::arbitrate failed (Error)` 噪音。
+- **可用性 / DoS**：`YslNormalizer::calculateEntropy()` 用逐字符 `mb_substr($str,$i,1)`
+  统计频次，是 O(n²)（每次都要从串首扫到第 i 个码点）。长文本 ≥64KB 单请求耗时
+  超过 20 秒，8 个 worker 被几个大请求就能打满，等于把 WAF 自己变成 DoS 放大器。
+  改为一次性 `preg_split` + `array_count_values`（O(n)，熵值逐位一致）；白盒实测
+  65536B 由 9245ms 降到 10ms，端到端 64KB 由超时降到约 350ms，全部长度恢复线性。
+- **可用性 / 500**：`NaiveBayesClassifier::tokenize()` 对整串做 2/3-gram，1MB 文本
+  会生成约 200 万个 token，PHP 数组扩容一次性申请 256MB 触发 Fatal error，
+  正常长文章直接 500。加入 4KB「头 + 尾」特征窗口预算（真实载荷都在前若干 KB，
+  且保留长尾判别能力），1MB 请求恢复 200，服务日志零 Fatal。
+- **检测 / 长尾夹带**：`collectParamText()` 只取参数文本前 4000 字节，而确定性硬规则
+  与误报复核都基于这份文本——攻击藏在长文本尾部时完全看不见，实测
+  64KB 填充 + `<script>alert(1)</script>` 被放行 200。改为头尾各半（预算仍 4000 字节，
+  下游长度门槛不变），64KB / 1MB 长尾 XSS 与 SQLi 均恢复 403。
+- **检测 / 可逆混淆**：base64 大小写翻转变体的采纳门槛只认序列化、代码执行、
+  敏感路径等硬结构，SQL 恒真式 / SSTI 插值 / CRLF 响应头注入解出后不被采纳，
+  极限测试暴露 6 条漏放。两处 `looksLikeDangerousPayload()` 同步补齐通用攻击结构，
+  143 条有效绕过向量漏放 6 → 0（不可逆的 b64 全大写/全小写仍按无效变异记录）。
 
 ### 已修复的公开漏洞
 - 无（本次为自测发现的内核检测缺口，未对外披露、无 CVE）
