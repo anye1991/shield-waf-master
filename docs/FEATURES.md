@@ -149,15 +149,26 @@ php dna.php watch --interval=30 --apply   # 轮询守护
 
 ## 12. 性能与压测明细
 
-**性能（Docker / PHP 8.1，正常请求 20 次）**
+**修复后实测（Docker `php:8.1-cli` / 8 worker，完整口径见 `docs/EXTREME.md`）**
+
+| 场景 | 吞吐 | P50 | P95 |
+|---|---|---|---|
+| 正常请求（单并发） | — | 3.9 ms | 4.3 ms |
+| 并发 16 / 32 / 64 | 1170 / 1250 / 1243 req/s | 12.9 / 23.5 / 46.1 ms | 19.8 / 34.6 / 68.0 ms |
+| 20s 长稳（并发 32） | 1160 req/s | 23.2 ms | 41.0 ms |
+
+**旧版 Windows bind mount 的历史数据（修复前，仅作参考）**
 
 | 配置 | p50 | 相对默认 |
 |---|---|---|
 | 默认 `var/logs`（最差情形） | 323 ms | — |
-| `WAF_LOG_DIR=/dev/shm/waf-logs` | **52 ms** | −84% |
-| tmpfs + `WAF_AI_ENABLED=0` | **29 ms** | −91% |
+| `WAF_LOG_DIR=/dev/shm/waf-logs` | 52 ms | −84% |
+| tmpfs + `WAF_AI_ENABLED=0` | 29 ms | −91% |
 
-磁盘 IO 是主要开销，不是 AI 计算。生产 Linux + PHP-FPM + OPcache 优于上表 Windows bind mount 数字。
+当时把差距归因为「磁盘 IO 是主要开销」，后续定位证伪：真正瓶颈是 `YslAudit::flush()`
+每请求全量重扫历史日志取哈希链末端（O(n²)），磁盘快慢只是叠加因素；已在代码层修复
+（`docs/EXTREME.md` 第四节第 5 项）。把 `WAF_LOG_DIR` 指向 tmpfs 仍能进一步降低落盘
+开销，但不再是必需项；生产 Linux + PHP-FPM + OPcache 仍优于旧表 bind mount 数字。
 
 **与旧版的横向对比（自制小样本）**
 

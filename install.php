@@ -202,7 +202,7 @@ ok('已写入 auto_prepend_file（重复安装自动去重）');
 out(str_repeat('-', 60));
 out('安装完成。本包建议放在站点之外的安全路径（如 /opt/ysl-waf），仅站点目录的 .user.ini 引用它。');
 out('重启 PHP-FPM 后生效；.user.ini 默认 300 秒缓存，可用 WAF_MODE=observe 先观察误报。');
-out('性能：高频状态写在 ' . $logDir . '，生产建议把 WAF_LOG_DIR 指向 tmpfs（如 /dev/shm/waf-logs）。');
+out('性能：状态与审计写在 ' . $logDir . '；高并发场景可把 WAF_LOG_DIR 指向 tmpfs（如 /dev/shm/waf-logs）进一步降低落盘开销。');
 if (getenv('WAF_LOG_DIR') || getenv('WAF_DATA_DIR')) {
     out('注意：已用自定义运行目录，PHP-FPM 环境需设置相同的 WAF_LOG_DIR / WAF_DATA_DIR。');
 }

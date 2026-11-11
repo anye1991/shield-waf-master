@@ -421,11 +421,30 @@ function stageSoak(Probe $p, int $cc): void
     $deadline = microtime(true) + 20.0;
     $round = 0;
     $all = [];
+    $roundP50 = [];
     while (microtime(true) < $deadline) {
         $res = runMixed($p, 200, $cc, 'soak r' . (++$round));
         $all = array_merge($all, $res);
+        $roundP50[] = pct(array_column($res, 'ms'), 50);
     }
     summarize('soak 总计', $all, 20.0);
+
+    // 延迟漂移回归断言：历史上审计哈希链每请求全量重扫日志，长稳 P50 从 983ms
+    // 持续涨到 1209ms。只比较前 1/3 与后 1/3 的轮次均值，避开单轮 GC 抖动；
+    // 后段高出 50% 即判失败，防止「热路径成本随累计状态增长」类缺陷再次引入。
+    if (count($roundP50) >= 6) {
+        $k = (int)max(1, floor(count($roundP50) / 3));
+        $head = array_sum(array_slice($roundP50, 0, $k)) / $k;
+        $tail = array_sum(array_slice($roundP50, -$k)) / $k;
+        $drift = $head > 0 ? ($tail - $head) / $head : 0.0;
+        info(sprintf('延迟漂移 | 前 1/3 均值 %.1fms | 后 1/3 均值 %.1fms | %+.1f%%',
+            $head, $tail, $drift * 100));
+        if ($drift > 0.5) {
+            no(sprintf('长稳后段 P50 比前段高 %.1f%%，疑似状态/日志累积导致的性能退化', $drift * 100));
+        } else {
+            ok('长稳无延迟漂移');
+        }
+    }
 }
 
 // =========================================================================

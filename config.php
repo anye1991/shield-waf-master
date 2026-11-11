@@ -21,8 +21,9 @@ $wafEnvHome = getenv('WAF_HOME');
 $home = defined('WAF_HOME') ? WAF_HOME : ($wafEnvHome ?: __DIR__);
 $home = rtrim(str_replace('\\', '/', $home), '/');
 
-// 状态/日志目录可由 WAF_LOG_DIR 覆盖。内核每请求会写攻击链、时间窗、熔断状态与审计，
-// 磁盘 IO 是主要开销；生产建议指向 tmpfs（如 /dev/shm/waf-logs）可显著降低延迟。
+// 状态/日志目录可由 WAF_LOG_DIR 覆盖。内核每请求会写攻击链、时间窗、熔断状态与审计；
+// 热路径已做常量级开销优化（哈希链末端直接读 .last_hash、总量检查只在轮转时执行），
+// 高并发下把该目录指向 tmpfs（如 /dev/shm/waf-logs）仍可进一步降低落盘延迟。
 // 未设置时保持默认 var/logs，行为与旧版完全一致。
 $wafLogDir = getenv('WAF_LOG_DIR') ?: ($home . '/var/logs');
 $wafLogDir = rtrim(str_replace('\\', '/', $wafLogDir), '/');
