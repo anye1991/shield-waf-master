@@ -18,7 +18,7 @@ bash tools/e2e_encrypted.sh        # 需要本机已装 Docker
 | 部署形态 | 进程内嵌：`auto_prepend_file` 前置加载，业务页零改造 |
 | 业务页 | 仓库自带 `demo/index.php`（普通 PHP 页面，不含任何 WAF 代码） |
 | 扩展 | 仓库随附 `ext/beast-8.1.so`，按 README 拷入扩展目录并启用 |
-| 版 本 | v6.5.0 |
+| 版 本 | v6.5.1 |
 | 数据目录 | `var/logs`、`var/data`（每轮验收使用全新副本） |
 
 ## 二、验收项与结果

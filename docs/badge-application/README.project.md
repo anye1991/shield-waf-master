@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/版本-v6.5.0-blue" alt="版本">
+  <img src="https://img.shields.io/badge/版本-v6.5.1-blue" alt="版本">
   <img src="https://img.shields.io/badge/PHP-8.1%2B-777BB4" alt="PHP">
   <img src="https://img.shields.io/badge/核心保护-已加密-2ea043" alt="核心加密">
   <img src="https://img.shields.io/badge/语言-中文-important" alt="语言">

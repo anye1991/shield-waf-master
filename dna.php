@@ -41,7 +41,7 @@ declare(strict_types=1);
  *           --no-surgery --restore-any --adopt-new
  */
 
-const DNA_VER          = '6.5.0';
+const DNA_VER          = '6.5.1';
 const DNA_MAX_FILE     = 8 * 1024 * 1024;   // 单文件上限，超过不做防篡改目标
 const DNA_MAX_DECODED  = 65536;             // 递归解码结果上限
 const DNA_MAX_LAYERS   = 5;                 // 编码链最大层数

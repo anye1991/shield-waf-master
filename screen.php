@@ -320,7 +320,7 @@ function sBuild(array $load, string $yslDir, string $logDir, string $circuitFile
     $n  = count($ev);
     $d  = [
         'meta' => [
-            'version'    => defined('SHIELD_WAF_VERSION') ? SHIELD_WAF_VERSION : '6.5.0',
+            'version'    => defined('SHIELD_WAF_VERSION') ? SHIELD_WAF_VERSION : '6.5.1',
             'php'        => PHP_VERSION,
             'generated'  => date('Y-m-d H:i:s', time() + 8 * 3600),
             'source'     => $load['source'],

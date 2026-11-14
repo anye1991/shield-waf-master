@@ -72,7 +72,7 @@ function resetAll(): void {
     act('qps.reset');
 }
 
-echo "=== YSL语枢-盾甲WAF v6.5.0 · QPS 与响应页验收 ===\n\n";
+echo "=== YSL语枢-盾甲WAF v6.5.1 · QPS 与响应页验收 ===\n\n";
 resetAll();
 
 // ---------------------------------------------------------------- 1. 403 美化页
@@ -87,7 +87,7 @@ ck('同时保留原始规则标识便于取证', str_contains($b, '规则标识'
 ck('风险等级已中文化（不裸露 critical）', str_contains($b, '危急')
     && !preg_match('/风险等级<\/div><div class="v">critical/', $b));
 ck('含请求编号 / 时间 / 客户端地址 / 路径', str_contains($b, '请求编号') && str_contains($b, '客户端地址') && str_contains($b, '请求路径'));
-ck('含品牌与版本号', str_contains($b, 'YSL语枢-盾甲WAF') && str_contains($b, '6.5.0'));
+ck('含品牌与版本号', str_contains($b, 'YSL语枢-盾甲WAF') && str_contains($b, '6.5.1'));
 ck('严格 CSP（script-src none）', str_contains($h['content-security-policy'] ?? '', "script-src 'none'"));
 ck('no-store / nosniff / DENY', str_contains($h['cache-control'] ?? '', 'no-store')
     && ($h['x-content-type-options'] ?? '') === 'nosniff' && ($h['x-frame-options'] ?? '') === 'DENY');

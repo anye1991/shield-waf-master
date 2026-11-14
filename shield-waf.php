@@ -60,7 +60,7 @@ if (defined('SHIELD_WAF_BOOTED')) {
     return;
 }
 define('SHIELD_WAF_BOOTED', true);
-define('SHIELD_WAF_VERSION', '6.5.0');
+define('SHIELD_WAF_VERSION', '6.5.1');
 
 if (!defined('WAF_HOME')) {
     define('WAF_HOME', $wafHome);

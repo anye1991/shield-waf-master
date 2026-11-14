@@ -54,6 +54,37 @@
 ### 已修复的公开漏洞
 - 无（本次为自测发现的内核检测缺口，未对外披露、无 CVE）
 
+## [6.5.1] - 2026-11-14
+
+### 已修复
+- **兼容性 / 加固环境 500**：`shield-waf.php` 无条件调用 `putenv()`，而宝塔等面板会把
+  `putenv` 列入 `disable_functions`，导致每个请求 Fatal → 整站 500。改为
+  `function_exists('putenv')` 守卫；不可用时沿用启动默认值（`enforce`、守卫全开、蜜罐停用，
+  全部 fail-closed，不静默放行），并同步 `$_ENV` / `$_SERVER`、暴露 `WAF_PUTENV_AVAILABLE`。
+- **兼容性 / 控制台 Fatal**：`control.php` 三处 DNA 命令执行依赖 `exec()`，禁用后点 DNA
+  按钮直接 Fatal。补 `function_exists('exec')` 兜底，优先 `posix_kill`，返回结构化错误；
+  同时收敛为 `ctlDnaRun(string $cmd, array $args)`、PID 强转 `(int)`、`escapeshellarg`、
+  固定动作映射，参数不再拼接进 shell。
+- **自检可信度**：`install.php --check` 新增运行时依赖函数检查，如实报告 `putenv` / `exec`
+  被禁时的降级影响与修复建议，不再出现「自检全绿、上线炸」。
+- **CI 恒红 / 静态检查**：`tools/static_check.php` 改为显式审计豁免——仅带
+  `waf-audited:exec:` 行级理由标注的合规 `exec` 降级为可见 `[AUDIT]`；`eval`、
+  `create_function`、`pcntl_exec`、`rand`、`mt_rand` 永不豁免；新增裸 `exec` 仍 `FAIL`，
+  规则强度未降低。
+- **CI 恒红 / 编排**：新增 `tools/e2e/ci.sh` 作为 GitHub Actions 与本地通用编排，自动选空闲
+  端口、准备 `console.key`、重建 DNA baseline、起 `php -S` + beast，跑全套验收并补回此前
+  漏跑的官方向量、`control_check`、`qps_check`；把「禁用 putenv / exec」与「缺扩展 503」
+  变为常驻回归项；失败时上传诊断日志。tests 不再依赖 `/app` 软链。
+- **可移植性**：`feature_matrix_check.php`、`honeypot_check.php`、`i18n_check.php`、
+  `control_check.php`、`qps_check.php` 去除 `/app`、8080 硬编码，支持 `WAF_TEST_BASE` /
+  `WAF_TEST_HOME` 覆盖，默认值仍兼容官方容器 `/app:8080`。
+
+### 变更
+- 版本徽章、运行时版本常量与验收报告统一升至 v6.5.1（核心功能不变）。
+
+### 已修复的公开漏洞
+- 无（本次为代码审计自测发现的兼容性 / 工程缺陷，未对外披露、无 CVE）
+
 ## [6.5.0] - 2026
 
 ### 新增

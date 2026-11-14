@@ -37,7 +37,7 @@ function out(string $s): void { echo $s . PHP_EOL; }
 function fail(string $s): void { out('  [FAIL] ' . $s); exit(1); }
 function ok(string $s): void  { out('  [ OK ] ' . $s); }
 
-out('YSL语枢-盾甲WAF v6.5.0 · ' . (isset($args['uninstall']) ? '卸载' : (isset($args['check']) ? '环境自检' : '安装')));
+out('YSL语枢-盾甲WAF v6.5.1 · ' . (isset($args['uninstall']) ? '卸载' : (isset($args['check']) ? '环境自检' : '安装')));
 out(str_repeat('-', 60));
 
 // ---------- 环境自检 ----------

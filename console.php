@@ -202,7 +202,7 @@ code{background:rgba(148,163,184,.12);padding:1px 5px;border-radius:4px}
   border-radius:8px;padding:10px;color:#93aac9;font-size:10.5px;max-height:260px;overflow:auto}
 </style></head><body><div class="wrap">
 <h1>YSL语枢-盾甲WAF <span>· 控制台</span></h1>
-<div class="sub">内核 v<?= e(defined('SHIELD_WAF_VERSION') ? SHIELD_WAF_VERSION : '6.5.0') ?> · PHP <?= e(PHP_VERSION) ?> · 模式 <?= e(wafCnMode($mode)) ?></div>
+<div class="sub">内核 v<?= e(defined('SHIELD_WAF_VERSION') ? SHIELD_WAF_VERSION : '6.5.1') ?> · PHP <?= e(PHP_VERSION) ?> · 模式 <?= e(wafCnMode($mode)) ?></div>
 
 <div class="note">上半部分为<strong>只读统计</strong>（真实审计日志，无数据即显示「暂无」）；下方表单是<strong>真实操作</strong>，直接提交到 <code>/waf-control</code>，经密钥 + CSRF 校验后落盘并在结果页回显。日志目录 <code><?= e($yslDir) ?></code></div>
 

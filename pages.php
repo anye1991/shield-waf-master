@@ -70,7 +70,7 @@ function wafPage(int $status, array $ctx = []): void
     $ip   = (string)($_SERVER['REMOTE_ADDR'] ?? '');
     if (filter_var($ip, FILTER_VALIDATE_IP) === false) { $ip = '—'; }
     $node = (string)($ctx['node'] ?? (function_exists('gethostname') ? gethostname() : 'unknown'));
-    $ver  = (string)($ctx['version'] ?? (defined('SHIELD_WAF_VERSION') ? SHIELD_WAF_VERSION : '6.5.0'));
+    $ver  = (string)($ctx['version'] ?? (defined('SHIELD_WAF_VERSION') ? SHIELD_WAF_VERSION : '6.5.1'));
     $time = date('Y-m-d H:i:s', time() + 8 * 3600) . ' UTC+8';
     $reasonRaw = (string)($ctx['reason'] ?? '');
     $reasonTxt = wafPageReason($reasonRaw);

@@ -9,7 +9,7 @@
  */
 
 /**
- * YSL语枢-盾甲WAF · 中文展示层专项验收（v6.5.0）
+ * YSL语枢-盾甲WAF · 中文展示层专项验收（v6.5.1）
  *
  * 目标：所有「给人看」的页面不得裸露内部英文状态 / 模式 / 命令枚举；
  *       同时确认状态文件、控制端点 JSON 契约里仍保留英文原值（程序依赖，不能改）。
@@ -67,7 +67,7 @@ function bareHits(string $text): array {
 $KEY = trim((string)@file_get_contents($HOME . '/var/data/console.key'));
 $CSRF = wafCtlToken($KEY);
 
-echo "=== YSL语枢-盾甲WAF v6.5.0 · 中文展示层验收 ===\n\n";
+echo "=== YSL语枢-盾甲WAF v6.5.1 · 中文展示层验收 ===\n\n";
 
 // ---------------------------------------------------------------- 1. 响应页
 echo "[1] 拦截 / 限流 / 熔断 / 故障响应页\n";
@@ -84,7 +84,7 @@ ck('403 可见文本无裸露英文状态枚举', bareHits($vis) === [], implode
 // 避免依赖真实压测时序，也能覆盖平时不易触发的故障页
 foreach ([429, 502, 503, 413] as $code) {
     $ctx = [
-        'version' => '6.5.0', 'reason' => $code === 429 ? 'global_qps_soft' : ($code === 502 ? 'global_qps_hard' : 'kernel_exception'),
+        'version' => '6.5.1', 'reason' => $code === 429 ? 'global_qps_soft' : ($code === 502 ? 'global_qps_hard' : 'kernel_exception'),
         'state' => $code === 502 ? 'open' : 'closed', 'scope' => 'global',
         'qps' => 320, 'peak' => 410, 'rejects' => 12, 'retry_after' => 8,
         'soft' => 300, 'hard' => 600, 'ip_soft' => 80, 'ip_hard' => 160,

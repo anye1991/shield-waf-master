@@ -9,7 +9,7 @@
  */
 
 /**
- * YSL语枢-盾甲WAF · 蜜罐受控启用专项验收（v6.5.0，Docker / 真实 HTTP / 真实内核）
+ * YSL语枢-盾甲WAF · 蜜罐受控启用专项验收（v6.5.1，Docker / 真实 HTTP / 真实内核）
  *
  *   docker exec -i waflean2 php /app/tests/honeypot_check.php
  *
@@ -86,7 +86,7 @@ function kernelProbe(string $envVal): array {
     return [implode('', $out), $rc];
 }
 
-echo "=== YSL语枢-盾甲WAF v6.5.0 · 蜜罐受控启用验收 ===\n\n";
+echo "=== YSL语枢-盾甲WAF v6.5.1 · 蜜罐受控启用验收 ===\n\n";
 @unlink(wafRtPath($HOME));
 
 echo "[1] 默认停用（内核侧真验证）\n";

@@ -9,7 +9,7 @@
  */
 
 /**
- * YSL语枢-盾甲WAF · 全功能控制矩阵专项验收（v6.5.0）
+ * YSL语枢-盾甲WAF · 全功能控制矩阵专项验收（v6.5.1）
  *
  *   docker exec -i waflean2 php /app/tests/feature_matrix_check.php
  *
@@ -64,7 +64,7 @@ function visible(string $html): string {
     return (string)preg_replace('/\s+/u', ' ', $s);
 }
 
-echo "=== YSL语枢-盾甲WAF v6.5.0 · 全功能控制矩阵验收 ===\n\n";
+echo "=== YSL语枢-盾甲WAF v6.5.1 · 全功能控制矩阵验收 ===\n\n";
 
 echo "[1] 动作白名单与页面按钮一致性\n";
 $known = knownActions();
