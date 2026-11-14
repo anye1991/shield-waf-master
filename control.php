@@ -148,6 +148,42 @@ function ctlDnaStatus(): array {
     $j = json_decode((string)@file_get_contents($f), true);
     return is_array($j) ? $j : [];
 }
+/**
+ * 解析可执行 dna.php 的 PHP **CLI** 解释器。
+ *
+ * 本 WAF 的主要部署形态是 php-fpm（auto_prepend_file），此时 PHP_BINARY 指向
+ * php-fpm / php-cgi 二进制，而不是命令行解释器；用它拼 `<bin> dna.php status`
+ * 只会打印 Usage 并失败，控制台所有 DNA 动作（plan/status/selftest/scan/audit/
+ * baseline/restore/watch）会静默失效。必须显式定位同版本 CLI 二进制。
+ *
+ * 优先级：PHP_BINDIR 下的 CLI 二进制 → 当前 SAPI 为 CLI 时的 PHP_BINARY → PATH 的 php。
+ * fpm/cgi/dbg 二进制一律排除；找不到可执行文件时不猜测绝对路径，交给 PATH 兜底，
+ * 由 install.php --check 提前报告风险。
+ */
+function ctlCliPhp(): string {
+    $candidates = [];
+    $bindir = defined('PHP_BINDIR') ? rtrim((string)PHP_BINDIR, '/\\') : '';
+    if ($bindir !== '') {
+        foreach (['php', 'php8.1', 'php81', 'php.exe', 'php8.1.exe'] as $name) {
+            $candidates[] = $bindir . DIRECTORY_SEPARATOR . $name;
+        }
+    }
+    // php-fpm 常装在 sbin/ 而 CLI 在 bin/，从 fpm 自身的路径推导同级 CLI 目录
+    if (PHP_BINARY !== '') {
+        $binDirOfSelf = dirname(PHP_BINARY);
+        $candidates[] = dirname($binDirOfSelf) . DIRECTORY_SEPARATOR . 'bin' . DIRECTORY_SEPARATOR . 'php';
+        $candidates[] = $binDirOfSelf . DIRECTORY_SEPARATOR . 'php';
+    }
+    if (in_array(PHP_SAPI, ['cli', 'cli-server'], true) && PHP_BINARY !== '') {
+        $candidates[] = PHP_BINARY;
+    }
+    foreach ($candidates as $bin) {
+        if (preg_match('/(fpm|cgi|dbg)/i', basename($bin))) { continue; }
+        if (@is_executable($bin)) { return $bin; }
+    }
+    return 'php';
+}
+
 function ctlDnaRun(string $cmd, array $args = []): array {
     // 加固环境（如 disable_functions 含 exec）下不能调用未定义函数，否则点击
     // 任意 DNA 动作都会 Fatal。返回结构化失败，由调用方显示明确提示，不炸页面。
@@ -155,12 +191,12 @@ function ctlDnaRun(string $cmd, array $args = []): array {
         return ['ok' => false, 'code' => 127,
                 'output' => 'exec() 被 disable_functions 禁用，DNA 命令无法执行；请从 disable_functions 移除 exec()。'];
     }
-    $bin = PHP_BINARY ?: 'php';
-    $parts = [$bin, escapeshellarg($GLOBALS['P']['home'] . '/dna.php'), $cmd,
+    $parts = [escapeshellarg(ctlCliPhp()),
+              escapeshellarg($GLOBALS['P']['home'] . '/dna.php'), escapeshellarg($cmd),
               '--root=' . escapeshellarg($GLOBALS['P']['home'])];
     foreach ($args as $a) { $parts[] = escapeshellarg($a); }
     $out = []; $code = 0;
-    // waf-audited:exec: DNA 子命令来自固定 $map 白名单，脚本路径与全部参数均经 escapeshellarg()，--file 另有正则与 .. 拦截，无任何原始用户输入
+    // waf-audited:exec: DNA 子命令来自固定 $map 白名单，CLI 解释器由 ctlCliPhp() 解析，脚本路径、子命令与全部参数均经 escapeshellarg()，--file 另有正则与 .. 拦截，无任何原始用户输入
     exec(implode(' ', $parts) . ' 2>&1', $out, $code);
     return ['ok' => $code === 0, 'code' => $code, 'output' => implode("\n", array_slice($out, 0, 24))];
 }
@@ -537,10 +573,10 @@ switch ($action) {
             $message = 'exec() 被 disable_functions 禁用，无法启动 DNA 守护；请从 disable_functions 移除 exec()。';
             break;
         }
-        $cmd = (PHP_BINARY ?: 'php') . ' ' . escapeshellarg($home . '/dna.php')
+        $cmd = escapeshellarg(ctlCliPhp()) . ' ' . escapeshellarg($home . '/dna.php')
              . ' watch --root=' . escapeshellarg($home) . ' --interval=30 > '
              . escapeshellarg($log) . ' 2>&1 & echo $!';
-        // waf-audited:exec: 命令由 PHP_BINARY 与固定 dna.php/watch 子命令拼接，路径与日志重定向目标全部 escapeshellarg()，不含用户输入
+        // waf-audited:exec: 命令由 ctlCliPhp() 解析出的 CLI 解释器与固定 dna.php/watch 子命令拼接，路径与日志重定向目标全部 escapeshellarg()，不含用户输入
         $newPid = (int)trim((string)@exec($cmd));
         usleep(300000);
         if (ctlWatchAlive($newPid)) {

@@ -81,6 +81,26 @@ if ($disabledHint !== '') {
     out('         默认 mode=enforce、各守卫全开、蜜罐停用，均为 fail-closed，不会静默放行。');
 }
 
+// ---------- PHP CLI 解释器（php-fpm 部署下 DNA 控制台的隐藏依赖）----------
+// 控制台的 DNA 动作/守护要另起 PHP CLI 进程执行 dna.php。php-fpm SAPI 下
+// PHP_BINARY 指向 php-fpm 而不是 php，control.php 会自行解析 PHP_BINDIR/php；
+// 这里提前确认它确实存在，避免「自检全绿、上线后 DNA 按钮点了没反应」。
+$cliBin = '';
+if (defined('PHP_BINDIR') && PHP_BINDIR !== '') {
+    $candidate = rtrim((string)PHP_BINDIR, '/\\') . DIRECTORY_SEPARATOR . 'php';
+    if (@is_executable($candidate)) { $cliBin = $candidate; }
+}
+if ($cliBin !== '') {
+    ok('PHP CLI 解释器可用：' . $cliBin);
+} else {
+    out('  [WARN] 未能定位 PHP CLI 解释器（PHP_BINDIR/php）；');
+    out('         php-fpm 部署下控制台 DNA 动作需要它，请确认 PATH 中的 php 可执行。');
+}
+if (PHP_SAPI === 'cli') {
+    out('  [INFO] 本自检读取的是 CLI SAPI 的 php.ini；生产若为 php-fpm，两份 ini 可能不同。');
+    out('         请另用 FPM 同版本 PHP 复验 disable_functions，必要时用 env[WAF_*] 预置默认值。');
+}
+
 if (!extension_loaded('pdo_sqlite')) {
     out('  [WARN] 未装 pdo_sqlite：C2 监控模块会降级，主检测流程不受影响');
 } else {

@@ -112,7 +112,12 @@ run_case static_check  php "$ROOT/tools/static_check.php"
 step "2. 启动演示站点（auto_prepend_file 注入，业务代码零改造）"
 set_qps_off
 cd "$ROOT" || exit 1
-php -S "127.0.0.1:${PORT}" -t "$ROOT/demo" "$ROOT/tools/e2e/router.php" \
+# php -S 走 cli-server SAPI，加载的是 php.ini；而 PHP CLI 走 php-cli.ini。
+# 宝塔等面板只在 php.ini 里禁 exec/putenv，CLI 却可用，于是同一台机器上
+# 「CLI 自检全绿、内置服务器里 DNA 控制端点降级」会让 control_check 误判失败。
+# CI runner 的 php.ini 是干净的；这里显式清空，保证任意加固主机上验收结论
+# 与 GitHub Actions 完全一致。降级路径由 step 7 单独用 -d disable_functions=putenv 覆盖。
+php -d disable_functions= -S "127.0.0.1:${PORT}" -t "$ROOT/demo" "$ROOT/tools/e2e/router.php" \
     >/tmp/ysl-ci-server.log 2>&1 &
 SRV=$!
 if wait_http; then ok "服务就绪：$BASE"; else bad "服务未就绪"; tail -30 /tmp/ysl-ci-server.log; fi

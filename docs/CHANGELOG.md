@@ -79,8 +79,37 @@
   `control_check.php`、`qps_check.php` 去除 `/app`、8080 硬编码，支持 `WAF_TEST_BASE` /
   `WAF_TEST_HOME` 覆盖，默认值仍兼容官方容器 `/app:8080`。
 
+- **php-fpm 部署下文件 DNA 控制台整体失效**：`control.php` 用 `PHP_BINARY` 拼接
+  `dna.php <子命令>`，但在 php-fpm / cgi-fcgi SAPI 下 `PHP_BINARY` 指向
+  `php-fpm` / `php-cgi` 二进制而非 CLI 解释器，命令会以 Usage 报错退出，导致
+  `plan/status/selftest/scan/audit/baseline/rebaseline/restore/apply/watch`
+  在真实生产站点上全部点了没反应（此前只在 `php -S` 的 cli-server 下验收，未暴露）。
+  新增 `ctlCliPhp()` 统一解析：优先 `PHP_BINDIR/php`，再从 `PHP_BINARY` 推导
+  `sbin → bin`，排除 fpm/cgi/dbg 二进制，最后交 PATH 兜底；解释器与子命令、
+  参数全部 `escapeshellarg()`。守护进程 `/proc` 探活逻辑保持不变。
+- **自检漏报 CLI 解释器**：`install.php --check` 新增 `PHP_BINDIR/php` 可执行性
+  探测，并如实提示「CLI 与 FPM 可能使用不同 php.ini」，避免自检全绿、上线后 DNA
+  按钮才发现不可用。
+- **CI runner 浮动导致加密内核无法加载**：`ubuntu-latest` 自 2026-10-19 起迁移到
+  Ubuntu 26，而随附 `ext/beast-8.1.so` 绑定 PHP 8.1 ABI / GLIBC_2.33。两个 job
+  固定为 `ubuntu-22.04`（glibc 2.35、PHP 8.1 一等支持），并写明升级 PHP 主版本时
+  必须同步重编译扩展。
+- **CI 扩展安装静默失效**：`PHP_CONFIG_FILE_SCAN_DIR` 为空或只读时兜底从
+  `php --ini` 解析 conf.d，显式写 `beast.enable=On`，并增加 `extension_loaded()`
+  硬校验，不再只靠 `php -m` 目视。
+- **CI 编排在加固主机上误判**：`php -S` 走 cli-server SAPI 加载 php.ini，而 CLI
+  测试脚本走 php-cli.ini；宝塔等只在 php.ini 禁 `exec/putenv`，会让
+  `control_check` 的 13 个 DNA 用例在加固主机上误报 FAIL。主服务改为
+  `php -d disable_functions= -S`，使任意主机结论与 GitHub Actions 一致；
+  「禁用 putenv 不整站 500」「缺扩展 503」两项降级回归仍由独立进程覆盖。
+- **静态检查覆盖缺口**：`tools/static_check.php` 扫描范围与 CI 语法检查对齐，
+  新增 `tools/e2e/*.php`、`demo/*.php`；`ci.yml` 语法检查补 `demo/*.php`。
+  `tests/` 仍按原设计不纳入 FAIL 规则（含攻击载荷）。实测 FAIL=0 / AUDIT=3 不变。
+
 ### 变更
 - 版本徽章、运行时版本常量与验收报告统一升至 v6.5.1（核心功能不变）。
+- README「30 秒上手」补上 FPM 侧扩展复验方法与 `bash tools/e2e/ci.sh` 本地一键验收入口；
+  原先只给 `php -m | grep beast`，与同段「CLI 不算」的告诫自相矛盾，容易误导部署者。
 
 ### 已修复的公开漏洞
 - 无（本次为代码审计自测发现的兼容性 / 工程缺陷，未对外披露、无 CVE）

@@ -9,10 +9,17 @@ on:
 permissions:
   contents: read
 
+# 固定 runner 镜像，不用 ubuntu-latest：
+#   · 随附 ext/beast-8.1.so 按 PHP 8.1 ABI / GLIBC_2.33 编译，必须与 PHP 8.1 配套；
+#   · ubuntu-latest 自 2026-10-19 起迁移到 Ubuntu 26，setup-php 对其 PHP 8.1 支持
+#     与 glibc/ABI 组合不再有保证，浮动镜像会让 CI 某天突然无法加载加密内核；
+#   · ubuntu-22.04 自带 glibc 2.35（>= .so 所需 2.33），PHP 8.1 为一等支持版本。
+# 升级 PHP 主版本时必须同时重编译 beast 扩展并更新本注释，不要只改这里。
+# 注：runs-on 不能用 env 上下文（env 仅steps级可用），故两个 job 各写一次字面量。
 jobs:
   static:
     name: 静态检查（语法 + 安全规则）
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -27,7 +34,7 @@ jobs:
         run: |
           set -e
           fail=0
-          for f in *.php tests/*.php tools/*.php tools/e2e/*.php; do
+          for f in *.php tests/*.php tools/*.php tools/e2e/*.php demo/*.php; do
             [ -e "$f" ] || continue
             php -l "$f" || fail=1
           done
@@ -41,7 +48,7 @@ jobs:
 
   tests:
     name: 测试套件（向量 / 内核 / AI / 控制台 / 蜜罐 / 国际化 / 限流）
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     continue-on-error: false
     timeout-minutes: 20
     steps:
@@ -56,11 +63,19 @@ jobs:
 
       - name: 安装随附 php-beast 扩展（解密 core/、ai/）
         run: |
+          set -e
           EXTDIR="$(php -r 'echo ini_get("extension_dir");')"
-          cp ext/beast-8.1.so "$EXTDIR/beast.so"
           INIDIR="$(php -r 'echo PHP_CONFIG_FILE_SCAN_DIR;')"
-          echo "extension=$EXTDIR/beast.so" | sudo tee "$INIDIR/99-beast.ini" >/dev/null
+          # setup-php 某些版本把 PHP_CONFIG_FILE_SCAN_DIR 留空或指向只读目录，
+          # 此时直接从 php --ini 解析 conf.d，避免静默装成「扩展没生效」。
+          if [ -z "$INIDIR" ] || [ ! -d "$INIDIR" ]; then
+            INIDIR="$(php --ini | sed -n 's#^Scan for additional .ini files in: *##p' | head -1)"
+          fi
+          [ -n "$EXTDIR" ] && [ -n "$INIDIR" ] || { echo "无法定位 extension_dir / conf.d"; exit 1; }
+          sudo cp ext/beast-8.1.so "$EXTDIR/beast.so"
+          printf 'extension=%s/beast.so\nbeast.enable=On\n' "$EXTDIR" | sudo tee "$INIDIR/99-beast.ini" >/dev/null
           php -m | grep -i beast
+          php -r 'exit(extension_loaded("beast") ? 0 : 1);'
 
       # 测试脚本已去除 /app 与 8080 硬编码，改用 WAF_TEST_BASE / WAF_TEST_HOME，
       # 因此不再需要 sudo ln -s /app，CI 与任意主机路径一致可复现。

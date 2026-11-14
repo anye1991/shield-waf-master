@@ -15,7 +15,8 @@
  * 基于 PHP tokenizer 的规则扫描：只分析「代码位置」的调用（字符串字面量与注释
  * 不参与匹配，避免误伤 WAF 检测规则与测试载荷）。
  *
- * 扫描范围：仓库根 *.php 与 tools/*.php（明文生产代码）。
+ * 扫描范围：仓库根 *.php、tools/*.php、tools/e2e/*.php、demo/*.php（全部随包分发的
+ *   明文 PHP），与 CI 语法检查范围对齐，避免新增工具脚本绕过规则。
  *   tests/ 不纳入 FAIL 规则：测试文件刻意包含攻击载荷与随机数采样（非安全用途），
  *   其正确性由动态执行（tests/ 套件）验证。
  *
@@ -62,9 +63,17 @@ $WARN = [
 $EXEMPTABLE = ['exec', 'system', 'shell_exec', 'passthru', 'proc_open', 'popen'];
 $AUDIT_MARKER = 'waf-audited:';
 
+/** 与 CI 语法检查保持同一份文件清单，避免扫描范围漂移 */
+$scanFiles = array_merge(
+    glob($root . '/*.php') ?: [],
+    glob($root . '/tools/*.php') ?: [],
+    glob($root . '/tools/e2e/*.php') ?: [],
+    glob($root . '/demo/*.php') ?: []
+);
+
 /** 预扫描：收集每个文件的审计豁免标记 → [$file][$line][$fn] = 理由 */
 $exempt = [];
-foreach (array_merge(glob($root . '/*.php') ?: [], glob($root . '/tools/*.php') ?: []) as $f) {
+foreach ($scanFiles as $f) {
     $s = @file_get_contents($f);
     if ($s === false || $s === '' || strpos($s, $AUDIT_MARKER) === false) { continue; }
     foreach (@token_get_all($s) as $t) {
@@ -88,7 +97,7 @@ foreach (array_merge(glob($root . '/*.php') ?: [], glob($root . '/tools/*.php') 
     }
 }
 
-$files = array_merge(glob($root . '/*.php') ?: [], glob($root . '/tools/*.php') ?: []);
+$files = $scanFiles;   // 预扫描与主扫描共用同一清单
 $failCount = 0;
 $warnCount = 0;
 $auditCount = 0;

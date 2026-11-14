@@ -51,7 +51,9 @@
 > **没装扩展 ≠ 少个功能，而是每个请求都 503、整站不可用**（fail-closed：宁可拒绝服务，也不无防护放行）。
 >
 > 三个硬条件：① **PHP 必须 8.1**（`ext/beast-8.1.so` 按 ABI 编译，8.2/8.3 加载失败）；② 扩展要装进**网站进程（FPM）**那套 PHP，CLI 不算；③ 装完**必须重启 PHP-FPM**。
-> 一条命令验收：`php -m | grep beast` —— 有输出才算过。
+> 验证扩展：CLI 侧 `php -m | grep beast`；**但 CLI 有输出不代表站点进程有**，
+> 必须用 FPM 同版本的 PHP 复验（`php-fpm8.1 -i | grep beast`，或重启后直接请求站点确认不再是 503）。
+> `php install.php --check` 会提示「CLI 与 FPM 可能使用不同 php.ini」，别只看自检全绿就上线。
 
 ```bash
 git clone <本仓库地址> /opt/ysl-waf && cd /opt/ysl-waf   # 1) 放站点之外
@@ -61,6 +63,14 @@ systemctl restart php8.1-fpm                             # 4) 重启生效
 ```
 
 装完会打印控制台与大屏的 URL（含一次性 key）。完整步骤、报错对照表见 **[部署](#部署必装扩展)**。
+
+本地一键跑完整套验收（官方向量 / 内核 / AI / 控制台 / 蜜罐 / 国际化 / 限流 / 加固环境兼容性回归），
+与 GitHub Actions 用的是同一个脚本，不需要 Docker，也不受 `php.ini` 里 `disable_functions` 加固影响
+（前提是本机 PHP 8.1 已加载随附的 php-beast 扩展）：
+
+```bash
+bash tools/e2e/ci.sh
+```
 
 ## 技术内核 · YSL-1
 
