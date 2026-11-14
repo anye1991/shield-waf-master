@@ -149,11 +149,18 @@ function ctlDnaStatus(): array {
     return is_array($j) ? $j : [];
 }
 function ctlDnaRun(string $cmd, array $args = []): array {
+    // 加固环境（如 disable_functions 含 exec）下不能调用未定义函数，否则点击
+    // 任意 DNA 动作都会 Fatal。返回结构化失败，由调用方显示明确提示，不炸页面。
+    if (!function_exists('exec')) {
+        return ['ok' => false, 'code' => 127,
+                'output' => 'exec() 被 disable_functions 禁用，DNA 命令无法执行；请从 disable_functions 移除 exec()。'];
+    }
     $bin = PHP_BINARY ?: 'php';
     $parts = [$bin, escapeshellarg($GLOBALS['P']['home'] . '/dna.php'), $cmd,
               '--root=' . escapeshellarg($GLOBALS['P']['home'])];
     foreach ($args as $a) { $parts[] = escapeshellarg($a); }
     $out = []; $code = 0;
+    // waf-audited:exec: DNA 子命令来自固定 $map 白名单，脚本路径与全部参数均经 escapeshellarg()，--file 另有正则与 .. 拦截，无任何原始用户输入
     exec(implode(' ', $parts) . ' 2>&1', $out, $code);
     return ['ok' => $code === 0, 'code' => $code, 'output' => implode("\n", array_slice($out, 0, 24))];
 }
@@ -526,9 +533,14 @@ switch ($action) {
         }
         $log = $P['arch'] . '/dna-watch.out';
         if (!is_dir(dirname($log))) { @mkdir(dirname($log), 0750, true); }
+        if (!function_exists('exec')) {
+            $message = 'exec() 被 disable_functions 禁用，无法启动 DNA 守护；请从 disable_functions 移除 exec()。';
+            break;
+        }
         $cmd = (PHP_BINARY ?: 'php') . ' ' . escapeshellarg($home . '/dna.php')
              . ' watch --root=' . escapeshellarg($home) . ' --interval=30 > '
              . escapeshellarg($log) . ' 2>&1 & echo $!';
+        // waf-audited:exec: 命令由 PHP_BINARY 与固定 dna.php/watch 子命令拼接，路径与日志重定向目标全部 escapeshellarg()，不含用户输入
         $newPid = (int)trim((string)@exec($cmd));
         usleep(300000);
         if (ctlWatchAlive($newPid)) {
@@ -542,7 +554,15 @@ switch ($action) {
     case 'dna.watch.stop':
         $pid = ctlWatchPid();
         if ($pid === null) { $ok = true; $message = 'DNA 守护未运行，无需停止'; break; }
-        $sig = function_exists('posix_kill') ? posix_kill($pid, 15) : (bool)@exec('kill ' . (int)$pid . ' 2>/dev/null');
+        // 优先 posix_kill；两者都被禁用时不得调用未定义函数（PHP8 的 @ 抑制不了 Error）
+        if (function_exists('posix_kill')) {
+            $sig = posix_kill($pid, 15);
+        } elseif (function_exists('exec')) {
+            // waf-audited:exec: 兜底分支仅执行 kill 固定整数 PID，(int) 强转，无用户输入
+            $sig = (bool)@exec('kill ' . (int)$pid . ' 2>/dev/null');
+        } else {
+            $sig = false;   // 结果由下方 ctlWatchAlive 判定，给出「停止失败」的准确提示
+        }
         usleep(300000);
         if (ctlWatchAlive($pid)) {
             if (function_exists('posix_kill')) { posix_kill($pid, 9); }

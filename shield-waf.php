@@ -82,6 +82,17 @@ if (!defined('WAF_DATA_PATH')) {
 
 // 内核里以 getenv() 读取的开关：每请求重置进程环境，保证控制台改动立即生效。
 // 仅覆盖白名单变量，绝不触碰 WAF_HOME / WAF_LOG_DIR 等路径常量。
+//
+// 兼容性（v6.5.1）：部分加固环境（如宝塔面板）会把 putenv() 列入 disable_functions。
+// 此时直接调用会抛 Error 并让**每一个请求** 500 —— 不是功能降级而是整站不可用。
+// 因此先探测再调用；不可用时不触碰进程环境，内核按启动时环境变量 / WAF_ENV_DEFAULTS
+// 的默认值运行（mode=enforce、各守卫全开、蜜罐停用，均为 fail-closed，不会静默放行）。
+// 同时把值同步进超全局，兼容以 $_ENV/$_SERVER 读取的实现，也让自检/控制台能观察到
+// 本次请求实际采用的开关。install.php --check 会显式报告该降级，不再"自检通过却上线炸"。
+$wafCanPutenv = function_exists('putenv');
+if (!defined('WAF_PUTENV_AVAILABLE')) {
+    define('WAF_PUTENV_AVAILABLE', $wafCanPutenv);
+}
 foreach ([
     'WAF_MODE'                  => $wafRuntime['mode'],
     'WAF_AI_ENABLED'            => $wafRuntime['guards']['ai']        ? '1' : '0',
@@ -92,7 +103,15 @@ foreach ([
     // v6.5.0：蜜罐默认停用，只有控制端点显式启用且未过有效期才会传给内核
     'WAF_HONEYPOT_ENABLED'      => !empty($wafRuntime['honeypot']['enabled']) ? '1' : '0',
 ] as $wafEnvKey => $wafEnvVal) {
-    putenv($wafEnvKey . '=' . $wafEnvVal);
+    if ($wafCanPutenv) {
+        // 正常路径：与历史版本逐字节等价，只 putenv，不引入任何额外副作用。
+        putenv($wafEnvKey . '=' . $wafEnvVal);
+    } else {
+        // 降级路径：PHP 层已无法再设置进程环境（getenv 读不到运行时值），
+        // 但仍把值放进超全局，兜住以 $_ENV/$_SERVER 读取的实现与诊断侧。
+        $_ENV[$wafEnvKey]    = $wafEnvVal;
+        $_SERVER[$wafEnvKey] = $wafEnvVal;
+    }
 }
 
 // 蜜罐有效期届满：只在文件里仍标「启用」时原子写回一次并留审计，

@@ -24,8 +24,10 @@
  */
 declare(strict_types=1);
 
-$BASE = 'http://127.0.0.1:8080';
-$HOME = '/app';
+// 可配置（v6.5.1）：CI / 任意环境可用 argv[1] 或 WAF_TEST_BASE / WAF_TEST_HOME 覆盖；
+// 未指定时沿用官方容器 e2e 的 /app:8080，行为与旧版完全一致。
+$BASE = rtrim((string)($argv[1] ?? (getenv('WAF_TEST_BASE') ?: 'http://127.0.0.1:8080')), '/');
+$HOME = rtrim((string)(getenv('WAF_TEST_HOME') ?: (is_dir('/app/core') ? '/app' : dirname(__DIR__))), '/');
 require_once $HOME . '/runtime.php';
 
 $KEY  = trim((string)@file_get_contents(wafCtlKeyFile($HOME, '/dev/shm/waf-data')));
@@ -48,7 +50,8 @@ function get(string $url): array {
 }
 /** 从 control.php 源码里解析真实动作白名单，测试不另写一份可能过期的清单 */
 function knownActions(): array {
-    $src = (string)@file_get_contents('/app/control.php');
+    global $HOME;
+    $src = (string)@file_get_contents($HOME . '/control.php');
     if (!preg_match('/\$KNOWN\s*=\s*\[(.*?)\];/s', $src, $m)) { return []; }
     preg_match_all("/'([a-z][a-z0-9_.]*)'/", $m[1], $a);
     return array_values(array_unique($a[1] ?? []));

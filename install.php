@@ -57,6 +57,30 @@ foreach (['shield-waf.php', 'config.php', 'core/YslWaf.php', 'core/YslEngine.php
 }
 ok('入口与配置齐全');
 
+// ---------- 运行时依赖函数（disable_functions 加固环境）----------
+// 宝塔等面板默认会禁用 putenv / exec 等函数。过去自检完全不看这些，导致
+// "自检全绿、上线整站 500"。入口已对这些函数做了 function_exists 兜底，
+// 不会致命，但能力会降级；自检必须如实报告，绝不静默放过。
+$disabledHint = '';
+foreach ([
+    'putenv' => '运行时开关注入（大屏控制台的模式/守卫/蜜罐开关）',
+    'exec'   => 'DNA 守护进程启停、控制台部分运维动作',
+] as $fn => $what) {
+    if (!function_exists($fn)) {
+        out('  [WARN] ' . $fn . '() 被禁用（disable_functions），影响：' . $what);
+        out('         入口已做兜底，站点不会 500，但该能力降级；');
+        out('         需要完整能力请从 disable_functions 移除 ' . $fn . '()，');
+        out('         或在 PHP-FPM 池配置里用 env[WAF_*] 预置默认值。');
+        $disabledHint .= ' ' . $fn . '()';
+    } else {
+        ok($fn . '() 可用（' . $what . '）');
+    }
+}
+if ($disabledHint !== '') {
+    out('  [INFO] 降级提示：运行时开关将回落到启动环境变量 / WAF_ENV_DEFAULTS，');
+    out('         默认 mode=enforce、各守卫全开、蜜罐停用，均为 fail-closed，不会静默放行。');
+}
+
 if (!extension_loaded('pdo_sqlite')) {
     out('  [WARN] 未装 pdo_sqlite：C2 监控模块会降级，主检测流程不受影响');
 } else {

@@ -47,9 +47,51 @@ $WARN = [
     'assert'  => 'assert() 生产路径禁用（PHP7+ 默认不执行，仍建议移除）',
 ];
 
+/**
+ * 可「显式审计豁免」的函数白名单（仅命令执行族）。
+ * 这些函数在命令完全由固定映射构造、参数经 escapeshellarg()/(int) 强转、
+ * 不含任何原始用户输入时是合规的（见 control.php 的三处 DNA 动作）。
+ * eval/create_function/pcntl_exec/rand/mt_rand 永不豁免——规则牙齿不能被拔掉。
+ *
+ * 豁免不是按文件/行号硬编码（一改行号就失效），而是要求调用处写明：
+ *     // waf-audited:exec: <经复核的理由>
+ * 标记位于调用行本身或其紧邻上一行，且必须带非空理由、函数名精确匹配。
+ * 因此**任何新增的裸 exec() 依旧 FAIL**，CI 的检测强度不变，只是把
+ * 已人工复核的合规调用从 FAIL 降级为可见的 AUDIT 记录。
+ */
+$EXEMPTABLE = ['exec', 'system', 'shell_exec', 'passthru', 'proc_open', 'popen'];
+$AUDIT_MARKER = 'waf-audited:';
+
+/** 预扫描：收集每个文件的审计豁免标记 → [$file][$line][$fn] = 理由 */
+$exempt = [];
+foreach (array_merge(glob($root . '/*.php') ?: [], glob($root . '/tools/*.php') ?: []) as $f) {
+    $s = @file_get_contents($f);
+    if ($s === false || $s === '' || strpos($s, $AUDIT_MARKER) === false) { continue; }
+    foreach (@token_get_all($s) as $t) {
+        if (!is_array($t) || ($t[0] !== T_COMMENT && $t[0] !== T_DOC_COMMENT)) { continue; }
+        $p = strpos($t[1], $AUDIT_MARKER);
+        if ($p === false) { continue; }
+        // 格式：waf-audited:<fn>[,<fn>...]: <理由>   理由必须非空
+        $spec = trim(substr($t[1], $p + strlen($AUDIT_MARKER)));
+        if (!str_contains($spec, ':')) { continue; }
+        [$fnList, $reason] = explode(':', $spec, 2);
+        $reason = trim($reason);
+        if ($reason === '') { continue; }
+        foreach (explode(',', $fnList) as $fn) {
+            $fn = strtolower(trim($fn));
+            if (!in_array($fn, $EXEMPTABLE, true)) { continue; }
+            // 标记写在行尾（同行）或上一行都生效
+            foreach ([$t[2], $t[2] + 1] as $L) {
+                $exempt[$f][$L][$fn] = $reason;
+            }
+        }
+    }
+}
+
 $files = array_merge(glob($root . '/*.php') ?: [], glob($root . '/tools/*.php') ?: []);
 $failCount = 0;
 $warnCount = 0;
+$auditCount = 0;
 
 foreach ($files as $file) {
     $src = file_get_contents($file);
@@ -91,10 +133,19 @@ foreach ($files as $file) {
                     $isMember = in_array($prevMeaningful, ['->', '::', 'function', 'new'], true);
                     if (!$isMember) {
                         if (isset($FAIL[$fn])) {
-                            fwrite(STDERR, sprintf(
-                                "[FAIL] %s:%d  %s() — %s\n", $file, $line, $text, $FAIL[$fn]
-                            ));
-                            $failCount++;
+                            $reason = $exempt[$file][$line][$fn] ?? null;
+                            if ($reason !== null) {
+                                fwrite(STDERR, sprintf(
+                                    "[AUDIT] %s:%d  %s() — 显式审计豁免：%s\n",
+                                    $file, $line, $text, $reason
+                                ));
+                                $auditCount++;
+                            } else {
+                                fwrite(STDERR, sprintf(
+                                    "[FAIL] %s:%d  %s() — %s\n", $file, $line, $text, $FAIL[$fn]
+                                ));
+                                $failCount++;
+                            }
                         } elseif (isset($WARN[$fn])) {
                             fwrite(STDERR, sprintf(
                                 "[WARN] %s:%d  %s() — %s\n", $file, $line, $text, $WARN[$fn]
@@ -113,7 +164,8 @@ foreach ($files as $file) {
 }
 
 fwrite(STDERR, sprintf(
-    "static_check 完成：%d 个文件，FAIL=%d，WARN=%d\n", count($files), $failCount, $warnCount
+    "static_check 完成：%d 个文件，FAIL=%d，AUDIT=%d，WARN=%d\n",
+    count($files), $failCount, $auditCount, $warnCount
 ));
 
 exit($failCount > 0 ? 1 : 0);

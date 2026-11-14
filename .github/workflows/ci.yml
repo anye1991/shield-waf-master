@@ -23,23 +23,27 @@ jobs:
           coverage: none
           ini-values: error_reporting=E_ALL, display_errors=1
 
-      - name: 语法检查（全部明文 PHP）
+      - name: 语法检查（全部明文 PHP，含 e2e 工具）
         run: |
           set -e
           fail=0
-          for f in *.php tests/*.php tools/*.php; do
+          for f in *.php tests/*.php tools/*.php tools/e2e/*.php; do
             [ -e "$f" ] || continue
             php -l "$f" || fail=1
           done
           exit $fail
 
+      - name: 脚本语法检查（bash）
+        run: bash -n tools/e2e/ci.sh tools/e2e/inner.sh tools/e2e_encrypted.sh
+
       - name: 静态安全检查（tools/static_check.php）
         run: php tools/static_check.php
 
   tests:
-    name: 测试套件（内核 / AI / 控制台 / 蜜罐 / 国际化）
+    name: 测试套件（向量 / 内核 / AI / 控制台 / 蜜罐 / 国际化 / 限流）
     runs-on: ubuntu-latest
     continue-on-error: false
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -58,14 +62,15 @@ jobs:
           echo "extension=$EXTDIR/beast.so" | sudo tee "$INIDIR/99-beast.ini" >/dev/null
           php -m | grep -i beast
 
-      - name: 兼容测试内固定路径 /app
-        run: sudo ln -sfn "$GITHUB_WORKSPACE" /app
+      # 测试脚本已去除 /app 与 8080 硬编码，改用 WAF_TEST_BASE / WAF_TEST_HOME，
+      # 因此不再需要 sudo ln -s /app，CI 与任意主机路径一致可复现。
+      - name: 端到端验收（起服务 + 全套用例 + 兼容性回归）
+        run: bash tools/e2e/ci.sh
 
-      - name: 运行自包含测试（不依赖外部 HTTP 的部分）
+      - name: 失败时上传诊断日志
+        if: failure()
         run: |
-          set -e
-          php tests/adversarial.php
-          php tests/ai_check.php
-          php tests/feature_matrix_check.php
-          php tests/i18n_check.php
-          php tests/honeypot_check.php
+          for f in /tmp/ysl-ci-*.log; do
+            [ -f "$f" ] || continue
+            echo "===== $f ====="; tail -40 "$f"
+          done

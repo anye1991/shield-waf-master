@@ -19,9 +19,11 @@
  */
 declare(strict_types=1);
 
-$base = rtrim((string)($argv[1] ?? 'http://127.0.0.1:8080'), '/');
-require_once '/app/runtime.php';
-$home = '/app';
+// 可配置（v6.5.1）：CI / 任意环境可用 argv[1] 或 WAF_TEST_BASE / WAF_TEST_HOME 覆盖；
+// 未指定时沿用官方容器 e2e 的 /app:8080，行为与旧版完全一致。
+$base = rtrim((string)($argv[1] ?? (getenv('WAF_TEST_BASE') ?: 'http://127.0.0.1:8080')), '/');
+$home = rtrim((string)(getenv('WAF_TEST_HOME') ?: (is_dir('/app/core') ? '/app' : dirname(__DIR__))), '/');
+require_once $home . '/runtime.php';
 $keyFile = wafCtlKeyFile($home, '/dev/shm/waf-data');
 $KEY = trim((string)@file_get_contents($keyFile));
 $CSRF = wafCtlToken($KEY);
@@ -136,7 +138,7 @@ ck('白名单加入并回读', $c === 200 && in_array('127.0.0.1', $j['state']['
 ck('白名单内 IP 硬旁路生效 200', $wcode === 200);
 if ($wcode !== 200) {
     echo '    DEBUG 白名单攻击码=', var_export($wcode, true), ' body=', substr($wbody, 0, 400),
-         ' runtime=', (string)@file_get_contents('/app/var/data/runtime.json'), "\n";
+         ' runtime=', (string)@file_get_contents($home . '/var/data/runtime.json'), "\n";
 }
 [$c, $j] = act('whitelist.del', ['cidr' => '127.0.0.1']);
 ck('白名单移除并回读', $c === 200 && !in_array('127.0.0.1', $j['state']['runtime']['whitelist'] ?? [], true));
@@ -167,7 +169,7 @@ ck('重置贝叶斯模型（需确认）', $c === 200 && !empty($j['ok']));
 
 // 日志类动作会改动 attack.log：整体备份后恢复，不破坏大屏真实数据
 $logFiles = array_values(array_unique([
-    '/dev/shm/waf-logs/ysl/attack.log', '/app/logs/ysl/attack.log',
+    '/dev/shm/waf-logs/ysl/attack.log', $home . '/logs/ysl/attack.log',
 ]));
 $bak = [];
 foreach ($logFiles as $f) { $bak[$f] = is_file($f) ? (string)@file_get_contents($f) : null; }
@@ -212,7 +214,7 @@ ck('轮换密钥返回新 key + 新 CSRF', $c === 200 && strlen($newKey) === 32 
 [$newCode] = page('/waf-screen?key=' . rawurlencode($newKey));
 ck('旧 key 立即 403 / 新 key 200', $oldCode === 403 && $newCode === 200);
 // 测试收尾：把原密钥写回两处，保证交付链接不变
-foreach (array_values(array_unique([$keyFile, '/app/var/data/console.key'])) as $f) {
+foreach (array_values(array_unique([$keyFile, $home . '/var/data/console.key'])) as $f) {
     @file_put_contents($f, $KEY . "\n", LOCK_EX);
     @chmod($f, 0600);
 }

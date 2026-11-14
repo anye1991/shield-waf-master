@@ -24,8 +24,10 @@
  */
 declare(strict_types=1);
 
-$BASE = 'http://127.0.0.1:8080';
-$HOME = '/app';
+// 可配置（v6.5.1）：CI / 任意环境可用 argv[1] 或 WAF_TEST_BASE / WAF_TEST_HOME 覆盖；
+// 未指定时沿用官方容器 e2e 的 /app:8080，行为与旧版完全一致。
+$BASE = rtrim((string)($argv[1] ?? (getenv('WAF_TEST_BASE') ?: 'http://127.0.0.1:8080')), '/');
+$HOME = rtrim((string)(getenv('WAF_TEST_HOME') ?: (is_dir('/app/core') ? '/app' : dirname(__DIR__))), '/');
 require_once $HOME . '/runtime.php';
 
 $keyFile = wafCtlKeyFile($HOME, '/dev/shm/waf-data');
@@ -66,10 +68,11 @@ function act(string $action, array $params = [], bool $confirm = false): array {
 function page(string $p): array { global $BASE; return http($BASE . $p); }
 /** 反射进内核，验证开关真的作用到 initSubsystems / checkHoneyPot，而不是只改了页面文字 */
 function kernelProbe(string $envVal): array {
+    global $HOME;
     $v = $envVal === '1' ? '1' : '0';
-    $php = "define('ABSPATH','/app/');"
+    $php = "define('ABSPATH'," . var_export($HOME . '/', true) . ");"
          . "putenv('WAF_HONEYPOT_ENABLED=" . $v . "');"
-         . "require '/app/core/YslEngine.php';"
+         . "require " . var_export($HOME . '/core/YslEngine.php', true) . ";"
          . "\$r = new ReflectionClass('YslEngine');"
          . "\$m = \$r->getMethod('initSubsystems'); \$m->setAccessible(true); \$m->invoke(null);"
          . "\$p = \$r->getProperty('honeypot'); \$p->setAccessible(true);"

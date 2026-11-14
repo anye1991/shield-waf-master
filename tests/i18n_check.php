@@ -18,9 +18,11 @@
  */
 declare(strict_types=1);
 
-define('ABSPATH', '/app/');
-$HOME = '/app';
-$BASE = 'http://127.0.0.1:8080';
+// 可配置（v6.5.1）：CI / 任意环境可用 argv[1] 或 WAF_TEST_BASE / WAF_TEST_HOME 覆盖；
+// 未指定时沿用官方容器 e2e 的 /app:8080，行为与旧版完全一致。
+$BASE = rtrim((string)($argv[1] ?? (getenv('WAF_TEST_BASE') ?: 'http://127.0.0.1:8080')), '/');
+$HOME = rtrim((string)(getenv('WAF_TEST_HOME') ?: (is_dir('/app/core') ? '/app' : dirname(__DIR__))), '/');
+define('ABSPATH', $HOME . '/');
 require $HOME . '/runtime.php';
 
 $pass = 0; $fail = 0;
@@ -87,7 +89,7 @@ foreach ([429, 502, 503, 413] as $code) {
         'qps' => 320, 'peak' => 410, 'rejects' => 12, 'retry_after' => 8,
         'soft' => 300, 'hard' => 600, 'ip_soft' => 80, 'ip_hard' => 160,
     ];
-    $php = 'require "/app/pages.php"; wafPage(' . $code . ', ' . var_export($ctx, true) . ');';
+    $php = 'require ' . var_export($HOME . '/pages.php', true) . '; wafPage(' . $code . ', ' . var_export($ctx, true) . ');';
     $out = [];
     // 容器内通过 php -r 取输出（本机 PHP 可用）
     $cmd = 'php -r ' . escapeshellarg($php) . ' 2>&1';

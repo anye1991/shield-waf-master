@@ -16,12 +16,15 @@
  */
 declare(strict_types=1);
 
-require_once '/app/runtime.php';
-
-const BASE = 'http://127.0.0.1:8080';
-$home   = '/app';
-$logDir = defined('WAF_LOG_PATH') ? WAF_LOG_PATH : (getenv('WAF_LOG_DIR') ?: '/app/var/logs');
-$key    = trim((string)@file_get_contents('/app/var/data/console.key'));
+// 可配置（v6.5.1）：CI / 任意环境可用 argv[1] 或 WAF_TEST_BASE / WAF_TEST_HOME 覆盖；
+// 未指定时沿用官方容器 e2e 的 /app:8080，行为与旧版完全一致。
+// 用 define() 而非 const：保持下方函数内对 BASE 的全局常量引用不变。
+$wafTestBase = rtrim((string)($argv[1] ?? (getenv('WAF_TEST_BASE') ?: 'http://127.0.0.1:8080')), '/');
+$home = rtrim((string)(getenv('WAF_TEST_HOME') ?: (is_dir('/app/core') ? '/app' : dirname(__DIR__))), '/');
+define('BASE', $wafTestBase);
+require_once $home . '/runtime.php';
+$logDir = defined('WAF_LOG_PATH') ? WAF_LOG_PATH : (getenv('WAF_LOG_DIR') ?: $home . '/var/logs');
+$key    = trim((string)@file_get_contents($home . '/var/data/console.key'));
 $csrf   = wafCtlToken($key);
 $pass = 0; $fail = 0;
 
