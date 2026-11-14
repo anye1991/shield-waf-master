@@ -21,7 +21,7 @@ jobs:
     name: 静态检查（语法 + 安全规则）
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 安装 PHP 8.1
         uses: shivammathur/setup-php@v2
@@ -52,7 +52,7 @@ jobs:
     continue-on-error: false
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 安装 PHP 8.1（含 pdo_sqlite）
         uses: shivammathur/setup-php@v2
